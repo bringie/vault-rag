@@ -1,0 +1,123 @@
+{
+	email ${VAULT_RAG_ACME_EMAIL}
+	admin 127.0.0.1:2019
+}
+
+${VAULT_RAG_DOMAIN} {
+	encode zstd gzip
+
+	rate_limit {
+		zone search_min {
+			match {
+				path /api/search /api/search/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 30
+			window 1m
+		}
+		zone search_burst {
+			match {
+				path /api/search /api/search/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 10
+			window 10s
+		}
+		zone get_min {
+			match {
+				method GET
+				path /api/notes/* /api/backlinks/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 120
+			window 1m
+		}
+		zone get_burst {
+			match {
+				method GET
+				path /api/notes/* /api/backlinks/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 40
+			window 10s
+		}
+		zone put_min {
+			match {
+				method PUT
+				path /api/notes/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 30
+			window 1m
+		}
+		zone put_burst {
+			match {
+				method PUT
+				path /api/notes/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 10
+			window 10s
+		}
+		zone mcp_min {
+			match {
+				path /mcp /mcp/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 60
+			window 1m
+		}
+		zone mcp_burst {
+			match {
+				path /mcp /mcp/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 20
+			window 10s
+		}
+		zone anon_min {
+			match {
+				path /healthz /metrics
+			}
+			key {http.request.remote.host}
+			events 60
+			window 1m
+		}
+		zone anon_burst {
+			match {
+				path /healthz /metrics
+			}
+			key {http.request.remote.host}
+			events 20
+			window 10s
+		}
+	}
+
+	handle_path /git/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle /git {
+		redir /git/ permanent
+	}
+
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:5679
+	}
+
+	handle /mcp {
+		reverse_proxy 127.0.0.1:5680
+	}
+
+	handle_path /tokmon/* {
+		reverse_proxy 127.0.0.1:5681
+	}
+
+	handle /grafana/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:5679
+	}
+}

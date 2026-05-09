@@ -1,0 +1,413 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  vault-rag-ollama:
+    image: ollama/ollama:latest
+    container_name: vault-rag-ollama
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 800m
+    memswap_limit: 1500m
+    volumes:
+      - vault-rag-ollama-data:/root/.ollama
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vault-rag-postgres
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 400m
+    memswap_limit: 800m
+    shm_size: 128m
+    environment:
+      - POSTGRES_USER=${VAULT_RAG_PG_USER}
+      - POSTGRES_PASSWORD=${VAULT_RAG_PG_PASSWORD}
+      - POSTGRES_DB=vault_rag
+    volumes:
+      - vault-rag-pgdata:/var/lib/postgresql/data
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${VAULT_RAG_PG_USER} -d vault_rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vault-rag-api:
+    image: vault-rag-tools:latest
+    container_name: vault-rag-api
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 200m
+    memswap_limit: 400m
+    user: "0:0"
+    depends_on:
+      vault-rag-postgres:
+        condition: service_healthy
+    entrypoint: ["/sbin/tini", "--", "node", "/scripts/rag-api.js"]
+    environment:
+      - OLLAMA_HOST=http://vault-rag-ollama:11434
+      - OLLAMA_EMBED_MODEL=nomic-embed-text
+      - VAULT_RAG_PG_HOST=vault-rag-postgres
+      - VAULT_RAG_PG_DB=vault_rag
+      - VAULT_RAG_PG_USER=${VAULT_RAG_PG_USER}
+      - VAULT_RAG_PG_PASS=${VAULT_RAG_PG_PASSWORD}
+      - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
+      - VAULT_PATH=/vault
+    ports:
+      - "127.0.0.1:5679:5679"
+    volumes:
+      - /root/obsidian-vault:/vault:rw
+      - ./scripts:/scripts:ro
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5679/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-tools:
+    image: vault-rag-tools:latest
+    container_name: vault-rag-tools
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 128m
+    memswap_limit: 256m
+    user: "0:0"
+    depends_on:
+      vault-rag-postgres:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://vault-rag-ollama:11434
+      - OLLAMA_EMBED_MODEL=nomic-embed-text
+      - VAULT_RAG_PG_HOST=vault-rag-postgres
+      - VAULT_RAG_PG_DB=vault_rag
+      - VAULT_RAG_PG_USER=${VAULT_RAG_PG_USER}
+      - VAULT_RAG_PG_PASS=${VAULT_RAG_PG_PASSWORD}
+      - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
+      - VAULT_PATH=/vault
+      - VAULT_GIT_REMOTE=${VAULT_GIT_REMOTE:-}
+      - HOME=/root
+    volumes:
+      - /root/obsidian-vault:/vault:rw
+      - /root/.ssh:/root/.ssh:ro
+      - ./scripts:/scripts:ro
+    networks:
+      - vault-rag-net
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.vault-indexer.schedule: "${VAULT_INDEXER_SCHEDULE:-@every 5m}"
+      ofelia.job-exec.vault-indexer.command: "node /scripts/run-job.js vault-indexer node /scripts/vault-indexer.js"
+      ofelia.job-exec.vault-indexer.no-overlap: "true"
+      ofelia.job-exec.watchdog-stuck-jobs.schedule: "@every 5m"
+      ofelia.job-exec.watchdog-stuck-jobs.command: "node /scripts/watchdog-stuck-jobs.js"
+      ofelia.job-exec.watchdog-stuck-jobs.no-overlap: "true"
+      ofelia.job-exec.cleanup-vault-audit.schedule: "0 0 4 * * 0"
+      ofelia.job-exec.cleanup-vault-audit.command: "node /scripts/cleanup-vault-audit.js"
+      ofelia.job-exec.cleanup-vault-audit.no-overlap: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "test -d /scripts && node --version >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-ofelia:
+    image: mcuadros/ofelia:latest
+    container_name: vault-rag-ofelia
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 32m
+    memswap_limit: 64m
+    command: daemon --docker
+    depends_on:
+      - vault-rag-tools
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - vault-rag-net
+    labels:
+      ofelia.enabled: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f /usr/bin/ofelia >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-forgejo:
+    image: codeberg.org/forgejo/forgejo:9
+    container_name: vault-rag-forgejo
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 512m
+    depends_on:
+      vault-rag-postgres:
+        condition: service_healthy
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__server__DOMAIN=${VAULT_RAG_DOMAIN}
+      - FORGEJO__server__ROOT_URL=https://${VAULT_RAG_DOMAIN}/git/
+      - FORGEJO__server__SSH_DOMAIN=${VAULT_RAG_DOMAIN}
+      - FORGEJO__server__SSH_PORT=222
+      - FORGEJO__server__SSH_LISTEN_PORT=22
+      - FORGEJO__server__HTTP_PORT=3000
+      - FORGEJO__server__OFFLINE_MODE=true
+      - FORGEJO__server__LFS_START_SERVER=false
+      - FORGEJO__service__DISABLE_REGISTRATION=true
+      - FORGEJO__service__REQUIRE_SIGNIN_VIEW=true
+      - FORGEJO__database__DB_TYPE=postgres
+      - FORGEJO__database__HOST=vault-rag-postgres:5432
+      - FORGEJO__database__NAME=forgejo
+      - FORGEJO__database__USER=${VAULT_RAG_PG_USER}
+      - FORGEJO__database__PASSWD=${VAULT_RAG_PG_PASSWORD}
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "222:22"
+    volumes:
+      - vault-rag-forgejo-data:/data
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  vault-rag-mcp:
+    image: vault-rag-tools:latest
+    container_name: vault-rag-mcp
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 100m
+    memswap_limit: 200m
+    user: "0:0"
+    depends_on:
+      vault-rag-api:
+        condition: service_started
+    entrypoint: ["/sbin/tini", "--", "node", "/scripts/mcp-shim.js"]
+    environment:
+      - MCP_PORT=5680
+      - VAULT_RAG_MCP_TOKEN=${VAULT_RAG_MCP_TOKEN}
+      - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
+      - RAG_API_URL=http://vault-rag-api:5679
+    ports:
+      - "127.0.0.1:5680:5680"
+    volumes:
+      - ./scripts:/scripts:ro
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5680/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+
+
+  vault-rag-tokmon-ingest:
+    image: vault-rag-tools:latest
+    container_name: vault-rag-tokmon-ingest
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:5681:5681"
+    restart: unless-stopped
+    mem_limit: 100m
+    memswap_limit: 200m
+    user: "0:0"
+    depends_on:
+      vault-rag-postgres:
+        condition: service_healthy
+    entrypoint: ["/sbin/tini", "--", "node", "/scripts/tokmon-ingest.js"]
+    environment:
+      - PORT=5681
+      - TOKMON_INGEST_TOKEN=${VAULT_RAG_TOKMON_INGEST_TOKEN}
+      - TOKMON_PG_HOST=vault-rag-postgres
+      - TOKMON_PG_DB=tokmon
+      - TOKMON_PG_USER=tokmon_parser
+      - TOKMON_PG_PASS=${VAULT_RAG_TOKMON_PARSER_PASS}
+    volumes:
+      - ./scripts:/scripts:ro
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5681/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-grafana:
+    image: grafana/grafana:11.3.0
+    container_name: vault-rag-grafana
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:3001:3000"
+    restart: unless-stopped
+    mem_limit: 250m
+    memswap_limit: 500m
+    user: "0:0"
+    depends_on:
+      vault-rag-postgres:
+        condition: service_healthy
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${VAULT_RAG_GRAFANA_ADMIN_PASS}
+      - GF_SERVER_ROOT_URL=https://${VAULT_RAG_DOMAIN}/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_SERVER_HTTP_ADDR=0.0.0.0
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_INSTALL_PLUGINS=
+      - TOKMON_GRAFANA_PASS=${VAULT_RAG_TOKMON_GRAFANA_PASS}
+      - VAULT_RAG_GRAFANA_PASS=${VAULT_RAG_GRAFANA_PASS}
+    volumes:
+      - vault-rag-grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+
+  vault-rag-vmsingle:
+    image: victoriametrics/victoria-metrics:v1.108.1
+    container_name: vault-rag-vmsingle
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 150m
+    memswap_limit: 300m
+    command:
+      - "-storageDataPath=/storage"
+      - "-retentionPeriod=14d"
+      - "-promscrape.config=/etc/scrape.yml"
+      - "-httpListenAddr=:8428"
+      - "-memory.allowedPercent=60"
+    volumes:
+      - vault-rag-vmdata:/storage
+      - ./prometheus/scrape.yml:/etc/scrape.yml:ro
+    ports:
+      - "127.0.0.1:8428:8428"
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: vault-rag-node-exporter
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 50m
+    memswap_limit: 100m
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/root"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker/.+)($$|/)"
+      - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/metrics >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: vault-rag-cadvisor
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 150m
+    memswap_limit: 300m
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - vault-rag-net
+
+  vault-rag-postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: vault-rag-postgres-exporter
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 60m
+    memswap_limit: 120m
+    depends_on:
+      vault-rag-postgres:
+        condition: service_healthy
+    environment:
+      - DATA_SOURCE_NAME=postgresql://${VAULT_RAG_PG_USER}:${VAULT_RAG_PG_PASSWORD}@vault-rag-postgres:5432/vault_rag?sslmode=disable
+      - PG_EXPORTER_EXTEND_QUERY_PATH=/queries.yaml
+    volumes:
+      - ./sql/queries.yaml:/queries.yaml:ro
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9187/metrics >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  vault-rag-caddy:
+    image: vault-rag-caddy:2.11-rl
+    container_name: vault-rag-caddy
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 150m
+    memswap_limit: 300m
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - vault-rag-caddy-data:/data
+      - vault-rag-caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/reverse_proxy/upstreams >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  vault-rag-grafana-data:
+  vault-rag-pgdata:
+  vault-rag-ollama-data:
+  vault-rag-forgejo-data:
+  vault-rag-vmdata:
+  vault-rag-caddy-data:
+  vault-rag-caddy-config:
+
+networks:
+  vault-rag-net:
+    name: vault-rag-net

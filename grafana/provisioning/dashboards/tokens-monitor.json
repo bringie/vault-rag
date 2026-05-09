@@ -1,0 +1,435 @@
+{
+  "uid": "tokens-monitor",
+  "title": "Token Monitor",
+  "tags": ["claude", "tokens", "cost"],
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "1m",
+  "time": {"from": "now-7d", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "query": "SELECT DISTINCT model FROM events WHERE model IS NOT NULL ORDER BY 1",
+        "sort": 1
+      },
+      {
+        "name": "project",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "query": "SELECT DISTINCT project_path FROM events WHERE project_path IS NOT NULL ORDER BY 1",
+        "sort": 1
+      },
+      {
+        "name": "daily_budget",
+        "type": "constant",
+        "current": {"selected": true, "text": "50", "value": "50"},
+        "query": "50",
+        "label": "Daily budget USD",
+        "hide": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total cost (range)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM events_with_cost WHERE ts BETWEEN $__timeFrom() AND $__timeTo() AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "Cost today",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM events_with_cost WHERE ts >= date_trunc('day', now())"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "Cache hit rate (range)",
+      "type": "gauge",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "decimals": 3,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "red", "value": null},
+          {"color": "orange", "value": 0.5},
+          {"color": "green", "value": 0.85}
+        ]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT CASE WHEN SUM(cache_read + input_tokens + cache_creation_5m + cache_creation_1h) = 0 THEN 0 ELSE SUM(cache_read)::float / SUM(cache_read + input_tokens + cache_creation_5m + cache_creation_1h) END AS hit_rate FROM events WHERE ts BETWEEN $__timeFrom() AND $__timeTo()"
+      }]
+    },
+    {
+      "id": 4,
+      "title": "Events parsed",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COUNT(*) AS n FROM events"
+      }]
+    },
+    {
+      "id": 18,
+      "title": "Monthly run-rate (last 7d × 30/7)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "orange", "value": 1200},
+          {"color": "red", "value": 1500}
+        ]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT (COALESCE(SUM(cost_usd), 0) / 7.0 * 30.0) AS projected_monthly FROM events_with_cost WHERE ts > now() - INTERVAL '7 days' AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+      }]
+    },
+    {
+      "id": 19,
+      "title": "Today vs daily budget ($${daily_budget})",
+      "type": "gauge",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1.5, "decimals": 2,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "orange", "value": 0.7},
+          {"color": "red", "value": 1.0}
+        ]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) / NULLIF(${daily_budget}::float, 0) AS pct FROM events_with_cost WHERE ts >= date_trunc('day', now()) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+      }]
+    },
+    {
+      "id": 20,
+      "title": "Burn rate (last 15 min, $/min)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 3,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "orange", "value": 0.25},
+          {"color": "red", "value": 0.5}
+        ]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) / 15.0 AS burn FROM events_with_cost WHERE ts > now() - INTERVAL '15 minutes' AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+      }]
+    },
+    {
+      "id": 5,
+      "title": "Cost over time (by model)",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {"legend": {"showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["sum"]}},
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), model AS metric, SUM(cost_usd) AS value FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1, 2 ORDER BY 1"
+      }]
+    },
+    {
+      "id": 6,
+      "title": "Tokens over time (by type)",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["sum"]}},
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), 'input' AS metric, SUM(input_tokens) AS value FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'output', SUM(output_tokens) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_read', SUM(cache_read) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_create_5m', SUM(cache_creation_5m) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_create_1h', SUM(cache_creation_1h) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 1"
+      }]
+    },
+    {
+      "id": 17,
+      "title": "Model migration (msgs share %)",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1,
+        "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 30, "stacking": {"mode": "percent", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"]}},
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), COALESCE(model, '(none)') AS metric, COUNT(*) AS value FROM events WHERE $__timeFilter(ts) AND project_path IN (${project:singlequote}) GROUP BY 1, 2 ORDER BY 1"
+      }]
+    },
+    {
+      "id": 7,
+      "title": "Cost by model",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 24},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "msgs"}, "properties": [{"id": "unit", "value": "short"}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "cost_usd", "desc": true}]},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT model, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 3 DESC"
+      }]
+    },
+    {
+      "id": 8,
+      "title": "Cost by project",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 24},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "msgs"}, "properties": [{"id": "unit", "value": "short"}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "cost_usd", "desc": true}]},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT project_path AS project, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) GROUP BY 1 ORDER BY 3 DESC LIMIT 30"
+      }]
+    },
+    {
+      "id": 9,
+      "title": "Cost by skill",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 24},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "msgs"}, "properties": [{"id": "unit", "value": "short"}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "cost_usd", "desc": true}]},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(active_skill, '(none)') AS skill, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 3 DESC LIMIT 30"
+      }]
+    },
+    {
+      "id": 16,
+      "title": "Cost per tool (apportioned)",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 32},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "avg_cost_per_call"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 6}]},
+        {"matcher": {"id": "byName", "options": "calls"}, "properties": [{"id": "unit", "value": "short"}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "cost_usd", "desc": true}]},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id) SELECT tc.tool_name, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd, ROUND(AVG(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 6) AS avg_cost_per_call FROM tool_calls tc JOIN events_with_cost ec ON tc.event_id = ec.id JOIN ev_tool_count etc ON tc.event_id = etc.event_id WHERE $__timeFilter(tc.ts) AND ec.model IN (${model:singlequote}) AND ec.project_path IN (${project:singlequote}) GROUP BY tc.tool_name ORDER BY cost_usd DESC NULLS LAST LIMIT 50"
+      }]
+    },
+    {
+      "id": 10,
+      "title": "Top sessions by cost",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 41},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "tokens_in"}, "properties": [{"id": "unit", "value": "short"}]},
+        {"matcher": {"id": "byName", "options": "tokens_out"}, "properties": [{"id": "unit", "value": "short"}]}
+      ]},
+      "options": {"showHeader": true, "footer": {"show": false}},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT session_id, project_path, MIN(ts) AS started, MAX(ts) AS last_ts, COUNT(*) AS events, SUM(input_tokens) AS tokens_in, SUM(output_tokens) AS tokens_out, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1, 2 ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
+      }]
+    },
+    {
+      "id": 11,
+      "title": "Tool call counts",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 9, "w": 6, "x": 12, "y": 41},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"showHeader": true},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT tool_name, COUNT(*) AS calls FROM tool_calls WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 2 DESC LIMIT 30"
+      }]
+    },
+    {
+      "id": 12,
+      "title": "Skill invocations",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 9, "w": 6, "x": 18, "y": 41},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"showHeader": true},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(skill_arg, '(none)') AS skill, COUNT(*) AS invocations FROM tool_calls WHERE $__timeFilter(ts) AND tool_name = 'Skill' GROUP BY 1 ORDER BY 2 DESC LIMIT 30"
+      }]
+    },
+    {
+      "id": 21,
+      "title": "Cost by MCP server (apportioned)",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "calls"}, "properties": [{"id": "unit", "value": "short"}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "cost_usd", "desc": true}]},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id), mcp_server AS (SELECT tc.event_id, CASE WHEN tc.tool_name LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN split_part(substring(tc.tool_name FROM 6), '__', 1) ELSE '(non-mcp)' END AS mcp_server FROM tool_calls tc WHERE $__timeFilter(tc.ts)) SELECT ms.mcp_server, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd FROM mcp_server ms JOIN events_with_cost ec ON ms.event_id = ec.id JOIN ev_tool_count etc ON ms.event_id = etc.event_id WHERE ec.model IN (${model:singlequote}) AND ec.project_path IN (${project:singlequote}) GROUP BY ms.mcp_server ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
+      }]
+    },
+    {
+      "id": 22,
+      "title": "Cost-per-message percentiles",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 56},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null},
+          {"color": "orange", "value": 0.2},
+          {"color": "red", "value": 0.5}
+        ]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "orientation": "horizontal", "textMode": "value_and_name"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p50, ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p95, ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p99, ROUND(MAX(cost_usd)::numeric, 4) AS max FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) AND cost_usd > 0"
+      }]
+    },
+    {
+      "id": 23,
+      "title": "Cost-per-message distribution",
+      "type": "histogram",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 64},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {"bucketSize": 0.01, "bucketOffset": 0, "combine": false, "legend": {"showLegend": true}},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) AND cost_usd > 0 AND cost_usd < 1.0"
+      }]
+    },
+    {
+      "id": 24,
+      "title": "Cost by hour-of-day (UTC)",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 64},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD",
+        "custom": {"axisPlacement": "auto", "fillOpacity": 80, "lineWidth": 1, "gradientMode": "none"}}, "overrides": []},
+      "options": {"xField": "hour_utc", "orientation": "vertical", "showValue": "auto", "stacking": "none", "legend": {"showLegend": true, "displayMode": "list", "placement": "bottom", "calcs": ["sum"]}, "tooltip": {"mode": "single"}},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT LPAD(EXTRACT(hour FROM ts AT TIME ZONE 'UTC')::int::text, 2, '0') AS hour_utc, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd, ROUND(AVG(cost_usd)::numeric, 6) AS avg_cost_per_msg FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 1"
+      }]
+    },
+    {
+      "id": 13,
+      "title": "Parser last run",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 50},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"showHeader": true},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT id, started_at, finished_at, status, files_seen, lines_read, events_inserted, tool_calls_inserted, jsonb_array_length(errors) AS errors FROM parser_runs ORDER BY started_at DESC LIMIT 10"
+      }]
+    },
+    {
+      "id": 14,
+      "title": "DB size",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 50},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT pg_database_size(current_database())::bigint AS bytes"
+      }]
+    },
+    {
+      "id": 15,
+      "title": "Events with missing rate",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "tokmon-pg"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 50},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "red", "value": 1}
+      ]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COUNT(*) AS n FROM events_with_cost WHERE missing_rate"
+      }]
+    }
+  ]
+}

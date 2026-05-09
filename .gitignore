@@ -1,0 +1,13 @@
+.env
+.env.local
+obsidian-vault/
+secrets/
+*.log
+.DS_Store
+node_modules/
+data/
+backups/
+*.bak
+*.bak.*
+Caddyfile
+credentials/

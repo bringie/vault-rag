@@ -1,0 +1,21 @@
+apiVersion: 1
+
+datasources:
+  - name: tokmon-pg
+    type: postgres
+    uid: tokmon-pg
+    access: proxy
+    url: vault-rag-postgres:5432
+    user: tokmon_grafana
+    database: tokmon
+    isDefault: true
+    editable: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 4
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: ${VAULT_RAG_TOKMON_GRAFANA_PASS}

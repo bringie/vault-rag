@@ -1,0 +1,91 @@
+vaultrag_job_runs:
+  query: |
+    SELECT job_name, status, COUNT(*) AS count
+    FROM job_runs
+    GROUP BY job_name, status
+  master: true
+  metrics:
+    - job_name:
+        usage: "LABEL"
+        description: "Cron job name"
+    - status:
+        usage: "LABEL"
+        description: "Run status (ok/err/running)"
+    - count:
+        usage: "COUNTER"
+        description: "Total runs of this job in this status"
+
+vaultrag_job_last:
+  query: |
+    SELECT DISTINCT ON (job_name)
+      job_name,
+      status,
+      EXTRACT(EPOCH FROM (NOW() - finished_at))             AS age_seconds,
+      EXTRACT(EPOCH FROM (finished_at - started_at))        AS duration_seconds,
+      COALESCE(exit_code, -1)                               AS exit_code
+    FROM job_runs
+    WHERE finished_at IS NOT NULL
+    ORDER BY job_name, id DESC
+  master: true
+  metrics:
+    - job_name:
+        usage: "LABEL"
+        description: "Cron job name"
+    - status:
+        usage: "LABEL"
+        description: "Last finished run status"
+    - age_seconds:
+        usage: "GAUGE"
+        description: "Seconds since last finished run"
+    - duration_seconds:
+        usage: "GAUGE"
+        description: "Duration of last finished run"
+    - exit_code:
+        usage: "GAUGE"
+        description: "Exit code of last finished run (-1 if null)"
+
+vaultrag_job_running:
+  query: |
+    SELECT
+      job_name,
+      COUNT(*) AS count,
+      COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - started_at))), 0) AS oldest_seconds
+    FROM job_runs
+    WHERE status = 'running'
+    GROUP BY job_name
+  master: true
+  metrics:
+    - job_name:
+        usage: "LABEL"
+        description: "Cron job name"
+    - count:
+        usage: "GAUGE"
+        description: "Currently running instances"
+    - oldest_seconds:
+        usage: "GAUGE"
+        description: "Age of oldest in-flight run"
+
+vaultrag_vault:
+  query: |
+    SELECT
+      (SELECT COUNT(DISTINCT path) FROM chunks)    AS files,
+      (SELECT COUNT(*) FROM chunks)                AS chunks,
+      (SELECT COUNT(*) FROM backlinks)             AS backlinks,
+      EXTRACT(EPOCH FROM (NOW() - COALESCE(
+        (SELECT updated_at FROM meta WHERE k = 'last_indexed_sha'),
+        '1970-01-01'::timestamptz
+      ))) AS last_sha_age_seconds
+  master: true
+  metrics:
+    - files:
+        usage: "GAUGE"
+        description: "Distinct vault files indexed"
+    - chunks:
+        usage: "GAUGE"
+        description: "Total chunks in pgvector"
+    - backlinks:
+        usage: "GAUGE"
+        description: "Total [[wikilinks]] resolved"
+    - last_sha_age_seconds:
+        usage: "GAUGE"
+        description: "Seconds since meta.last_indexed_sha was updated"
