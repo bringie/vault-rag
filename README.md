@@ -7,6 +7,12 @@
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License: MIT" />
 </p>
 
+<p align="center">
+  <strong>English</strong> &middot;
+  <a href="README.ru.md">Русский</a> &middot;
+  <a href="README.es.md">Español</a>
+</p>
+
 <h1 align="center">vault-rag</h1>
 
 <p align="center">

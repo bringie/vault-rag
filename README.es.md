@@ -1,0 +1,388 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/Self--hosted-RAG_Stack-7C3AED?style=for-the-badge" alt="Self-hosted RAG Stack" />
+  <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose" />
+  <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791?style=for-the-badge&logo=postgresql&logoColor=white" alt="Postgres + pgvector" />
+  <img src="https://img.shields.io/badge/Ollama-nomic--embed--text-000000?style=for-the-badge&logo=ollama&logoColor=white" alt="Ollama" />
+  <img src="https://img.shields.io/badge/MCP-Server-FF6F00?style=for-the-badge" alt="MCP Server" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License: MIT" />
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> &middot;
+  <a href="README.ru.md">Русский</a> &middot;
+  <strong>Español</strong>
+</p>
+
+<h1 align="center">vault-rag</h1>
+
+<p align="center">
+  <strong>Stack RAG multi-agente self-hosted para un vault markdown estilo Obsidian.</strong>
+  <br /><br />
+  <em>Un único Docker Compose. Memoria, recuperación, observabilidad y seguimiento de costes - en una sola caja. Tus notas se quedan en tu disco. Tus agentes se mantienen sincronizados.</em>
+  <br /><br />
+  <em>14 contenedores &middot; REST + MCP &middot; pgvector HNSW &middot; indexación con ofelia &middot; vt task CLI &middot; dashboards de Grafana</em>
+  <br /><br />
+  <a href="#cómo-funciona-en-la-práctica">Verlo en acción</a> &middot;
+  <a href="#componentes">Todos los componentes</a> &middot;
+  <a href="#instalación">Instalación</a> &middot;
+  <a href="#configuración">Configuración</a> &middot;
+  <a href="#faq">FAQ</a>
+</p>
+
+---
+
+## El Problema
+
+Ejecutas varios agentes de IA. Cada uno arranca desde cero. Las conversaciones terminan, el contexto se evapora, las decisiones se olvidan por la mañana.
+
+Escribes notas en Obsidian. Cientos de archivos. Los agentes no las leen, no las buscan semánticamente, no distinguen lo nuevo de lo viejo. En cada sesión vuelves a explicar el mismo proyecto.
+
+Encima quemas tokens. No sabes cuánto cuesta cada agente. No sabes si el indexador corrió anoche. No sabes qué nota respondió a la última consulta.
+
+**Vault, agentes, observabilidad y seguimiento de costes - cuatro problemas que normalmente se cubren con cuatro facturas SaaS.**
+
+---
+
+## Qué es
+
+Un stack Docker de 14 contenedores que convierte un vault markdown en una base de conocimiento consultable, observable y amigable para agentes:
+
+| | Stack SaaS típico | vault-rag |
+|---|---|---|
+| **Almacenamiento** | Nube del proveedor, opaca | Markdown plano en tu disco, versionado vía Forgejo |
+| **Embeddings** | Coste por llamada API | Ollama nomic-embed-text local (768-dim), coste cero por consulta |
+| **Índice vectorial** | Pinecone/Weaviate gestionado | Postgres + pgvector HNSW, en la misma BD que los metadatos |
+| **Acceso de agentes** | HTTP custom para cada uno | REST + MCP, ambos hablan al mismo backend |
+| **Indexación** | Manual o cron en VPS | Scheduler ofelia label-driven dentro del contenedor, watchdog incluido |
+| **Observabilidad** | Logs en stdout, métricas en ningún lado | VictoriaMetrics + Grafana, 4 dashboards prefabricados |
+| **Seguimiento de coste** | Ninguno | Endpoint ingest de token-monitor, todos los agentes loguean cada llamada |
+| **Seguimiento de tareas** | Herramienta externa | CLI `vt`, las tareas viven como markdown dentro del propio vault |
+
+Si quieres un vault que sea *legible para agentes y humanos, manteniendo el control total de los datos*, esto es lo que buscas.
+
+---
+
+## Cómo funciona en la práctica
+
+**Un agente necesita contexto:** `GET /api/search?query=postgres+migration`
+Devuelve los top-k chunks con rutas de archivo, scores y `[[backlinks]]`. Entiende el vault. Coste: cero por consulta (embeddings locales).
+
+**Sueltas una nota en `00-inbox/`:** ofelia dispara `vault-indexer` cada 5 min.
+El indexador chunkea archivos nuevos, los embebe vía Ollama, hace upsert en pgvector. El watchdog mata corridas que cuelgan más de 30 min. Historial de jobs en la tabla `job_runs`.
+
+**Un agente reclama una tarea:** `vt claim vt-0042`
+Pone `status: in_progress`, `claimed_by: agent-name` en el frontmatter de la tarea. Otros agentes la ven como not-ready en `vt ready`. Contador atómico O_EXCL en `obsidian-vault/.vt/seq` - sin claims dobles.
+
+**Quieres conectar un nuevo agente:** apúntalo a `https://your-domain/mcp`.
+El servidor MCP expone search, read, write, list, backlinks. Misma interfaz para todos los agentes.
+
+**Quieres saber cuánto costó la noche:** `https://your-domain/grafana/`
+Token-monitor ingiere cada llamada LLM de cada agente. El dashboard muestra tokens por modelo, coste por proyecto, requests por agente. Sin adivinanzas.
+
+**Una corrida se rompió en silencio:** El watchdog loguea jobs muertos.
+`SELECT * FROM job_runs WHERE status='killed'` te dice qué job, cuándo y cuánto corrió antes de morir.
+
+**Pregunta sobre el grafo de backlinks:** `GET /api/backlinks?file=02-projects/foo.md`
+Devuelve `[[wikilinks]]` inversos resueltos en tiempo de indexación. Sin escaneos on-the-fly.
+
+**Commits cambios al vault:** Forgejo guarda la historia git del vault.
+Push local, web UI, audit trail completo. El propio `obsidian-vault/` está gitignored de este repo - es *tu* vault, en *tu* git.
+
+**Quieres montar una caja nueva esta noche:** `./deploy.sh install`
+Un script. Genera secretos, renderiza Caddyfile desde plantilla, levanta 14 contenedores, dispara la indexación inicial. Idempotente - puedes re-ejecutarlo.
+
+---
+
+## Antes y después
+
+| | Sin este stack | Con este stack |
+|---|---|---|
+| Agente lee una nota | File IO custom por agente | Un endpoint REST/MCP, todos lo usan |
+| Búsqueda semántica | Coste API por consulta | Gratis, local, sub-100ms |
+| Nota nueva indexada | Script reindex manual | ofelia dispara cada 5 min, watchdog protege |
+| Embeddings obsoletos | Reconstrucción del vault entero | Incremental: hash compare + chunk diff |
+| Backlinks | Grep `[[name]]` en runtime | Materializados en la tabla `backlinks` |
+| Observabilidad | Ninguna | 4 dashboards Grafana de fábrica |
+| Seguimiento de coste | "Mira el dashboard de OpenAI" | Por agente, por modelo, por proyecto, en tu propia BD |
+| Seguimiento de tareas | Linear / GitHub Issues / TodoWrite | `vt`: tareas markdown en el mismo vault, contador atómico |
+| TLS / rate limit | Config nginx que escribes | Caddy con `Caddyfile.tmpl`, rate_limit por ruta |
+| Backup | Cronjob `pg_dump` manual | `deploy.sh backup` cubre postgres, vault, secretos |
+| Historia del vault | Perdida si pierdes el disco | Forgejo en `/git/`, timeline git completo |
+| Salud del stack | `docker ps`, ojo desnudo | `/api/healthz` + Grafana + tabla de jobs muertos por watchdog |
+
+---
+
+## Cómo está construido
+
+```
+  +------------------------------------------+
+  |                                          |
+  |   LAYER 1: Edge                          |
+  |   Caddy + TLS + rate_limit + auth        |
+  |                                          |
+  +------------------------------------------+
+  |                                          |
+  |   LAYER 2: Agents                        |
+  |   REST API + MCP server                  |
+  |   (mismo backend, dos protocolos)        |
+  |                                          |
+  +------------------------------------------+
+  |                                          |
+  |   LAYER 3: Storage + Compute             |
+  |   Postgres + pgvector | Ollama embed     |
+  |   Forgejo (git)       | tokmon ingest    |
+  |                                          |
+  +------------------------------------------+
+  |                                          |
+  |   LAYER 4: Scheduler                     |
+  |   ofelia: indexer 5m, watchdog 5m,       |
+  |           audit-cleanup weekly           |
+  |                                          |
+  +------------------------------------------+
+  |                                          |
+  |   LAYER 5: Observability                 |
+  |   VictoriaMetrics + node + cAdvisor      |
+  |   + postgres-exporter + Grafana          |
+  |                                          |
+  +------------------------------------------+
+```
+
+**Layer 1** termina TLS, limita rate, enruta por prefijo de path.
+**Layer 2** habla REST (para agentes HTTP-native) y MCP (para Claude Code, Codex, Gemini CLI).
+**Layer 3** son los datos: chunks + vectores en Postgres, embeddings de Ollama, historia del vault en Forgejo, cada llamada LLM en tokmon.
+**Layer 4** mantiene el índice vivo sin systemd timers - todos los crons viven como Docker labels en `vault-rag-tools`.
+**Layer 5** responde "¿está sano?, ¿cuánto cuesta?, ¿está indexando?" sin que tengas que entrar por SSH.
+
+---
+
+## Componentes
+
+### Edge
+
+| Contenedor | Rol |
+|---|---|
+| `vault-rag-caddy` | TLS + reverse proxy + rate_limit por ruta, renderizado desde `Caddyfile.tmpl` |
+
+### Agentes
+
+| Contenedor | Rol |
+|---|---|
+| `vault-rag-api` | REST: `/api/search`, `/api/read`, `/api/write`, `/api/backlinks`, `/api/healthz` |
+| `vault-rag-mcp` | Servidor MCP, mismas operaciones expuestas como MCP tools |
+| `vault-rag-tokmon-ingest` | Endpoint de seguimiento de coste, acepta eventos de llamadas LLM de agentes |
+
+### Almacenamiento + compute
+
+| Contenedor | Rol |
+|---|---|
+| `vault-rag-postgres` | pgvector. BDs: `vault_rag` (chunks/backlinks/meta/jobs/job_runs/vault_audit), `tokmon` |
+| `vault-rag-ollama` | Embeddings locales, `nomic-embed-text` 768-dim |
+| `vault-rag-forgejo` | Git self-hosted para versionado del vault |
+
+### Scheduler
+
+| Contenedor | Rol |
+|---|---|
+| `vault-rag-tools` | Host de labels ofelia - corre cron jobs como contenedores efímeros |
+| `vault-rag-ofelia` | Daemon ofelia, lee labels de contenedores para el schedule |
+
+| Job | Schedule | Qué hace |
+|---|---|---|
+| `vault-indexer` | cada 5 min | chunkea notas nuevas/cambiadas, embebe, upsert pgvector |
+| `vault-watchdog` | cada 5 min | mata corridas de índice más viejas que 30 min |
+| `cleanup-audit` | semanal | poda filas de `vault_audit` más viejas que el retention |
+
+### Observabilidad
+
+| Contenedor | Rol |
+|---|---|
+| `vault-rag-vmsingle` | VictoriaMetrics single-node, scrapea todo lo de abajo |
+| `vault-rag-node-exporter` | métricas del host |
+| `vault-rag-cadvisor` | métricas de contenedores |
+| `vault-rag-postgres-exporter` | métricas de postgres |
+| `vault-rag-grafana` | dashboards: stack overview, indexer jobs, postgres, token cost |
+
+---
+
+## vt: Vault Task CLI
+
+Las tareas para agentes (y humanos) viven como markdown dentro del vault, no en un issue tracker SaaS.
+
+```bash
+vt create -t epic "Migrate indexer to v2"     # crear
+vt ready                                       # tareas abiertas no bloqueadas
+vt claim vt-0042                               # status=in_progress + claimed_by=$VT_AGENT
+vt close vt-0042 --reason "shipped in #123"    # cerrar
+vt dep add vt-0042 --blocked-by vt-0041        # grafo de dependencias
+vt remember "Indexer chunks at 1024 tokens"    # guardar nota en 09-resources/notes/
+```
+
+| Comando | Qué hace |
+|---|---|
+| `vt create [-t type] [-p prio] "title"` | Nueva tarea en `06-tasks/vt-NNNN-slug.md` |
+| `vt list [--all] [--status X]` | Lista tareas |
+| `vt show <id> [--json]` | Imprime tarea |
+| `vt claim <id> [--by agent] [--force]` | Reclama tarea |
+| `vt close <id> --reason "..."` | Cierra tarea |
+| `vt update <id> --status X` | Actualiza status |
+| `vt ready` | Tareas abiertas sin blockers activos, ordenadas por prioridad |
+| `vt dep add\|rm <id> --blocked-by <other>` | Gestiona el grafo de dependencias |
+| `vt remember "text" [--tags ...]` | Nota persistente en `09-resources/notes/` |
+
+El contador es atómico vía lockfile O_EXCL en `obsidian-vault/.vt/seq`. Sin doble numeración entre agentes paralelos. Las tareas son markdown plano - editables a mano.
+
+---
+
+## Arquitectura del vault
+
+`vault-skeleton/` se copia a `obsidian-vault/` en el primer arranque. `obsidian-vault/` está gitignored - guárdalo en tu propio repo git privado.
+
+```
+obsidian-vault/
++-- .vt/                # contador y estado de vt (gitignored desde el skeleton)
++-- 00-inbox/           # suelta notas nuevas aquí, el indexador las recoge
++-- 01-daily/           # logs diarios
++-- 02-projects/        # cuadernos por proyecto
++-- 05-sessions/        # dumps de sesiones de chat de los agentes
++-- 06-tasks/           # archivos de tareas vt-NNNN-slug.md
++-- 09-resources/       # referencias de larga vida
+|   +-- notes/          # vt remember escribe aquí
+|   +-- prompts/        # prompts guardados
++-- _CLAUDE.md          # manual de operación para agentes
++-- index.md            # punto de entrada
+```
+
+---
+
+## Instalación
+
+Requisitos: host Linux con `docker`, `docker compose`, `openssl`, `envsubst`, y un dominio apuntando al host.
+
+Una línea:
+
+```bash
+git clone https://github.com/bringie/vault-rag.git /opt/vault-rag && cd /opt/vault-rag && cp .env.example .env && $EDITOR .env && ./deploy.sh install
+```
+
+O paso a paso:
+
+```bash
+git clone https://github.com/bringie/vault-rag.git /opt/vault-rag
+cd /opt/vault-rag
+cp .env.example .env
+# edita .env: pon VAULT_RAG_DOMAIN a tu dominio
+./deploy.sh install
+```
+
+`deploy.sh` es idempotente. Re-ejecuta cuando quieras. Genera secretos en el primer arranque, renderiza `Caddyfile` desde `Caddyfile.tmpl`, levanta el stack y dispara la indexación inicial del vault.
+
+Después de instalar:
+
+| Endpoint | Qué |
+|---|---|
+| `https://${VAULT_RAG_DOMAIN}/api/healthz` | 200 `{"ok":true}` |
+| `https://${VAULT_RAG_DOMAIN}/api/search?query=hello` | búsqueda semántica (requiere `X-Vault-Token`) |
+| `https://${VAULT_RAG_DOMAIN}/mcp` | endpoint del servidor MCP para agentes |
+| `https://${VAULT_RAG_DOMAIN}/grafana/` | Grafana, password admin impreso por `deploy.sh` |
+| `https://${VAULT_RAG_DOMAIN}/git/` | Forgejo |
+| `https://${VAULT_RAG_DOMAIN}/tokmon/` | ingest de token-monitor |
+
+---
+
+## Configuración
+
+Define en `.env` antes de `./deploy.sh install`:
+
+| Clave | Requerida | Qué |
+|---|---|---|
+| `VAULT_RAG_DOMAIN` | sí | Tu dominio, p. ej. `vault.example.com` |
+| `VAULT_RAG_TOKEN` | auto | Token de auth API, generado en el primer arranque si está vacío |
+| `POSTGRES_PASSWORD` | auto | Password de BD, generada en el primer arranque si vacía |
+| `GRAFANA_ADMIN_PASSWORD` | auto | Password admin de Grafana, impresa por el instalador |
+| `OLLAMA_MODEL` | no | Modelo de embeddings, default `nomic-embed-text` |
+| `INDEXER_INTERVAL` | no | Expresión cron de ofelia, default `@every 5m` |
+| `WATCHDOG_THRESHOLD_MIN` | no | Mata corridas más viejas que N min, default `30` |
+| `AUDIT_RETENTION_DAYS` | no | Retention de `vault_audit`, default `90` |
+
+Modos de `deploy.sh`:
+
+```bash
+./deploy.sh install        # primer arranque
+./deploy.sh update         # pull + recreate
+./deploy.sh restart        # reinicia todos los servicios
+./deploy.sh backup         # postgres dump + tarball del vault + secretos
+./deploy.sh status         # docker ps + healthz
+./deploy.sh logs <svc>     # logs en follow
+```
+
+Mira [`docs/architecture.md`](docs/architecture.md) para el mapa completo de servicios y data flow, [`docs/operations.md`](docs/operations.md) para backup/restore/escalado, y [`docs/api.md`](docs/api.md) para la referencia REST + MCP.
+
+---
+
+## FAQ
+
+### ¿Por qué self-host en vez de un RAG SaaS gestionado?
+Tus notas son tu foso. Los RAG SaaS de código cerrado son dueños de tus embeddings, tu retrieval y a menudo tus datos. vault-rag mantiene todo en disco que tú posees, con markdown plano como formato canónico. Puedes arrancar vault-rag mañana y tu vault sigue siendo tuyo.
+
+### ¿Por qué Postgres + pgvector en vez de una BD vectorial dedicada?
+Una sola base para vectores, metadatos, jobs, audit y tokmon significa un backup, un connection pool, un set de credenciales, una cosa que monitorizar. pgvector con HNSW es lo bastante rápido para vaults de hasta millones de chunks. Si te quedas corto, lo cambias - la API no cambia.
+
+### ¿Por qué Ollama para embeddings?
+El coste de embedding por consulta es cero, y `nomic-embed-text` es competitivo con APIs de embedding pagas para retrieval a escala de vault. Cambias modelo poniendo `OLLAMA_MODEL` y reindexando.
+
+### ¿Por qué ofelia y no systemd timers o cron?
+ofelia corre schedules como Docker labels sobre los mismos contenedores que orquesta. Migrar el stack a un host nuevo es `git pull && ./deploy.sh install` - sin copias de unit files de systemd, sin cron-on-host. El stack es portable.
+
+### ¿Qué hace el watchdog?
+Cada 5 min escanea `job_runs` buscando corridas de indexador marcadas `running` más viejas que `WATCHDOG_THRESHOLD_MIN` (default 30) y las mata. Sin él, una llamada Ollama colgada podría dejar pegado un contenedor de indexer para siempre.
+
+### ¿Puedo correrlo sin dominio / TLS?
+Sí - edita `Caddyfile.tmpl` para usar HTTP-only o `tls internal` para self-signed. El default asume un dominio real porque ese es el camino de la mayoría.
+
+### ¿Cómo se autentican los agentes?
+Header `X-Vault-Token` en todas las rutas REST excepto `/api/healthz`. El token está en `.env` como `VAULT_RAG_TOKEN`, autogenerado en la primera instalación. MCP usa el mismo token vía la config de su server.
+
+### ¿Cómo maneja la indexación las eliminaciones y renames?
+El indexador compara el estado del vault contra la tabla `meta` en cada corrida. Los archivos que desaparecen se marcan para eliminación de chunks. Los renames ahora se ven como delete+add (mejora futura).
+
+### ¿Cómo hago backup?
+`./deploy.sh backup` snapshota postgres (custom-format dump), el directorio del vault y los secretos. La salida va a `./backups/YYYY-MM-DD-HHMMSS/`. Para DR replica `backups/` a un sitio externo.
+
+### ¿Cómo agrego un nuevo agente?
+Apúntalo a `/mcp` (para agentes MCP-native) o `/api/*` (para HTTP). Usa el `VAULT_RAG_TOKEN`. Opcionalmente que haga POST de cada llamada LLM a `/tokmon/` para aparecer en el dashboard de coste.
+
+### ¿Dónde abro issues?
+GitHub Issues en el repo. PRs bienvenidos.
+
+### ¿En qué se diferencia `vt` de un issue tracker real?
+`vt` es un tracker delgado markdown-native afinado para agentes trabajando junto a humanos sobre un vault único. Las tareas son diff-friendly, grep-friendly y sobreviven a perder la cuenta SaaS. No es un reemplazo de Jira en un equipo de 50 personas - es un reemplazo de una lista TodoWrite y una BD beads en un proyecto chico donde el vault es la fuente de verdad.
+
+---
+
+## Filosofía
+
+La mayoría de las herramientas de "AI memory" te convierten en el conserje. Las alimentas, las podas, les ruegas que recuerden.
+
+Este stack invierte eso. Tu vault es markdown plano. Tus agentes hablan un protocolo. Tu indexador corre solo. Tus costes están a la vista. Tus tareas viven al lado de tus notas.
+
+Tú piensas y escribes. El stack recuerda, recupera, observa y cobra.
+
+**El vault es la fuente de verdad. Todo lo demás es plomería.**
+
+---
+
+## Contribuir
+
+PRs bienvenidos:
+- Nuevos formatos de ingest (PDF, audio, OCR de imágenes)
+- Backends alternativos de embedding (instructor, BGE, Voyage)
+- Extensiones de MCP tools
+- Dashboards de Grafana
+- Mejoras de backup/restore
+- Scripts de deploy multi-host
+
+---
+
+## Licencia
+
+MIT. Ver [LICENSE](LICENSE).
