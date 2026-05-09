@@ -232,6 +232,21 @@ vt remember "Indexer chunks at 1024 tokens"    # сохранить заметк
 
 Счётчик атомарный через O_EXCL lockfile в `obsidian-vault/.vt/seq`. Параллельные агенты не получат одинаковые номера. Задачи - plain markdown, можно править руками.
 
+Те же операции доступны через REST и MCP:
+
+```bash
+# REST
+curl -X POST $VAULT_RAG_URL/api/task/create \
+  -H "Authorization: Bearer $VAULT_RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Refactor auth","type":"task","priority":1}'
+
+# MCP (в конфиге агента)
+# tool: task_create, args: {"title":"Refactor auth"}
+```
+
+Полная справка: [docs/tasks.md](docs/tasks.md).
+
 ---
 
 ## Архитектура волта

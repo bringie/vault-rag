@@ -232,6 +232,21 @@ vt remember "Indexer chunks at 1024 tokens"    # save note to 09-resources/notes
 
 Counter is atomic via O_EXCL lockfile at `obsidian-vault/.vt/seq`. No double-numbering across parallel agents. Tasks are plain markdown - editable by hand.
 
+Same operations available over REST and MCP:
+
+```bash
+# REST
+curl -X POST $VAULT_RAG_URL/api/task/create \
+  -H "Authorization: Bearer $VAULT_RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Refactor auth","type":"task","priority":1}'
+
+# MCP (in agent config)
+# tool: task_create, args: {"title":"Refactor auth"}
+```
+
+Full reference: [docs/tasks.md](docs/tasks.md).
+
 ---
 
 ## Vault Architecture
