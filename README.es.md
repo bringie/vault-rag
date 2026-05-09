@@ -215,7 +215,8 @@ vt ready                                       # tareas abiertas no bloqueadas
 vt claim vt-0042                               # status=in_progress + claimed_by=$VT_AGENT
 vt close vt-0042 --reason "shipped in #123"    # cerrar
 vt dep add vt-0042 --blocked-by vt-0041        # grafo de dependencias
-vt remember "Indexer chunks at 1024 tokens"    # guardar nota en 09-resources/notes/
+vt remember "Indexer chunks at 1024 tokens"    # nota + auto-push a prod /api/put
+vt search "indexer chunk size"                  # búsqueda vectorial vía /api/search
 ```
 
 | Comando | Qué hace |
@@ -228,9 +229,22 @@ vt remember "Indexer chunks at 1024 tokens"    # guardar nota en 09-resources/no
 | `vt update <id> --status X` | Actualiza status |
 | `vt ready` | Tareas abiertas sin blockers activos, ordenadas por prioridad |
 | `vt dep add\|rm <id> --blocked-by <other>` | Gestiona el grafo de dependencias |
-| `vt remember "text" [--tags ...]` | Nota persistente en `09-resources/notes/` |
+| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Nota en `09-resources/notes/`, auto-POST a prod `/api/put` (Bearer) |
+| `vt search "query" [--limit N] [--json]` | Búsqueda vectorial vía `/api/search` (POST + Bearer) |
+| `vt prime` | Imprime referencia completa de comandos |
 
 El contador es atómico vía lockfile O_EXCL en `obsidian-vault/.vt/seq`. Sin doble numeración entre agentes paralelos. Las tareas son markdown plano - editables a mano.
+
+### .env del cliente (para `vt remember`/`vt search` contra un vault remoto)
+
+`vt` lee `<repo>/.env` (gitignored) para saber a dónde empujar notas y dónde buscar. Mínimo:
+
+```bash
+VAULT_RAG_API_URL=https://your-vault.example.com
+VAULT_RAG_API_TOKEN=<desde /opt/vault-rag/.env en el servidor>
+```
+
+Sin esto, `vt remember` cae a modo local-only e imprime `vt: local-only (no VAULT_RAG_API_URL/TOKEN — note NOT pushed to prod)`. `vt search` falla con error (necesita la API).
 
 ---
 
