@@ -240,7 +240,6 @@ const TASK_ROUTES = {
   '/task/update':  'update',
   '/task/dep_add': 'dep_add',
   '/task/dep_rm':  'dep_rm',
-  '/task/import':  'import_task',
 };
 
 const server = http.createServer(async (req, res) => {

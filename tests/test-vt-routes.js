@@ -168,38 +168,3 @@ test('task_dep_rm unblocks', async () => {
   assert.deepStrictEqual(show.body.blocked_by, []);
 });
 
-test('task_import refuses without env flag', async () => {
-  const vault = tmpVault();
-  delete process.env.VAULT_RAG_ALLOW_IMPORT;
-  const res = await handlers.import_task({ vault, body: { path: '06-tasks/vt-0099-x.md', content: '---\nid: vt-0099\n---\n' } });
-  assert.strictEqual(res.status, 403);
-});
-
-test('task_import writes file and bumps seq', async () => {
-  const vault = tmpVault();
-  process.env.VAULT_RAG_ALLOW_IMPORT = '1';
-  const md = '---\nid: vt-0042\ntitle: x\ntype: task\nstatus: open\npriority: 2\ncreated: 2026-01-01T00:00:00.000Z\n---\nbody\n';
-  const res = await handlers.import_task({ vault, body: { path: '06-tasks/vt-0042-x.md', content: md } });
-  assert.strictEqual(res.status, 200);
-  assert.strictEqual(fs.readFileSync(path.join(vault, '.vt', 'seq'), 'utf8').trim(), '42');
-  delete process.env.VAULT_RAG_ALLOW_IMPORT;
-});
-
-test('task_import refuses overwrite', async () => {
-  const vault = tmpVault();
-  process.env.VAULT_RAG_ALLOW_IMPORT = '1';
-  const md = '---\nid: vt-0001\ntitle: x\ntype: task\nstatus: open\npriority: 2\ncreated: 2026-01-01T00:00:00.000Z\n---\n';
-  await handlers.import_task({ vault, body: { path: '06-tasks/vt-0001-x.md', content: md } });
-  const res = await handlers.import_task({ vault, body: { path: '06-tasks/vt-0001-x.md', content: md } });
-  assert.strictEqual(res.status, 409);
-  delete process.env.VAULT_RAG_ALLOW_IMPORT;
-});
-
-test('task_import rejects path traversal', async () => {
-  const vault = tmpVault();
-  process.env.VAULT_RAG_ALLOW_IMPORT = '1';
-  const md = '---\nid: vt-0001\n---\n';
-  const res = await handlers.import_task({ vault, body: { path: '06-tasks/../etc/x.md', content: md } });
-  assert.strictEqual(res.status, 400);
-  delete process.env.VAULT_RAG_ALLOW_IMPORT;
-});
