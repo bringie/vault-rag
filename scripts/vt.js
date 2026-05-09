@@ -1,297 +1,170 @@
 #!/usr/bin/env node
-// vt: vault-task CLI. Replaces beads. Tasks live as markdown in obsidian-vault/06-tasks/.
+const URL_ENV = 'VAULT_RAG_URL';
+const TOKEN_ENV = 'VAULT_RAG_API_TOKEN';
+const AGENT_ENV = 'VT_AGENT';
 
-const fs = require('fs');
-const path = require('path');
-const { resolveConfig } = require('./lib/vt-config');
-const {
-  ID_RE, slug, padId, nowIso, ensureDir,
-  findTaskFile, readTask, writeTask, listTasks, createTask,
-} = require('./lib/vt-fs');
-const { readyTasks, blockingChain } = require('./lib/vt-graph');
+function die(msg, code = 1) { process.stderr.write(`vt: ${msg}\n`); process.exit(code); }
 
-function die(msg, code = 1) {
-  process.stderr.write(`vt: ${msg}\n`);
-  process.exit(code);
+function cfg() {
+  const url = process.env[URL_ENV];
+  const token = process.env[TOKEN_ENV];
+  if (!url) die(`set ${URL_ENV} (e.g. https://brain.itiswednesdaymydud.es)`);
+  if (!token) die(`set ${TOKEN_ENV}`);
+  return { url: url.replace(/\/$/, ''), token, agent: process.env[AGENT_ENV] || 'agent' };
 }
 
-function parseArgs(argv) {
-  const flags = {};
-  const positional = [];
+async function call(route, body) {
+  const c = cfg();
+  let res;
+  try {
+    res = await fetch(`${c.url}/api/task/${route}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+  } catch (e) { die(`network: ${e.message}`); }
+  const text = await res.text();
+  let data; try { data = JSON.parse(text); } catch { data = { error: text }; }
+  if (!res.ok) die(`${res.status}: ${data.error || text}`, 1);
+  return data;
+}
+
+function parseFlags(argv) {
+  const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) {
-      const eq = a.indexOf('=');
-      if (eq >= 0) {
-        flags[a.slice(2, eq)] = a.slice(eq + 1);
-      } else {
-        const next = argv[i + 1];
-        if (next === undefined || next.startsWith('--')) flags[a.slice(2)] = true;
-        else { flags[a.slice(2)] = next; i++; }
-      }
-    } else if (a.startsWith('-') && a.length > 1) {
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('-')) flags[a.slice(1)] = true;
-      else { flags[a.slice(1)] = next; i++; }
+    if (a === '--all') out.all = true;
+    else if (a === '--force') out.force = true;
+    else if (a === '--json') out.json = true;
+    else if (a.startsWith('--')) {
+      const k = a.slice(2).replace(/-/g, '_');
+      out[k] = argv[++i];
+    } else if (a === '-t') out.type = argv[++i];
+    else if (a === '-p') out.priority = parseInt(argv[++i], 10);
+    else out._.push(a);
+  }
+  return out;
+}
+
+function fmtTask(t) {
+  const claim = t.claimed_by ? ` [${t.claimed_by}]` : '';
+  const blk = t.blocked_by && t.blocked_by.length ? ` blocked-by:${t.blocked_by.join(',')}` : '';
+  return `${t.id} (p${t.priority} ${t.type} ${t.status})${claim} ${t.title}${blk}`;
+}
+
+const cmds = {
+  async create(args) {
+    const f = parseFlags(args);
+    const title = f._.join(' ');
+    if (!title) die('title required');
+    const body = { title, by: cfg().agent };
+    if (f.type) body.type = f.type;
+    if (f.priority !== undefined) body.priority = f.priority;
+    if (f.epic) body.epic = f.epic;
+    if (f.blocked_by) body.blocked_by = f.blocked_by.split(',');
+    const r = await call('create', body);
+    process.stdout.write(`${r.id} ${r.path}\n`);
+  },
+  async list(args) {
+    const f = parseFlags(args);
+    const body = {};
+    if (f.all) body.all = true;
+    if (f.status) body.status = f.status;
+    if (f.type) body.type = f.type;
+    const tasks = await call('list', body);
+    for (const t of tasks) process.stdout.write(fmtTask(t) + '\n');
+  },
+  async ready() {
+    const tasks = await call('ready', {});
+    for (const t of tasks) process.stdout.write(fmtTask(t) + '\n');
+  },
+  async show(args) {
+    const f = parseFlags(args);
+    const id = f._[0]; if (!id) die('id required');
+    if (f.json) {
+      const t = await call('show', { id, json: true });
+      process.stdout.write(JSON.stringify(t) + '\n');
     } else {
-      positional.push(a);
+      const r = await call('show', { id, json: false });
+      process.stdout.write(r.markdown);
     }
-  }
-  return { flags, positional };
-}
-
-function fmt(t) {
-  const pri = t.fm.priority ?? 2;
-  const blocked = (t.fm.blocked_by || []).length;
-  const claim = t.fm.claimed_by ? ` @${t.fm.claimed_by}` : '';
-  const epic = t.fm.epic ? ` epic=${t.fm.epic}` : '';
-  const dep = blocked ? ` blocked_by=${blocked}` : '';
-  return `${t.fm.id}  [${t.fm.status.padEnd(11)}] p${pri} ${t.fm.type.padEnd(5)} ${t.fm.title}${claim}${epic}${dep}`;
-}
-
-function cmdCreate(cfg, args) {
-  const { flags, positional } = args;
-  const title = positional.join(' ').trim();
-  if (!title) die('create: title required. usage: vt create -t task -p 1 "Title"');
-  const type = flags.t || flags.type || 'task';
-  const priority = flags.p !== undefined ? parseInt(flags.p, 10) : (flags.priority !== undefined ? parseInt(flags.priority, 10) : 2);
-  const epic = flags.epic || null;
-  const blocked_by = flags['blocked-by']
-    ? String(flags['blocked-by']).split(',').map(s => s.trim()).filter(Boolean)
-    : [];
-  const tags = flags.tags ? String(flags.tags).split(',').map(s => s.trim()).filter(Boolean) : [];
-  const body = flags.body || flags.b || null;
-  const t = createTask(cfg, { title, type, priority, epic, blocked_by, tags, body });
-  process.stdout.write(`${t.id}\t${t.file}\n`);
-}
-
-function cmdList(cfg, args) {
-  const { flags } = args;
-  const tasks = listTasks(cfg.tasksDir);
-  let filtered = tasks;
-  if (flags.status) {
-    const set = new Set(String(flags.status).split(',').map(s => s.trim()));
-    filtered = filtered.filter(t => set.has(t.fm.status));
-  } else if (!flags.all) {
-    filtered = filtered.filter(t => t.fm.status !== 'closed');
-  }
-  if (flags.type) {
-    const set = new Set(String(flags.type).split(',').map(s => s.trim()));
-    filtered = filtered.filter(t => set.has(t.fm.type));
-  }
-  if (flags.epic) filtered = filtered.filter(t => t.fm.epic === flags.epic);
-  if (flags.mine) filtered = filtered.filter(t => t.fm.claimed_by === cfg.agentId);
-  if (flags.json) {
-    process.stdout.write(JSON.stringify(filtered.map(t => t.fm), null, 2) + '\n');
-    return;
-  }
-  if (!filtered.length) { process.stdout.write('(no tasks)\n'); return; }
-  for (const t of filtered) process.stdout.write(fmt(t) + '\n');
-}
-
-function cmdShow(cfg, args) {
-  const id = args.positional[0];
-  if (!id) die('show: id required');
-  const t = readTask(cfg.tasksDir, id);
-  if (!t) die(`show: ${id} not found`);
-  if (args.flags.json) {
-    process.stdout.write(JSON.stringify({ ...t.fm, body: t.body, file: t.file }, null, 2) + '\n');
-  } else {
-    process.stdout.write(t.text);
-  }
-}
-
-function cmdReady(cfg, args) {
-  const tasks = listTasks(cfg.tasksDir);
-  const ready = readyTasks(tasks);
-  if (args.flags.json) {
-    process.stdout.write(JSON.stringify(ready.map(t => t.fm), null, 2) + '\n');
-    return;
-  }
-  if (!ready.length) { process.stdout.write('(no ready tasks)\n'); return; }
-  for (const t of ready) process.stdout.write(fmt(t) + '\n');
-}
-
-function cmdClaim(cfg, args) {
-  const id = args.positional[0];
-  if (!id) die('claim: id required');
-  const t = readTask(cfg.tasksDir, id);
-  if (!t) die(`claim: ${id} not found`);
-  const by = args.flags.by || cfg.agentId;
-  if (t.fm.claimed_by && t.fm.claimed_by !== by && t.fm.status === 'in_progress') {
-    if (!args.flags.force) die(`claim: ${id} already claimed by ${t.fm.claimed_by} (use --force)`);
-  }
-  t.fm.claimed_by = by;
-  t.fm.claimed_at = nowIso();
-  t.fm.status = 'in_progress';
-  writeTask(t.file, t.fm, t.body);
-  process.stdout.write(`claimed ${id} by ${by}\n`);
-}
-
-function cmdUpdate(cfg, args) {
-  const id = args.positional[0];
-  if (!id) die('update: id required');
-  const t = readTask(cfg.tasksDir, id);
-  if (!t) die(`update: ${id} not found`);
-  let changed = 0;
-  const f = args.flags;
-  const setIf = (key, val) => { if (val !== undefined) { t.fm[key] = val; changed++; } };
-  if (f.status) {
-    const valid = ['open', 'in_progress', 'blocked', 'done', 'closed'];
-    if (!valid.includes(f.status)) die(`update: bad status ${f.status} (valid: ${valid.join(',')})`);
-    t.fm.status = f.status; changed++;
-  }
-  if (f.priority !== undefined) { t.fm.priority = parseInt(f.priority, 10); changed++; }
-  if (f.title) { t.fm.title = f.title; changed++; }
-  if (f.epic !== undefined) setIf('epic', f.epic === 'null' ? null : f.epic);
-  if (f.tags !== undefined) { t.fm.tags = String(f.tags).split(',').map(s => s.trim()).filter(Boolean); changed++; }
-  if (f.body !== undefined) {
-    if (f.body === '-') t.body = fs.readFileSync(0, 'utf8');
-    else t.body = f.body;
-    changed++;
-  }
-  if (!changed) die('update: nothing to change');
-  writeTask(t.file, t.fm, t.body);
-  process.stdout.write(`updated ${id}\n`);
-}
-
-function cmdClose(cfg, args) {
-  const id = args.positional[0];
-  if (!id) die('close: id required');
-  const t = readTask(cfg.tasksDir, id);
-  if (!t) die(`close: ${id} not found`);
-  t.fm.status = 'closed';
-  t.fm.closed = nowIso();
-  t.fm.closed_reason = args.flags.reason || args.flags.r || 'Done';
-  writeTask(t.file, t.fm, t.body);
-  process.stdout.write(`closed ${id}\n`);
-}
-
-function cmdDep(cfg, args) {
-  const sub = args.positional[0];
-  const id = args.positional[1];
-  if (!sub || !['add', 'rm'].includes(sub)) die('dep: usage: vt dep add|rm <id> --blocked-by <other>');
-  if (!id) die('dep: id required');
-  const t = readTask(cfg.tasksDir, id);
-  if (!t) die(`dep: ${id} not found`);
-  const other = args.flags['blocked-by'] || args.flags.blockedBy;
-  if (!other) die('dep: --blocked-by <other-id> required');
-  t.fm.blocked_by = t.fm.blocked_by || [];
-  if (sub === 'add') {
-    if (!t.fm.blocked_by.includes(other)) t.fm.blocked_by.push(other);
-  } else {
-    t.fm.blocked_by = t.fm.blocked_by.filter(x => x !== other);
-  }
-  writeTask(t.file, t.fm, t.body);
-  process.stdout.write(`dep ${sub} ${id} blocked_by ${other}\n`);
-}
-
-async function cmdSearch(cfg, args) {
-  const q = args.positional.join(' ').trim();
-  if (!q) die('search: query required');
-  if (!cfg.apiBase || !cfg.apiToken) die('search: VAULT_RAG_API_URL/DOMAIN + VAULT_RAG_API_TOKEN required');
-  const limit = parseInt(args.flags.limit || '10', 10);
-  const url = `${cfg.apiBase.replace(/\/$/, '')}/api/search?query=${encodeURIComponent(q)}&limit=${limit}`;
-  const res = await fetch(url, { headers: { 'X-Vault-Token': cfg.apiToken } });
-  if (!res.ok) die(`search: HTTP ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  if (args.flags.json) { process.stdout.write(JSON.stringify(data, null, 2) + '\n'); return; }
-  const items = data.results || data.matches || data;
-  if (!Array.isArray(items)) { process.stdout.write(JSON.stringify(data, null, 2) + '\n'); return; }
-  for (const it of items) {
-    const score = it.score !== undefined ? `[${Number(it.score).toFixed(3)}]` : '';
-    process.stdout.write(`${score} ${it.path || it.id || ''}\n`);
-    if (it.snippet || it.content) {
-      const s = (it.snippet || it.content).replace(/\s+/g, ' ').slice(0, 160);
-      process.stdout.write(`    ${s}\n`);
-    }
-  }
-}
-
-function cmdRemember(cfg, args) {
-  const text = args.positional.join(' ').trim();
-  if (!text) die('remember: note text required');
-  ensureDir(cfg.notesDir);
-  const date = new Date().toISOString().slice(0, 10);
-  const titleLine = text.split('\n')[0].slice(0, 80);
-  const fname = `${date}-${slug(titleLine)}.md`;
-  const file = path.join(cfg.notesDir, fname);
-  const tags = args.flags.tags ? String(args.flags.tags).split(',').map(s => s.trim()) : [];
-  const fm = `---\ntype: note\ncreated: ${nowIso()}\ntags: ${JSON.stringify(tags)}\n---\n`;
-  const body = `# ${titleLine}\n\n${text}\n`;
-  fs.writeFileSync(file, fm + body);
-  process.stdout.write(`remembered → ${file}\n`);
-}
-
-function cmdPrime() {
-  const help = `vt - vault-task CLI. Tasks as markdown in obsidian-vault/06-tasks/.
-
-Commands:
-  vt create -t task|epic|bug -p N "Title"  Create task. Returns vt-NNNN.
-  vt list [--status open] [--type task] [--epic vt-X] [--mine] [--json] [--all]
-  vt show <id> [--json]
-  vt ready [--json]                        Open tasks not blocked by active deps.
-  vt claim <id> [--by AGENT] [--force]     status=in_progress + claimed_by.
-  vt update <id> --status|--priority|--title|--epic|--tags|--body=-
-  vt close <id> --reason "..."
-  vt dep add|rm <id> --blocked-by <other>
-  vt search <query> [--limit N] [--json]   Vector search via /api/search.
-  vt remember "note" [--tags a,b]          Save note → 09-resources/notes/.
-  vt prime                                  This help.
-
-Workflow:
-  1. vt ready                    pick unblocked work
-  2. vt claim <id>               mark in_progress
-  3. <do work, commit code>
-  4. vt close <id> --reason "..."
-
-Frontmatter schema:
-  id, title, type (task|epic|bug), status (open|in_progress|blocked|done|closed),
-  priority (0-3), created, updated, closed, closed_reason, claimed_by, claimed_at,
-  blocked_by[], discovered_from, epic, tags[]
-
-Storage: obsidian-vault/06-tasks/vt-NNNN-slug.md
-Counter: obsidian-vault/.vt/seq (atomic O_EXCL lock)
-`;
-  process.stdout.write(help);
-}
-
-const COMMANDS = {
-  create: cmdCreate,
-  list: cmdList,
-  ls: cmdList,
-  show: cmdShow,
-  ready: cmdReady,
-  claim: cmdClaim,
-  update: cmdUpdate,
-  close: cmdClose,
-  dep: cmdDep,
-  search: cmdSearch,
-  remember: cmdRemember,
-  prime: cmdPrime,
-  help: cmdPrime,
-  '--help': cmdPrime,
-  '-h': cmdPrime,
+  },
+  async claim(args) {
+    const f = parseFlags(args);
+    const id = f._[0]; if (!id) die('id required');
+    const body = { id, by: f.by || cfg().agent };
+    if (f.force) body.force = true;
+    await call('claim', body);
+    process.stdout.write(`claimed ${id} by ${body.by}\n`);
+  },
+  async close(args) {
+    const f = parseFlags(args);
+    const id = f._[0]; if (!id) die('id required');
+    if (!f.reason) die('--reason required');
+    await call('close', { id, reason: f.reason });
+    process.stdout.write(`closed ${id}\n`);
+  },
+  async update(args) {
+    const f = parseFlags(args);
+    const id = f._[0]; if (!id) die('id required');
+    const body = { id };
+    if (f.status) body.status = f.status;
+    if (f.priority !== undefined) body.priority = parseInt(f.priority, 10);
+    if (f.body === '-') body.body = require('fs').readFileSync(0, 'utf8');
+    else if (f.body) body.body = f.body;
+    await call('update', body);
+    process.stdout.write(`updated ${id}\n`);
+  },
+  async dep(args) {
+    const sub = args.shift();
+    const f = parseFlags(args);
+    const id = f._[0]; if (!id) die('id required');
+    if (!f.blocked_by) die('--blocked-by required');
+    if (sub === 'add') await call('dep_add', { id, blocked_by: f.blocked_by });
+    else if (sub === 'rm') await call('dep_rm', { id, blocked_by: f.blocked_by });
+    else die(`unknown dep subcommand: ${sub}`);
+    process.stdout.write(`ok\n`);
+  },
+  async remember(args) {
+    const f = parseFlags(args);
+    const text = f._.join(' ');
+    if (!text) die('text required');
+    const tags = f.tags ? f.tags.split(',') : [];
+    const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const fm = `---\ntype: note\ntags: [${tags.join(', ')}]\ncreated: ${new Date().toISOString()}\n---\n\n${text}\n`;
+    const c = cfg();
+    const res = await fetch(`${c.url}/api/put`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: `09-resources/notes/${stamp}-${slug}.md`, content: fm, mode: 'create', reindex: false }),
+    });
+    if (!res.ok) die(`remember failed: ${res.status} ${await res.text()}`);
+    process.stdout.write(`remembered\n`);
+  },
+  prime() {
+    process.stdout.write(`vt - vault task tracker (REST client)
+env: VAULT_RAG_URL, VAULT_RAG_API_TOKEN, VT_AGENT
+commands:
+  create [-t TYPE] [-p PRIORITY] [--epic ID] [--blocked-by IDs] "title"
+  list [--all] [--status S] [--type T]
+  ready
+  show <id> [--json]
+  claim <id> [--by NAME] [--force]
+  close <id> --reason "..."
+  update <id> [--status S] [--priority P] [--body TEXT|-]
+  dep add|rm <id> --blocked-by <other>
+  remember "note" [--tags a,b]
+`);
+  },
 };
 
 async function main() {
-  const argv = process.argv.slice(2);
-  const cmd = argv[0];
-  if (!cmd) { cmdPrime(); process.exit(0); }
-  const fn = COMMANDS[cmd];
-  if (!fn) die(`unknown command: ${cmd}. Run 'vt prime' for help.`, 2);
-  if (cmd === 'prime' || cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    fn();
-    return;
-  }
-  let cfg;
-  try { cfg = resolveConfig(); } catch (e) { die(e.message); }
-  const args = parseArgs(argv.slice(1));
-  try {
-    await fn(cfg, args);
-  } catch (e) {
-    die(e.stack || e.message);
-  }
+  const [cmd, ...rest] = process.argv.slice(2);
+  if (!cmd || cmd === '--help' || cmd === '-h') return cmds.prime();
+  const fn = cmds[cmd];
+  if (!fn) die(`unknown command: ${cmd}. Run 'vt prime' for help.`);
+  try { await fn(rest); } catch (e) { die(String(e.message || e)); }
 }
 
 main();
