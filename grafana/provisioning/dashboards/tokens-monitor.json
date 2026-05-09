@@ -272,7 +272,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id) SELECT tc.tool_name, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd, ROUND(AVG(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 6) AS avg_cost_per_call FROM tool_calls tc JOIN events_with_cost ec ON tc.event_id = ec.id JOIN ev_tool_count etc ON tc.event_id = etc.event_id WHERE $__timeFilter(tc.ts) AND ec.('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ec.('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY tc.tool_name ORDER BY cost_usd DESC NULLS LAST LIMIT 50"
+        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id) SELECT tc.tool_name, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd, ROUND(AVG(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 6) AS avg_cost_per_call FROM tool_calls tc JOIN events_with_cost ec ON tc.event_id = ec.id JOIN ev_tool_count etc ON tc.event_id = etc.event_id WHERE $__timeFilter(tc.ts) AND ('${model:csv}' = '' OR ec.model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR ec.project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY tc.tool_name ORDER BY cost_usd DESC NULLS LAST LIMIT 50"
       }]
     },
     {
@@ -335,7 +335,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id), mcp_server AS (SELECT tc.event_id, CASE WHEN tc.tool_name LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN split_part(substring(tc.tool_name FROM 6), '__', 1) ELSE '(non-mcp)' END AS mcp_server FROM tool_calls tc WHERE $__timeFilter(tc.ts)) SELECT ms.mcp_server, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd FROM mcp_server ms JOIN events_with_cost ec ON ms.event_id = ec.id JOIN ev_tool_count etc ON ms.event_id = etc.event_id WHERE ec.('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ec.('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY ms.mcp_server ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
+        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id), mcp_server AS (SELECT tc.event_id, CASE WHEN tc.tool_name LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN split_part(substring(tc.tool_name FROM 6), '__', 1) ELSE '(non-mcp)' END AS mcp_server FROM tool_calls tc WHERE $__timeFilter(tc.ts)) SELECT ms.mcp_server, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd FROM mcp_server ms JOIN events_with_cost ec ON ms.event_id = ec.id JOIN ev_tool_count etc ON ms.event_id = etc.event_id WHERE ('${model:csv}' = '' OR ec.model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR ec.project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY ms.mcp_server ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
       }]
     },
     {
