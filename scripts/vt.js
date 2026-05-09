@@ -190,9 +190,16 @@ async function cmdSearch(cfg, args) {
   const q = args.positional.join(' ').trim();
   if (!q) die('search: query required');
   if (!cfg.apiBase || !cfg.apiToken) die('search: VAULT_RAG_API_URL/DOMAIN + VAULT_RAG_API_TOKEN required');
-  const limit = parseInt(args.flags.limit || '10', 10);
-  const url = `${cfg.apiBase.replace(/\/$/, '')}/api/search?query=${encodeURIComponent(q)}&limit=${limit}`;
-  const res = await fetch(url, { headers: { 'X-Vault-Token': cfg.apiToken } });
+  const k = parseInt(args.flags.limit || args.flags.k || '10', 10);
+  const url = `${cfg.apiBase.replace(/\/$/, '')}/api/search`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.apiToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query: q, k }),
+  });
   if (!res.ok) die(`search: HTTP ${res.status} ${await res.text()}`);
   const data = await res.json();
   if (args.flags.json) { process.stdout.write(JSON.stringify(data, null, 2) + '\n'); return; }
@@ -208,7 +215,7 @@ async function cmdSearch(cfg, args) {
   }
 }
 
-function cmdRemember(cfg, args) {
+async function cmdRemember(cfg, args) {
   const text = args.positional.join(' ').trim();
   if (!text) die('remember: note text required');
   ensureDir(cfg.notesDir);
@@ -219,8 +226,37 @@ function cmdRemember(cfg, args) {
   const tags = args.flags.tags ? String(args.flags.tags).split(',').map(s => s.trim()) : [];
   const fm = `---\ntype: note\ncreated: ${nowIso()}\ntags: ${JSON.stringify(tags)}\n---\n`;
   const body = `# ${titleLine}\n\n${text}\n`;
-  fs.writeFileSync(file, fm + body);
+  const fileContent = fm + body;
+  fs.writeFileSync(file, fileContent);
   process.stdout.write(`remembered → ${file}\n`);
+
+  if (args.flags['no-sync']) return;
+  if (!cfg.apiBase || !cfg.apiToken) {
+    if (!args.flags.quiet) {
+      process.stderr.write(`vt: local-only (no VAULT_RAG_API_URL/TOKEN — note NOT pushed to prod)\n`);
+    }
+    return;
+  }
+  const relPath = path.relative(cfg.vaultDir, file).split(path.sep).join('/');
+  const url = `${cfg.apiBase.replace(/\/$/, '')}/api/put`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${cfg.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: relPath, content: fileContent, mode: 'upsert' }),
+    });
+    if (!res.ok) {
+      process.stderr.write(`vt: prod sync failed: HTTP ${res.status} ${await res.text()}\n`);
+      return;
+    }
+    const data = await res.json();
+    process.stdout.write(`synced → ${cfg.apiBase}/api/get?path=${encodeURIComponent(relPath)} (chunks=${data.chunks ?? '?'})\n`);
+  } catch (e) {
+    process.stderr.write(`vt: prod sync error: ${e.message}\n`);
+  }
 }
 
 function cmdPrime() {
@@ -235,8 +271,10 @@ Commands:
   vt update <id> --status|--priority|--title|--epic|--tags|--body=-
   vt close <id> --reason "..."
   vt dep add|rm <id> --blocked-by <other>
-  vt search <query> [--limit N] [--json]   Vector search via /api/search.
-  vt remember "note" [--tags a,b]          Save note → 09-resources/notes/.
+  vt search <query> [--limit N] [--json]   Vector search via /api/search (POST + Bearer).
+  vt remember "note" [--tags a,b] [--no-sync] [--quiet]
+                                           Save note → 09-resources/notes/, then auto-sync to prod
+                                           via /api/put (requires VAULT_RAG_API_URL + _TOKEN env).
   vt prime                                  This help.
 
 Workflow:
