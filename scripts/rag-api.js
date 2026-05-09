@@ -31,7 +31,7 @@ const PG = {
 };
 
 const AGENT_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const WRITABLE_PREFIXES = ['00-inbox/', '05-sessions/'];
+const WRITABLE_PREFIXES = ['00-inbox/', '05-sessions/', '06-tasks/', '09-resources/notes/'];
 
 let pg;
 
