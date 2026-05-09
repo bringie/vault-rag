@@ -128,3 +128,42 @@ test('task_update rejects bad status', async () => {
   const res = await handlers.update({ vault, body: { id: 'vt-0001', status: 'weird' } });
   assert.strictEqual(res.status, 400);
 });
+
+test('task_ready returns unblocked open sorted by priority asc', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'low', priority: 3 } });
+  await handlers.create({ vault, body: { title: 'high', priority: 0 } });
+  const res = await handlers.ready({ vault, body: {} });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body[0].id, 'vt-0002');
+});
+
+test('task_dep_add blocks ready', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'a' } });
+  await handlers.create({ vault, body: { title: 'b' } });
+  await handlers.dep_add({ vault, body: { id: 'vt-0002', blocked_by: 'vt-0001' } });
+  const res = await handlers.ready({ vault, body: {} });
+  const ids = res.body.map(t => t.id);
+  assert.deepStrictEqual(ids, ['vt-0001']);
+});
+
+test('task_dep_add idempotent', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'a' } });
+  await handlers.create({ vault, body: { title: 'b' } });
+  await handlers.dep_add({ vault, body: { id: 'vt-0002', blocked_by: 'vt-0001' } });
+  await handlers.dep_add({ vault, body: { id: 'vt-0002', blocked_by: 'vt-0001' } });
+  const show = await handlers.show({ vault, body: { id: 'vt-0002' } });
+  assert.deepStrictEqual(show.body.blocked_by, ['vt-0001']);
+});
+
+test('task_dep_rm unblocks', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'a' } });
+  await handlers.create({ vault, body: { title: 'b' } });
+  await handlers.dep_add({ vault, body: { id: 'vt-0002', blocked_by: 'vt-0001' } });
+  await handlers.dep_rm({ vault, body: { id: 'vt-0002', blocked_by: 'vt-0001' } });
+  const show = await handlers.show({ vault, body: { id: 'vt-0002' } });
+  assert.deepStrictEqual(show.body.blocked_by, []);
+});

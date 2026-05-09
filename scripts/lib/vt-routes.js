@@ -3,6 +3,7 @@
 
 const path = require('node:path');
 const vtfs = require('./vt-fs');
+const vtgraph = require('./vt-graph');
 
 const TYPES = new Set(['task', 'epic', 'bug', 'chore']);
 const STATUSES = new Set(['open', 'in_progress', 'blocked', 'closed']);
@@ -93,6 +94,42 @@ async function update({ vault, body }) {
   return { status: 200, body: { id, status: t.fm.status, priority: t.fm.priority } };
 }
 
+async function ready({ vault }) {
+  const cfg = cfgFor(vault);
+  const tasks = vtfs.listTasks(cfg.tasksDir);
+  const r = vtgraph.readyTasks(tasks).map(t => ({
+    id: t.fm.id, title: t.fm.title, type: t.fm.type, priority: t.fm.priority,
+    epic: t.fm.epic || null,
+    blocked_by: t.fm.blocked_by || [], created: t.fm.created,
+  }));
+  return { status: 200, body: r };
+}
+
+async function dep_add({ vault, body }) {
+  const { id, blocked_by } = body || {};
+  if (!id || !blocked_by) return { status: 400, body: { error: 'id and blocked_by required' } };
+  const cfg = cfgFor(vault);
+  const t = vtfs.readTask(cfg.tasksDir, id);
+  if (!t) return { status: 404, body: { error: `task not found: ${id}` } };
+  const arr = Array.isArray(t.fm.blocked_by) ? t.fm.blocked_by : [];
+  if (!arr.includes(blocked_by)) arr.push(blocked_by);
+  t.fm.blocked_by = arr;
+  vtfs.writeTask(t.file, t.fm, t.body);
+  return { status: 200, body: { id, blocked_by: arr } };
+}
+
+async function dep_rm({ vault, body }) {
+  const { id, blocked_by } = body || {};
+  if (!id || !blocked_by) return { status: 400, body: { error: 'id and blocked_by required' } };
+  const cfg = cfgFor(vault);
+  const t = vtfs.readTask(cfg.tasksDir, id);
+  if (!t) return { status: 404, body: { error: `task not found: ${id}` } };
+  const arr = (t.fm.blocked_by || []).filter(x => x !== blocked_by);
+  t.fm.blocked_by = arr;
+  vtfs.writeTask(t.file, t.fm, t.body);
+  return { status: 200, body: { id, blocked_by: arr } };
+}
+
 async function close({ vault, body }) {
   const { id, reason } = body || {};
   if (!id) return { status: 400, body: { error: 'id required' } };
@@ -107,6 +144,6 @@ async function close({ vault, body }) {
   return { status: 200, body: { id, status: 'closed' } };
 }
 
-const handlers = { create, list, show, claim, update, close };
+const handlers = { create, list, show, claim, update, close, ready, dep_add, dep_rm };
 
 module.exports = { handlers, cfgFor };
