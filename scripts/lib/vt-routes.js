@@ -30,6 +30,35 @@ async function create({ vault, body }) {
   return { status: 200, body: { id, path: path.relative(vault, file) } };
 }
 
-const handlers = { create };
+async function list({ vault, body }) {
+  const cfg = cfgFor(vault);
+  const { all, status, type } = body || {};
+  let tasks = vtfs.listTasks(cfg.tasksDir).map(t => t.fm);
+  if (!all && !status) tasks = tasks.filter(t => t.status !== 'closed');
+  if (status) tasks = tasks.filter(t => t.status === status);
+  if (type) tasks = tasks.filter(t => t.type === type);
+  const slim = tasks.map(t => ({
+    id: t.id, title: t.title, type: t.type, status: t.status, priority: t.priority,
+    claimed_by: t.claimed_by || null, blocked_by: t.blocked_by || [],
+    epic: t.epic || null, created: t.created,
+  }));
+  return { status: 200, body: slim };
+}
+
+async function close({ vault, body }) {
+  const { id, reason } = body || {};
+  if (!id) return { status: 400, body: { error: 'id required' } };
+  if (!reason) return { status: 400, body: { error: 'reason required' } };
+  const cfg = cfgFor(vault);
+  const t = vtfs.readTask(cfg.tasksDir, id);
+  if (!t) return { status: 404, body: { error: `task not found: ${id}` } };
+  t.fm.status = 'closed';
+  t.fm.closed_reason = reason;
+  t.fm.closed = vtfs.nowIso();
+  vtfs.writeTask(t.file, t.fm, t.body);
+  return { status: 200, body: { id, status: 'closed' } };
+}
+
+const handlers = { create, list, close };
 
 module.exports = { handlers, cfgFor };

@@ -32,3 +32,31 @@ test('task_create rejects missing title', async () => {
   assert.strictEqual(res.status, 400);
   assert.match(res.body.error, /title/);
 });
+
+test('task_list returns open tasks by default', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'a' } });
+  await handlers.create({ vault, body: { title: 'b' } });
+  await handlers.close({ vault, body: { id: 'vt-0002', reason: 'done' } });
+  const res = await handlers.list({ vault, body: {} });
+  assert.strictEqual(res.status, 200);
+  const ids = res.body.map(t => t.id);
+  assert.deepStrictEqual(ids, ['vt-0001']);
+});
+
+test('task_list all=true returns closed too', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'a' } });
+  await handlers.close({ vault, body: { id: 'vt-0001', reason: 'x' } });
+  const res = await handlers.list({ vault, body: { all: true } });
+  assert.strictEqual(res.body.length, 1);
+});
+
+test('task_list filters by status and type', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'a', type: 'epic' } });
+  await handlers.create({ vault, body: { title: 'b', type: 'task' } });
+  const res = await handlers.list({ vault, body: { type: 'epic' } });
+  assert.strictEqual(res.body.length, 1);
+  assert.strictEqual(res.body[0].type, 'epic');
+});
