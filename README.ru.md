@@ -268,6 +268,18 @@ obsidian-vault/
 +-- index.md            # точка входа
 ```
 
+### Auto-sync волта (опционально)
+
+Поставь `VAULT_GIT_REMOTE` в `.env` и каждая запись через `/api/put` или `/api/task/*` триггерит debounced commit + push (окно склейки 1.5с, fire-and-forget). При конфликте rebase разошедшийся патч сохраняется в `_refactor/conflicts/conflict-<ts>-<host>.patch`, а рабочее дерево hard-reset-ится к `origin/main` чтобы синк восстановился.
+
+- В скелете лежит `vault-skeleton/.sync/vault-sync.sh` (режимы: `pull` / `push` / `flush`).
+- Параллельные вызовы сериализуются через lockdir (`.sync/.lock`).
+- Коммиты с одного хоста в пределах 5 мин squash-атся перед push (только пока ещё впереди `origin/main`, чтобы не переписывать pushed-историю).
+- SSH-ключ из хостового `/root/.ssh/` смонтирован read-only в `vault-rag-api`.
+- Ручной flush: `bash obsidian-vault/.sync/vault-sync.sh flush`.
+
+Оставь `VAULT_GIT_REMOTE` пустым - выключено. Записи всё равно лягут на диск, просто без auto-commit/push.
+
 ---
 
 ## Установка
@@ -320,6 +332,7 @@ cp .env.example .env
 | `INDEXER_INTERVAL` | нет | ofelia cron-выражение, дефолт `@every 5m` |
 | `WATCHDOG_THRESHOLD_MIN` | нет | Убивать прогоны старше N мин, дефолт `30` |
 | `AUDIT_RETENTION_DAYS` | нет | Retention `vault_audit`, дефолт `90` |
+| `VAULT_GIT_REMOTE` | нет | Если задан - каждая запись в `/api/put` и `/api/task/*` коммитит волт и пушит на этот remote (debounce 1.5с, fire-and-forget). Например: `ssh://git@your-forgejo:222/user/obsidian-vault.git`. Нужен SSH-ключ на хосте `/root/.ssh/`. Пусто = выключено. |
 
 Режимы `deploy.sh`:
 
@@ -433,6 +446,10 @@ curl -sS -X POST -H "Authorization: Bearer $API_TOKEN" \
   `05-sessions/` (транскрипты) и `09-resources/notes/` (знания).
 - Для задач используй `vt` CLI на хосте (не MCP). Задачи живут в
   `06-tasks/vt-NNNN-slug.md`. `vt ready` - найти работу, `vt claim` - взять.
+- Записи через `put` и `task_*` сами коммитятся и пушатся в git remote
+  (debounce 1.5с). НЕ запускай vault-sync.sh руками во время обычной
+  работы - это автоматика. Коммит появится через ~2с после твоей записи.
+  Ручной flush - только если ты редактировал файлы в обход MCP/REST.
 
 Волт - source of truth. Сначала ищи, потом спрашивай. Сохраняй важное.
 ```
@@ -452,6 +469,9 @@ Linux-хосте. Работай по шагам. Проверяй каждый 
 Входы, которые должен дать пользователь (спроси, если не задано):
 - VAULT_RAG_DOMAIN: домен, направленный на этот хост (A/AAAA-запись).
 - Опционально: ACME email для Let's Encrypt.
+- Опционально: VAULT_GIT_REMOTE (например ssh://git@host:222/user/obsidian-vault.git)
+  чтобы включить auto-commit + push изменений волта. Нужен SSH-ключ
+  на хосте `/root/.ssh/`. Пусто - выключено.
 
 Шаги:
 1. Pre-flight проверки:

@@ -270,6 +270,25 @@ obsidian-vault/
 
 ---
 
+## Auto-sync del vault (opcional)
+
+Si seteás `VAULT_GIT_REMOTE` en `.env`, vault-rag trata cada `/api/put` y `/api/task/*` como un commit. El proceso API debouncea las escrituras 1.5s y luego dispara `obsidian-vault/.sync/vault-sync.sh push`, que:
+
+1. `git add -A` + `git commit` (taggeado por host: `auto-sync <hostname> <iso-ts>`).
+2. Aplasta auto-commits consecutivos del mismo host dentro de los últimos 5 min, pero solo mientras estén por delante de `origin/main` (nunca reescribe historia ya pusheada).
+3. `git pull --rebase --autostash origin main`. Si el rebase falla, los commits divergentes se guardan como patch en `_refactor/conflicts/conflict-<ts>-<host>.patch`, hard-reset a `origin/main`, y el snapshot del conflicto se commitea aparte.
+4. `git push origin main`.
+
+Concurrency-safe vía lockdir (`.sync/.lock`). Fire-and-forget: la respuesta REST no espera al git. Para forzar un flush bloqueante:
+
+```bash
+docker exec vault-rag-api bash /vault/.sync/vault-sync.sh flush
+```
+
+Deshabilitado cuando `VAULT_GIT_REMOTE` está vacío. Para activarlo después de un install: seteá la variable, corré `./deploy.sh --bootstrap-vault-git`, y recreá `vault-rag-api`.
+
+---
+
 ## Instalación
 
 Requisitos: host Linux con `docker`, `docker compose`, `openssl`, `envsubst`, y un dominio apuntando al host.
@@ -320,6 +339,7 @@ Define en `.env` antes de `./deploy.sh install`:
 | `INDEXER_INTERVAL` | no | Expresión cron de ofelia, default `@every 5m` |
 | `WATCHDOG_THRESHOLD_MIN` | no | Mata corridas más viejas que N min, default `30` |
 | `AUDIT_RETENTION_DAYS` | no | Retention de `vault_audit`, default `90` |
+| `VAULT_GIT_REMOTE` | no | Si está seteado, cada `/api/put` y `/api/task/*` auto-commitea + pushea el vault a este remote (debounce 1.5s). Vacío = auto-sync deshabilitado. |
 
 Modos de `deploy.sh`:
 
@@ -432,6 +452,11 @@ Convenciones:
 - Para las tasks usa la CLI `vt` en el host (no MCP). Las tasks viven
   en `06-tasks/vt-NNNN-slug.md`. `vt ready` para encontrar trabajo,
   `vt claim` para tomarlo.
+- Las escrituras vía `put` y `task_*` auto-commitean y pushean el vault al
+  git remote configurado (debounce 1.5s). NO corras `vault-sync.sh` a mano
+  durante el trabajo normal - es automático. Esperá que los commits aparezcan
+  ~2s después de tu escritura. Manual flush solo si editaste archivos por
+  fuera de MCP/REST.
 
 El vault es la fuente de verdad. Buscá antes de preguntar. Persiste lo
 que importa.
@@ -452,6 +477,10 @@ con el endpoint MCP accesible y un esqueleto de vault fresco indexado.
 Inputs que el usuario debe proveer (preguntá si faltan):
 - VAULT_RAG_DOMAIN: un dominio que apunte a este host (A/AAAA seteado).
 - Opcional: email ACME para Let's Encrypt.
+- Opcional: VAULT_GIT_REMOTE - URL git (ssh o https) donde el vault va a
+  auto-commitear + pushear cada escritura. Vacío = sin auto-sync. Si lo
+  seteás, después del install corré `./deploy.sh --bootstrap-vault-git`
+  para inicializar el repo en `obsidian-vault/`.
 
 Pasos:
 1. Pre-flight checks:

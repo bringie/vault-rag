@@ -268,6 +268,18 @@ obsidian-vault/
 +-- index.md            # entry point
 ```
 
+### Vault auto-sync (optional)
+
+Set `VAULT_GIT_REMOTE` in `.env` and every `/api/put` or `/api/task/*` write triggers a debounced commit + push (1.5s coalesce window, fire-and-forget). On rebase conflict, the diverged patch lands in `_refactor/conflicts/conflict-<ts>-<host>.patch` and the working tree hard-resets to `origin/main` so sync recovers.
+
+- Skeleton ships `vault-skeleton/.sync/vault-sync.sh` (modes: `pull` / `push` / `flush`).
+- Concurrent calls are serialized via a lockdir (`.sync/.lock`).
+- Same-host commits within 5 min are squashed before push (only while still ahead of `origin/main`, never rewriting pushed history).
+- SSH key at host `/root/.ssh/` is mounted read-only into `vault-rag-api`.
+- Manual flush: `bash obsidian-vault/.sync/vault-sync.sh flush`.
+
+Leave `VAULT_GIT_REMOTE` empty to disable - all writes still land on disk, just no auto-commit/push.
+
 ---
 
 ## Install
@@ -320,6 +332,7 @@ Set in `.env` before `./deploy.sh install`:
 | `INDEXER_INTERVAL` | no | ofelia cron expr, default `@every 5m` |
 | `WATCHDOG_THRESHOLD_MIN` | no | Kill runs older than N min, default `30` |
 | `AUDIT_RETENTION_DAYS` | no | `vault_audit` retention, default `90` |
+| `VAULT_GIT_REMOTE` | no | If set, every `/api/put` and `/api/task/*` write commits the vault and pushes to this remote (1.5s debounce, fire-and-forget). E.g. `ssh://git@your-forgejo:222/user/obsidian-vault.git`. Requires SSH key at host `/root/.ssh/`. Empty = disabled. |
 
 `deploy.sh` modes:
 
@@ -433,6 +446,10 @@ Conventions:
   `05-sessions/` (transcripts) and `09-resources/notes/` (knowledge).
 - For tasks, use the `vt` CLI on the host (not MCP). Tasks live in
   `06-tasks/vt-NNNN-slug.md`. `vt ready` to find work, `vt claim` to take it.
+- Writes via `put` and `task_*` auto-commit and push the vault to the
+  configured git remote (1.5s debounce). Do NOT run vault-sync.sh by hand
+  during normal work - it's automatic. Expect commits to appear ~2s after
+  your write. Manual flush only if you edited files outside MCP/REST.
 
 The vault is the source of truth. Search before asking. Persist what matters.
 ```
@@ -452,6 +469,9 @@ MCP endpoint reachable and a fresh vault skeleton indexed.
 Inputs the user must supply (ask if missing):
 - VAULT_RAG_DOMAIN: a domain pointing at this host (A/AAAA record set).
 - Optional: ACME email for Let's Encrypt.
+- Optional: VAULT_GIT_REMOTE (e.g. ssh://git@host:222/user/obsidian-vault.git)
+  to enable auto-commit + push of vault changes. Requires SSH key at
+  /root/.ssh/ on the host. Leave empty to disable.
 
 Steps:
 1. Pre-flight checks:

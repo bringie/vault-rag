@@ -17,6 +17,7 @@ Body: `{"path": "00-inbox/foo.md", "content": "...", "mode": "create|upsert|appe
 - `content` is the markdown body (key is `content`, NOT `body`).
 - `mode=append` splits by `# heading` -> multiple chunks.
 - `reindex=true` (default) embeds immediately; `false` defers to next cron tick.
+- Auto-sync: if `VAULT_GIT_REMOTE` is set, the write triggers a debounced (1.5s) commit + push via `obsidian-vault/.sync/vault-sync.sh`. Fire-and-forget; the response does not wait for git.
 
 ### `POST /api/search`
 Body: `{"query": "...", "k": 5}`. Top-K vector search.
@@ -50,6 +51,9 @@ Body: `{id, status?, priority?, body?}`.
 
 ### `POST /api/task/dep_add` / `POST /api/task/dep_rm`
 Body: `{id, blocked_by}`. Idempotent.
+
+### Auto-sync on task writes
+Every `/api/task/create`, `/claim`, `/close`, `/update`, `/dep_add`, `/dep_rm` triggers the same debounced (1.5s) commit + push as `/api/put` when `VAULT_GIT_REMOTE` is set. Read-only routes (`/list`, `/ready`, `/show`) do not.
 
 ## MCP
 

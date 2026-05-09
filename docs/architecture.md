@@ -28,6 +28,17 @@
 5. Every op recorded in `vault_audit` with `sha_before` / `sha_after`.
 6. Search: `/api/search?query=X` -> embed query -> cosine search top-K from `chunks`.
 
+## Git auto-sync layer
+
+When `VAULT_GIT_REMOTE` is set, the API process runs `scripts/lib/git-sync.js`, which debounces (1.5s) every `/api/put` and `/api/task/*` write into a single `vault-sync.sh push` call:
+
+1. `git add -A` + `git commit` (host-tagged: `auto-sync <hostname> <iso-ts>`).
+2. Squash consecutive same-host auto-sync commits within 5 min, but only while still ahead of `origin/main` (never rewrite pushed history).
+3. `git pull --rebase --autostash origin main`. On conflict: `git format-patch` the diverged commits to `_refactor/conflicts/conflict-<ts>-<host>.patch`, `rebase --abort`, `reset --hard origin/main`, commit the conflict snapshot.
+4. `git push origin main`.
+
+Concurrency-safe via `.sync/.lock` (mkdir lockdir). Disabled when `VAULT_GIT_REMOTE` is empty.
+
 ## Schema
 
 - `chunks` (path, idx PK, content, vector(768) emb, sha) - HNSW index

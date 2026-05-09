@@ -6,6 +6,7 @@ set -euo pipefail
 #   --check-deps        verify required binaries are on PATH
 #   --bootstrap-env     copy .env.example -> .env, fill change-me with random secrets
 #   --bootstrap-vault   seed obsidian-vault/ from vault-skeleton/ if empty
+#   --bootstrap-vault-git  init obsidian-vault/.git + push to VAULT_GIT_REMOTE (no-op if unset)
 #   --render-caddy      envsubst Caddyfile.tmpl -> Caddyfile using .env
 #   --install-scripts-deps  npm ci inside scripts/ (populates node_modules for bind mount)
 # No flag = full install.
@@ -49,6 +50,26 @@ bootstrap_vault() {
   fi
 }
 
+bootstrap_vault_git() {
+  # Init vault as git repo + push to VAULT_GIT_REMOTE if set. No-op otherwise.
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  [ -n "${VAULT_GIT_REMOTE:-}" ] || return 0
+  if [ ! -d obsidian-vault/.git ]; then
+    git -C obsidian-vault init -q -b main
+    git -C obsidian-vault config user.name  "vault-rag-api"
+    git -C obsidian-vault config user.email "vault-rag-api@$(hostname)"
+    git -C obsidian-vault remote add origin "$VAULT_GIT_REMOTE" 2>/dev/null || \
+      git -C obsidian-vault remote set-url origin "$VAULT_GIT_REMOTE"
+    git -C obsidian-vault add -A
+    git -C obsidian-vault diff --cached --quiet || \
+      git -C obsidian-vault commit -q -m "initial vault skeleton"
+    git -C obsidian-vault push -u origin main 2>/dev/null || true
+  fi
+}
+
 render_caddy() {
   set -a
   # shellcheck disable=SC1091
@@ -62,6 +83,7 @@ install_full() {
   check_deps
   bootstrap_env
   bootstrap_vault
+  bootstrap_vault_git
   install_scripts_deps
   render_caddy
   docker compose -p vault-rag up -d --build
@@ -89,6 +111,7 @@ case "$CMD" in
   --check-deps) check_deps ;;
   --bootstrap-env) bootstrap_env ;;
   --bootstrap-vault) bootstrap_vault ;;
+  --bootstrap-vault-git) bootstrap_vault_git ;;
   --render-caddy) render_caddy ;;
   --install-scripts-deps) install_scripts_deps ;;
   install) install_full ;;
