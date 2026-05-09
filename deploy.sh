@@ -46,7 +46,7 @@ render_caddy() {
   source .env
   set +a
   # shellcheck disable=SC2016
-  envsubst '${VAULT_RAG_DOMAIN}' < Caddyfile.tmpl > Caddyfile
+  envsubst '${VAULT_RAG_DOMAIN} ${VAULT_RAG_ACME_EMAIL}' < Caddyfile.tmpl > Caddyfile
 }
 
 install_full() {
