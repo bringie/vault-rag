@@ -15,7 +15,7 @@ const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 const VAULT = process.env.VAULT_PATH || '/vault';
 const TOKEN = process.env.VAULT_RAG_API_TOKEN;
-const PORT  = 5679;
+const PORT  = parseInt(process.env.PORT || '5679', 10);
 
 if (!TOKEN) {
   console.error('[rag-api] FATAL: VAULT_RAG_API_TOKEN not set');
@@ -244,6 +244,7 @@ const TASK_ROUTES = {
 };
 
 const server = http.createServer(async (req, res) => {
+  if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
@@ -276,7 +277,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 (async () => {
-  await pgConnect();
+  try { await pgConnect(); }
+  catch (e) { console.error(`[rag-api] pg connect deferred: ${e.message}`); pg = null; }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${PG.host}/${PG.database}, auth=Bearer)`);
   });

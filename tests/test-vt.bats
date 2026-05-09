@@ -1,24 +1,26 @@
 #!/usr/bin/env bats
-# vt CLI tests. Each test uses fresh VT_VAULT_DIR.
+# vt CLI tests via REST against in-process rag-api.
 
 setup() {
-  export TMPDIR_TEST=$(mktemp -d)
-  export VT_VAULT_DIR="$TMPDIR_TEST"
-  export VT_AGENT="tester"
-  export VT="/root/work/vault-rag-oss/scripts/bin/vt"
+  source tests/fixtures/start-test-rag-api.sh
+  export VAULT_RAG_URL="http://127.0.0.1:$RAG_PORT"
+  export VAULT_RAG_API_TOKEN=test
+  export VT_AGENT=tester
+  export VT="/root/work/vault-rag-oss/.claude/worktrees/feat-vt-rest-mcp/scripts/bin/vt"
 }
 
 teardown() {
-  rm -rf "$TMPDIR_TEST"
+  kill "$RAG_PID" 2>/dev/null || true
+  rm -rf "$VT_VAULT"
 }
 
 @test "create returns vt-0001 and writes file" {
   run "$VT" create -t epic -p 1 "First epic"
   [ "$status" -eq 0 ]
   [[ "$output" == vt-0001* ]]
-  [ -f "$TMPDIR_TEST/06-tasks/vt-0001-first-epic.md" ]
-  [ -f "$TMPDIR_TEST/.vt/seq" ]
-  grep -q '^1$' "$TMPDIR_TEST/.vt/seq"
+  [ -f "$VT_VAULT/06-tasks/vt-0001-first-epic.md" ]
+  [ -f "$VT_VAULT/.vt/seq" ]
+  grep -q '^1$' "$VT_VAULT/.vt/seq"
 }
 
 @test "counter increments on second create" {
@@ -26,12 +28,12 @@ teardown() {
   run "$VT" create "Second"
   [ "$status" -eq 0 ]
   [[ "$output" == vt-0002* ]]
-  grep -q '^2$' "$TMPDIR_TEST/.vt/seq"
+  grep -q '^2$' "$VT_VAULT/.vt/seq"
 }
 
 @test "frontmatter has required fields" {
   "$VT" create -t task -p 1 "Demo" >/dev/null
-  local f="$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
+  local f="$VT_VAULT/06-tasks/vt-0001-demo.md"
   grep -q '^id: vt-0001' "$f"
   grep -q '^title: Demo' "$f"
   grep -q '^type: task' "$f"
@@ -92,14 +94,14 @@ teardown() {
   "$VT" create "demo" >/dev/null
   run "$VT" claim vt-0001
   [ "$status" -eq 0 ]
-  grep -q '^status: in_progress' "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
-  grep -q '^claimed_by: tester' "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
+  grep -q '^status: in_progress' "$VT_VAULT/06-tasks/vt-0001-demo.md"
+  grep -q '^claimed_by: tester' "$VT_VAULT/06-tasks/vt-0001-demo.md"
 }
 
 @test "claim --by overrides agent" {
   "$VT" create "demo" >/dev/null
   "$VT" claim vt-0001 --by alice >/dev/null
-  grep -q '^claimed_by: alice' "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
+  grep -q '^claimed_by: alice' "$VT_VAULT/06-tasks/vt-0001-demo.md"
 }
 
 @test "claim already-claimed needs --force" {
@@ -109,22 +111,22 @@ teardown() {
   [ "$status" -ne 0 ]
   run "$VT" claim vt-0001 --by bob --force
   [ "$status" -eq 0 ]
-  grep -q '^claimed_by: bob' "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
+  grep -q '^claimed_by: bob' "$VT_VAULT/06-tasks/vt-0001-demo.md"
 }
 
 @test "close sets status=closed + reason" {
   "$VT" create "demo" >/dev/null
   run "$VT" close vt-0001 --reason "fixed"
   [ "$status" -eq 0 ]
-  grep -q '^status: closed' "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
-  grep -q "^closed_reason: fixed" "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
+  grep -q '^status: closed' "$VT_VAULT/06-tasks/vt-0001-demo.md"
+  grep -q "^closed_reason: fixed" "$VT_VAULT/06-tasks/vt-0001-demo.md"
 }
 
 @test "update --status changes status" {
   "$VT" create "demo" >/dev/null
   run "$VT" update vt-0001 --status blocked
   [ "$status" -eq 0 ]
-  grep -q '^status: blocked' "$TMPDIR_TEST/06-tasks/vt-0001-demo.md"
+  grep -q '^status: blocked' "$VT_VAULT/06-tasks/vt-0001-demo.md"
 }
 
 @test "update rejects bad status" {
@@ -190,17 +192,16 @@ teardown() {
 @test "remember writes note to 09-resources/notes" {
   run "$VT" remember "Pattern: use foo for bar" --tags pattern,arch
   [ "$status" -eq 0 ]
-  ls "$TMPDIR_TEST/09-resources/notes/" | grep -q '\.md$'
-  local f=$(ls "$TMPDIR_TEST/09-resources/notes/"*.md | head -1)
+  ls "$VT_VAULT/09-resources/notes/" | grep -q '\.md$'
+  local f=$(ls "$VT_VAULT/09-resources/notes/"*.md | head -1)
   grep -q '^type: note' "$f"
   grep -q 'Pattern: use foo for bar' "$f"
 }
 
-@test "missing vault dir errors" {
-  export VT_VAULT_DIR="/nonexistent/path/$$"
+@test "unreachable server errors" {
+  export VAULT_RAG_URL="http://127.0.0.1:1"
   run "$VT" list
   [ "$status" -ne 0 ]
-  [[ "$output" == *"vault directory not found"* ]]
 }
 
 @test "create with --epic + blocked-by sets fields" {
@@ -208,7 +209,7 @@ teardown() {
   "$VT" create "blocker" >/dev/null
   run "$VT" create --epic vt-0001 --blocked-by vt-0002 "child"
   [ "$status" -eq 0 ]
-  local f=$(ls "$TMPDIR_TEST/06-tasks/vt-0003"*.md)
+  local f=$(ls "$VT_VAULT/06-tasks/vt-0003"*.md)
   grep -q '^epic: vt-0001' "$f"
   grep -q 'vt-0002' "$f"
 }

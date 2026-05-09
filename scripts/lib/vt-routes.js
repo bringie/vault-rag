@@ -99,9 +99,9 @@ async function ready({ vault }) {
   const cfg = cfgFor(vault);
   const tasks = vtfs.listTasks(cfg.tasksDir);
   const r = vtgraph.readyTasks(tasks).map(t => ({
-    id: t.fm.id, title: t.fm.title, type: t.fm.type, priority: t.fm.priority,
-    epic: t.fm.epic || null,
-    blocked_by: t.fm.blocked_by || [], created: t.fm.created,
+    id: t.fm.id, title: t.fm.title, type: t.fm.type, status: 'open',
+    priority: t.fm.priority, epic: t.fm.epic || null,
+    blocked_by: [], created: t.fm.created,
   }));
   return { status: 200, body: r };
 }
