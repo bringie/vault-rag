@@ -45,6 +45,17 @@ async function list({ vault, body }) {
   return { status: 200, body: slim };
 }
 
+async function show({ vault, body }) {
+  const b = body || {};
+  const { id, json = true } = b;
+  if (!id) return { status: 400, body: { error: 'id required' } };
+  const cfg = cfgFor(vault);
+  const t = vtfs.readTask(cfg.tasksDir, id);
+  if (!t) return { status: 404, body: { error: `task not found: ${id}` } };
+  if (!json) return { status: 200, body: { markdown: t.text } };
+  return { status: 200, body: { ...t.fm, body: t.body } };
+}
+
 async function close({ vault, body }) {
   const { id, reason } = body || {};
   if (!id) return { status: 400, body: { error: 'id required' } };
@@ -59,6 +70,6 @@ async function close({ vault, body }) {
   return { status: 200, body: { id, status: 'closed' } };
 }
 
-const handlers = { create, list, close };
+const handlers = { create, list, show, close };
 
 module.exports = { handlers, cfgFor };

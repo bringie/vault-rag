@@ -60,3 +60,27 @@ test('task_list filters by status and type', async () => {
   assert.strictEqual(res.body.length, 1);
   assert.strictEqual(res.body[0].type, 'epic');
 });
+
+test('task_show returns full json by default', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  const res = await handlers.show({ vault, body: { id: 'vt-0001' } });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.id, 'vt-0001');
+  assert.strictEqual(res.body.title, 'demo');
+  assert.ok(typeof res.body.body === 'string');
+});
+
+test('task_show json=false returns rendered markdown', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  const res = await handlers.show({ vault, body: { id: 'vt-0001', json: false } });
+  assert.strictEqual(res.status, 200);
+  assert.match(res.body.markdown, /^---\nid: vt-0001/);
+});
+
+test('task_show 404 on missing', async () => {
+  const vault = tmpVault();
+  const res = await handlers.show({ vault, body: { id: 'vt-9999' } });
+  assert.strictEqual(res.status, 404);
+});
