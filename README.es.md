@@ -65,7 +65,7 @@ Si quieres un vault que sea *legible para agentes y humanos, manteniendo el cont
 
 ## Cómo funciona en la práctica
 
-**Un agente necesita contexto:** `GET /api/search?query=postgres+migration`
+**Un agente necesita contexto:** `POST /api/search` con `{"query":"postgres migration","k":5}`
 Devuelve los top-k chunks con rutas de archivo, scores y `[[backlinks]]`. Entiende el vault. Coste: cero por consulta (embeddings locales).
 
 **Sueltas una nota en `00-inbox/`:** ofelia dispara `vault-indexer` cada 5 min.
@@ -75,7 +75,7 @@ El indexador chunkea archivos nuevos, los embebe vía Ollama, hace upsert en pgv
 Pone `status: in_progress`, `claimed_by: agent-name` en el frontmatter de la tarea. Otros agentes la ven como not-ready en `vt ready`. Contador atómico O_EXCL en `obsidian-vault/.vt/seq` - sin claims dobles.
 
 **Quieres conectar un nuevo agente:** apúntalo a `https://your-domain/mcp`.
-El servidor MCP expone search, read, write, list, backlinks. Misma interfaz para todos los agentes.
+El servidor MCP expone tools `search`, `get`, `put`, `backlinks`. Misma interfaz para todos los agentes.
 
 **Quieres saber cuánto costó la noche:** `https://your-domain/grafana/`
 Token-monitor ingiere cada llamada LLM de cada agente. El dashboard muestra tokens por modelo, coste por proyecto, requests por agente. Sin adivinanzas.
@@ -83,7 +83,7 @@ Token-monitor ingiere cada llamada LLM de cada agente. El dashboard muestra toke
 **Una corrida se rompió en silencio:** El watchdog loguea jobs muertos.
 `SELECT * FROM job_runs WHERE status='killed'` te dice qué job, cuándo y cuánto corrió antes de morir.
 
-**Pregunta sobre el grafo de backlinks:** `GET /api/backlinks?file=02-projects/foo.md`
+**Pregunta sobre el grafo de backlinks:** `POST /api/backlinks` con `{"path":"02-projects/foo.md"}`
 Devuelve `[[wikilinks]]` inversos resueltos en tiempo de indexación. Sin escaneos on-the-fly.
 
 **Commits cambios al vault:** Forgejo guarda la historia git del vault.
@@ -168,7 +168,7 @@ Un script. Genera secretos, renderiza Caddyfile desde plantilla, levanta 14 cont
 
 | Contenedor | Rol |
 |---|---|
-| `vault-rag-api` | REST: `/api/search`, `/api/read`, `/api/write`, `/api/backlinks`, `/api/healthz` |
+| `vault-rag-api` | REST: `/api/search`, `/api/get`, `/api/put`, `/api/backlinks`, `/api/healthz` (todos POST con JSON, excepto healthz GET) |
 | `vault-rag-mcp` | Servidor MCP, mismas operaciones expuestas como MCP tools |
 | `vault-rag-tokmon-ingest` | Endpoint de seguimiento de coste, acepta eventos de llamadas LLM de agentes |
 
@@ -282,7 +282,7 @@ Después de instalar:
 | Endpoint | Qué |
 |---|---|
 | `https://${VAULT_RAG_DOMAIN}/api/healthz` | 200 `{"ok":true}` |
-| `https://${VAULT_RAG_DOMAIN}/api/search?query=hello` | búsqueda semántica (requiere `X-Vault-Token`) |
+| `https://${VAULT_RAG_DOMAIN}/api/search` | búsqueda semántica - POST JSON `{"query":"...","k":5}`, header `Authorization: Bearer $VAULT_RAG_API_TOKEN` |
 | `https://${VAULT_RAG_DOMAIN}/mcp` | endpoint del servidor MCP para agentes |
 | `https://${VAULT_RAG_DOMAIN}/grafana/` | Grafana, password admin impreso por `deploy.sh` |
 | `https://${VAULT_RAG_DOMAIN}/git/` | Forgejo |
@@ -297,7 +297,8 @@ Define en `.env` antes de `./deploy.sh install`:
 | Clave | Requerida | Qué |
 |---|---|---|
 | `VAULT_RAG_DOMAIN` | sí | Tu dominio, p. ej. `vault.example.com` |
-| `VAULT_RAG_TOKEN` | auto | Token de auth API, generado en el primer arranque si está vacío |
+| `VAULT_RAG_API_TOKEN` | auto | Token de auth REST (`Authorization: Bearer ...`), autogenerado si vacío |
+| `VAULT_RAG_MCP_TOKEN` | auto | Token de auth MCP (`X-Vault-Token: ...`), autogenerado si vacío |
 | `POSTGRES_PASSWORD` | auto | Password de BD, generada en el primer arranque si vacía |
 | `GRAFANA_ADMIN_PASSWORD` | auto | Password admin de Grafana, impresa por el instalador |
 | `OLLAMA_MODEL` | no | Modelo de embeddings, default `nomic-embed-text` |
@@ -326,7 +327,8 @@ Una vez que el stack está arriba, apunta tu agente hacia él. Dos caminos: **MC
 
 Vas a necesitar:
 - `https://${VAULT_RAG_DOMAIN}/mcp` - el endpoint MCP
-- `VAULT_RAG_API_TOKEN` - impreso por `./deploy.sh install`, también en `.env`
+- `VAULT_RAG_API_TOKEN` - para REST (`Authorization: Bearer ...`), impreso por `./deploy.sh install`, también en `.env`
+- `VAULT_RAG_MCP_TOKEN` - para MCP (`X-Vault-Token: ...`), distinto del de REST, también impreso y en `.env`
 
 ### Claude Code
 
@@ -339,14 +341,14 @@ Añade el server al `.mcp.json` del proyecto (o al `~/.claude.json` a nivel de u
       "type": "http",
       "url": "https://your-domain/mcp",
       "headers": {
-        "X-Vault-Token": "PASTE_VAULT_RAG_API_TOKEN_HERE"
+        "X-Vault-Token": "PASTE_VAULT_RAG_MCP_TOKEN_HERE"
       }
     }
   }
 }
 ```
 
-Reinicia Claude Code y `/mcp` debería listar `vault-rag` con las tools `vault.put`, `vault.search`, `vault.get`, `vault.backlinks`.
+Reinicia Claude Code y `/mcp` debería listar `vault-rag` con las tools `put`, `search`, `get`, `backlinks`.
 
 ### Codex CLI
 
@@ -357,7 +359,7 @@ En `~/.codex/config.toml`:
 url = "https://your-domain/mcp"
 
 [mcp_servers.vault-rag.headers]
-X-Vault-Token = "PASTE_VAULT_RAG_API_TOKEN_HERE"
+X-Vault-Token = "PASTE_VAULT_RAG_MCP_TOKEN_HERE"
 ```
 
 ### Gemini CLI
@@ -369,7 +371,7 @@ En `~/.gemini/settings.json`:
   "mcpServers": {
     "vault-rag": {
       "httpUrl": "https://your-domain/mcp",
-      "headers": { "X-Vault-Token": "PASTE_VAULT_RAG_API_TOKEN_HERE" }
+      "headers": { "X-Vault-Token": "PASTE_VAULT_RAG_MCP_TOKEN_HERE" }
     }
   }
 }
@@ -379,13 +381,20 @@ En `~/.gemini/settings.json`:
 
 ```bash
 export VAULT="https://your-domain"
-export TOKEN="PASTE_VAULT_RAG_API_TOKEN_HERE"
+export API_TOKEN="PASTE_VAULT_RAG_API_TOKEN_HERE"
 
+# Healthz es el único GET; el resto son POST con body JSON.
 curl -sS "$VAULT/api/healthz"
-curl -sS -H "X-Vault-Token: $TOKEN" "$VAULT/api/search?query=hello"
-curl -sS -H "X-Vault-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"path":"00-inbox/note.md","content":"# hi","mode":"create"}' \
-  "$VAULT/api/put"
+
+curl -sS -X POST -H "Authorization: Bearer $API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"query":"hello","k":5}' \
+     "$VAULT/api/search"
+
+curl -sS -X POST -H "Authorization: Bearer $API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"path":"00-inbox/note.md","content":"# hi","mode":"create"}' \
+     "$VAULT/api/put"
 ```
 
 ### Cómo decirle al agente que use el vault
@@ -396,11 +405,11 @@ Después de cablear MCP, dale al agente un briefing único para que conozca las 
 Tienes acceso a vault-rag vía el MCP server `vault-rag`.
 
 Convenciones:
-- Antes de responder cualquier cosa relacionada al proyecto, llama a
-  `vault.search` con la consulta del usuario. Lee los top results con
-  `vault.get` si los snippets no alcanzan.
+- Antes de responder cualquier cosa relacionada al proyecto, llama al
+  tool `search` con la consulta del usuario. Lee los top results con
+  `get` si los snippets no alcanzan.
 - Cuando aprendas algo durable (decisión, patrón, gotcha), persístelo
-  vía `vault.put` en `09-resources/notes/YYYY-MM-DD-slug.md`.
+  vía `put` en `09-resources/notes/YYYY-MM-DD-slug.md`.
 - Tira los session dumps y los hilos largos de chat a `05-sessions/`.
 - Nunca escribas fuera de tu namespace de agente excepto `00-inbox/`
   (intake), `05-sessions/` (transcripts) y `09-resources/notes/`
@@ -440,12 +449,14 @@ Pasos:
 3. Creá `.env` desde `.env.example`. Seteá `VAULT_RAG_DOMAIN`. Dejá los
    campos secretos vacíos - el installer los completa.
 4. Corré `./deploy.sh install`. Capturá los valores impresos de
-   `VAULT_RAG_API_TOKEN` y `GRAFANA_ADMIN_PASSWORD`.
+   `VAULT_RAG_API_TOKEN`, `VAULT_RAG_MCP_TOKEN` y `GRAFANA_ADMIN_PASSWORD`.
 5. Health checks (reintentá hasta 2 minutos, el stack se calienta):
    - `curl -fsS https://${VAULT_RAG_DOMAIN}/api/healthz` -> 200
    - `docker ps --format '{{.Names}} {{.Status}}'` - los 14 containers `Up`
-   - `curl -fsS -H "X-Vault-Token: $TOKEN" \
-       "https://${VAULT_RAG_DOMAIN}/api/search?query=index"` -> array JSON
+   - `curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" \
+       -H "Content-Type: application/json" \
+       -d '{"query":"index","k":3}' \
+       "https://${VAULT_RAG_DOMAIN}/api/search"` -> array JSON
 6. Dispará una corrida del indexer y confirmá que terminó:
    `docker exec vault-rag-tools /usr/local/bin/run-indexer.sh`
    luego `psql ... -c "SELECT status, started_at FROM job_runs
@@ -455,7 +466,8 @@ Pasos:
    - REST base: https://${VAULT_RAG_DOMAIN}/api
    - Grafana: https://${VAULT_RAG_DOMAIN}/grafana/  (admin / <password>)
    - Forgejo: https://${VAULT_RAG_DOMAIN}/git/
-   - VAULT_RAG_API_TOKEN: <token>
+   - VAULT_RAG_API_TOKEN: <token para REST `Authorization: Bearer`>
+   - VAULT_RAG_MCP_TOKEN: <token para MCP `X-Vault-Token`>
 8. Ofrecé escribir el bloque de config MCP para el agente del usuario
    (Claude Code / Codex / Gemini CLI - preguntá cuál).
 
@@ -495,7 +507,11 @@ Cada 5 min escanea `job_runs` buscando corridas de indexador marcadas `running` 
 Sí - edita `Caddyfile.tmpl` para usar HTTP-only o `tls internal` para self-signed. El default asume un dominio real porque ese es el camino de la mayoría.
 
 ### ¿Cómo se autentican los agentes?
-Header `X-Vault-Token` en todas las rutas REST excepto `/api/healthz`. El token está en `.env` como `VAULT_RAG_TOKEN`, autogenerado en la primera instalación. MCP usa el mismo token vía la config de su server.
+Dos tokens independientes, ambos autogenerados por `./deploy.sh install`:
+- **REST API**: header `Authorization: Bearer ${VAULT_RAG_API_TOKEN}` en todas las rutas excepto `/api/healthz`. Todos los endpoints (`/search`, `/get`, `/backlinks`, `/put`) son POST con body JSON.
+- **MCP**: header `X-Vault-Token: ${VAULT_RAG_MCP_TOKEN}` en la config del server del agente. El endpoint es `/mcp` (JSON-RPC 2.0 sobre HTTP).
+
+Tokens distintos para poder rotar uno sin romper el otro.
 
 ### ¿Cómo maneja la indexación las eliminaciones y renames?
 El indexador compara el estado del vault contra la tabla `meta` en cada corrida. Los archivos que desaparecen se marcan para eliminación de chunks. Los renames ahora se ven como delete+add (mejora futura).
@@ -504,7 +520,7 @@ El indexador compara el estado del vault contra la tabla `meta` en cada corrida.
 `./deploy.sh backup` snapshota postgres (custom-format dump), el directorio del vault y los secretos. La salida va a `./backups/YYYY-MM-DD-HHMMSS/`. Para DR replica `backups/` a un sitio externo.
 
 ### ¿Cómo agrego un nuevo agente?
-Apúntalo a `/mcp` (para agentes MCP-native) o `/api/*` (para HTTP). Usa el `VAULT_RAG_TOKEN`. Opcionalmente que haga POST de cada llamada LLM a `/tokmon/` para aparecer en el dashboard de coste.
+Apúntalo a `/mcp` (para agentes MCP-native) con `VAULT_RAG_MCP_TOKEN` o a `/api/*` (clientes HTTP, scripts) con `VAULT_RAG_API_TOKEN`. Opcionalmente que haga POST de cada llamada LLM a `/tokmon/` para aparecer en el dashboard de coste.
 
 ### ¿Dónde abro issues?
 GitHub Issues en el repo. PRs bienvenidos.
