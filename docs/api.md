@@ -27,6 +27,30 @@ Body: `{"path": "..."}`. Returns full file content.
 ### `POST /api/backlinks`
 Body: `{"path": "..."}`. Returns array of `source` paths linking to the target.
 
+### `POST /api/task/create`
+Body: `{"title": "...", "type": "task|epic|bug|chore", "priority": 0-3, "epic": "vt-NNNN", "blocked_by": [...], "by": "agent"}`. Returns `{id, path}`.
+
+### `POST /api/task/list`
+Body: `{all?, status?, type?}`. Defaults to open tasks.
+
+### `POST /api/task/ready`
+Body: `{}`. Returns unblocked open tasks sorted by priority asc.
+
+### `POST /api/task/show`
+Body: `{id, json?}`. Default `json:true` returns object; `json:false` returns `{markdown}`.
+
+### `POST /api/task/claim`
+Body: `{id, by?, force?}`. 409 if already claimed without `force`.
+
+### `POST /api/task/close`
+Body: `{id, reason}`. Sets status=closed.
+
+### `POST /api/task/update`
+Body: `{id, status?, priority?, body?}`.
+
+### `POST /api/task/dep_add` / `POST /api/task/dep_rm`
+Body: `{id, blocked_by}`. Idempotent.
+
 ## MCP
 
 Endpoint: `POST /mcp` (single endpoint, JSON-RPC 2.0 over HTTP). Tools:
@@ -35,3 +59,4 @@ Endpoint: `POST /mcp` (single endpoint, JSON-RPC 2.0 over HTTP). Tools:
 - `search` (mirrors `/api/search`)
 - `get` (mirrors `/api/get`)
 - `backlinks` (mirrors `/api/backlinks`)
+- `task_create`, `task_list`, `task_ready`, `task_show`, `task_claim`, `task_close`, `task_update`, `task_dep_add`, `task_dep_rm` (mirror `/api/task/*`)
