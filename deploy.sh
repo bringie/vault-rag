@@ -7,19 +7,28 @@ set -euo pipefail
 #   --bootstrap-env     copy .env.example -> .env, fill change-me with random secrets
 #   --bootstrap-vault   seed obsidian-vault/ from vault-skeleton/ if empty
 #   --render-caddy      envsubst Caddyfile.tmpl -> Caddyfile using .env
+#   --install-scripts-deps  npm ci inside scripts/ (populates node_modules for bind mount)
 # No flag = full install.
 
 CMD="${1:-install}"
 
 check_deps() {
   local missing=()
-  for bin in docker openssl envsubst; do
+  for bin in docker openssl envsubst curl jq; do
     command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
   done
   docker compose version >/dev/null 2>&1 || missing+=("docker-compose-v2")
   if [ ${#missing[@]} -gt 0 ]; then
     for m in "${missing[@]}"; do echo "$m not found" >&2; done
     return 1
+  fi
+}
+
+install_scripts_deps() {
+  # scripts/ is bind-mounted into vault-rag-api / -mcp / -tokmon-ingest / -tools
+  # as :ro, so node_modules must be pre-populated on the host.
+  if [ ! -d scripts/node_modules ]; then
+    docker run --rm -v "$(pwd)/scripts:/s" -w /s node:22-alpine npm ci --omit=dev
   fi
 }
 
@@ -53,6 +62,7 @@ install_full() {
   check_deps
   bootstrap_env
   bootstrap_vault
+  install_scripts_deps
   render_caddy
   docker compose -p vault-rag up -d --build
   echo "Waiting for /api/healthz..."
@@ -63,7 +73,7 @@ install_full() {
     fi
     sleep 1
   done
-  docker exec vault-rag-tools node /app/scripts/vault-indexer.js || true
+  docker exec vault-rag-tools node /scripts/vault-indexer.js || true
   echo ""
   echo "================================================="
   # shellcheck disable=SC1091
@@ -80,6 +90,7 @@ case "$CMD" in
   --bootstrap-env) bootstrap_env ;;
   --bootstrap-vault) bootstrap_vault ;;
   --render-caddy) render_caddy ;;
+  --install-scripts-deps) install_scripts_deps ;;
   install) install_full ;;
   *) echo "unknown command: $CMD" >&2; exit 2 ;;
 esac

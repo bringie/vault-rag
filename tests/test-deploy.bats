@@ -47,9 +47,11 @@ teardown() {
 }
 
 @test "deploy.sh renders Caddyfile from Caddyfile.tmpl" {
-  echo 'VAULT_RAG_DOMAIN=test.example.com' > .env
+  printf 'VAULT_RAG_DOMAIN=test.example.com\nVAULT_RAG_ACME_EMAIL=ops@example.com\n' > .env
   run bash deploy.sh --render-caddy
   [ "$status" -eq 0 ]
   grep -q 'test.example.com' Caddyfile
+  grep -q 'ops@example.com' Caddyfile
   ! grep -q '\${VAULT_RAG_DOMAIN}' Caddyfile
+  ! grep -q '\${VAULT_RAG_ACME_EMAIL}' Caddyfile
 }
