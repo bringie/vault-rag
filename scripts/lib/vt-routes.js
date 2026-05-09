@@ -1,6 +1,7 @@
 // vt: HTTP-shaped handlers backed by vt-fs primitives.
 // Each handler signature: ({ vault, body }) -> { status, body }.
 
+const fs = require('node:fs');
 const path = require('node:path');
 const vtfs = require('./vt-fs');
 const vtgraph = require('./vt-graph');
@@ -144,6 +145,31 @@ async function close({ vault, body }) {
   return { status: 200, body: { id, status: 'closed' } };
 }
 
-const handlers = { create, list, show, claim, update, close, ready, dep_add, dep_rm };
+async function import_task({ vault, body }) {
+  if (process.env.VAULT_RAG_ALLOW_IMPORT !== '1') {
+    return { status: 403, body: { error: 'import disabled; set VAULT_RAG_ALLOW_IMPORT=1' } };
+  }
+  const { path: relPath, content } = body || {};
+  if (!relPath || !content) return { status: 400, body: { error: 'path and content required' } };
+  if (!relPath.startsWith('06-tasks/') || relPath.includes('..')) {
+    return { status: 400, body: { error: 'path must start with 06-tasks/ and contain no ..' } };
+  }
+  const abs = path.join(vault, relPath);
+  if (fs.existsSync(abs)) return { status: 409, body: { error: 'file already exists' } };
+  vtfs.ensureDir(path.dirname(abs));
+  fs.writeFileSync(abs, content);
+  const m = relPath.match(/vt-(\d+)/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const seqFile = path.join(vault, '.vt', 'seq');
+    vtfs.ensureDir(path.dirname(seqFile));
+    let cur = 0;
+    if (fs.existsSync(seqFile)) cur = parseInt(fs.readFileSync(seqFile, 'utf8').trim(), 10) || 0;
+    if (n > cur) fs.writeFileSync(seqFile, String(n));
+  }
+  return { status: 200, body: { path: relPath } };
+}
+
+const handlers = { create, list, show, claim, update, close, ready, dep_add, dep_rm, import_task };
 
 module.exports = { handlers, cfgFor };
