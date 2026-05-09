@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { Client } = require('pg');
 const lib = require('./lib/vault-lib');
 const vtRoutes = require('./lib/vt-routes');
+const gitSync = require('./lib/git-sync');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -213,6 +214,8 @@ async function handlePut(body) {
   } catch (e) {
     console.error(`[rag-api] audit insert failed: ${e.message}`);
   }
+
+  gitSync.trigger(VAULT);
 
   return {
     path: finalRel,

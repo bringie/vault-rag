@@ -47,6 +47,7 @@ services:
   vault-rag-api:
     image: vault-rag-tools:latest
     container_name: vault-rag-api
+    hostname: vault-rag-api
     logging: *default-logging
     restart: unless-stopped
     mem_limit: 200m
@@ -65,10 +66,16 @@ services:
       - VAULT_RAG_PG_PASS=${VAULT_RAG_PG_PASSWORD}
       - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
       - VAULT_PATH=/vault
+      - HOME=/root
+      - GIT_AUTHOR_NAME=vault-rag-api
+      - GIT_AUTHOR_EMAIL=vault-rag-api@brain.local
+      - GIT_COMMITTER_NAME=vault-rag-api
+      - GIT_COMMITTER_EMAIL=vault-rag-api@brain.local
     ports:
       - "127.0.0.1:5679:5679"
     volumes:
       - /root/obsidian-vault:/vault:rw
+      - /root/.ssh:/root/.ssh:ro
       - ./scripts:/scripts:ro
     networks:
       - vault-rag-net
