@@ -5,6 +5,7 @@ const path = require('node:path');
 const vtfs = require('./vt-fs');
 
 const TYPES = new Set(['task', 'epic', 'bug', 'chore']);
+const STATUSES = new Set(['open', 'in_progress', 'blocked', 'closed']);
 
 function cfgFor(vault) {
   return {
@@ -56,6 +57,42 @@ async function show({ vault, body }) {
   return { status: 200, body: { ...t.fm, body: t.body } };
 }
 
+async function claim({ vault, body }) {
+  const b = body || {};
+  const { id, by = 'agent', force = false } = b;
+  if (!id) return { status: 400, body: { error: 'id required' } };
+  const cfg = cfgFor(vault);
+  const t = vtfs.readTask(cfg.tasksDir, id);
+  if (!t) return { status: 404, body: { error: `task not found: ${id}` } };
+  if (t.fm.claimed_by && t.fm.claimed_by !== by && !force) {
+    return { status: 409, body: { error: `already claimed by ${t.fm.claimed_by}; use force=true` } };
+  }
+  t.fm.status = 'in_progress';
+  t.fm.claimed_by = by;
+  t.fm.claimed_at = vtfs.nowIso();
+  vtfs.writeTask(t.file, t.fm, t.body);
+  return { status: 200, body: { id, claimed_by: by } };
+}
+
+async function update({ vault, body }) {
+  const b = body || {};
+  const { id, status, priority } = b;
+  const newBody = b.body;
+  if (!id) return { status: 400, body: { error: 'id required' } };
+  if (status && !STATUSES.has(status)) return { status: 400, body: { error: `invalid status: ${status}` } };
+  if (priority !== undefined && (!Number.isInteger(priority) || priority < 0 || priority > 3)) {
+    return { status: 400, body: { error: 'priority must be 0..3' } };
+  }
+  const cfg = cfgFor(vault);
+  const t = vtfs.readTask(cfg.tasksDir, id);
+  if (!t) return { status: 404, body: { error: `task not found: ${id}` } };
+  if (status) t.fm.status = status;
+  if (priority !== undefined) t.fm.priority = priority;
+  const finalBody = (typeof newBody === 'string') ? newBody : t.body;
+  vtfs.writeTask(t.file, t.fm, finalBody);
+  return { status: 200, body: { id, status: t.fm.status, priority: t.fm.priority } };
+}
+
 async function close({ vault, body }) {
   const { id, reason } = body || {};
   if (!id) return { status: 400, body: { error: 'id required' } };
@@ -70,6 +107,6 @@ async function close({ vault, body }) {
   return { status: 200, body: { id, status: 'closed' } };
 }
 
-const handlers = { create, list, show, close };
+const handlers = { create, list, show, claim, update, close };
 
 module.exports = { handlers, cfgFor };

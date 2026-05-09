@@ -84,3 +84,47 @@ test('task_show 404 on missing', async () => {
   const res = await handlers.show({ vault, body: { id: 'vt-9999' } });
   assert.strictEqual(res.status, 404);
 });
+
+test('task_claim sets in_progress and claimed_by', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  const res = await handlers.claim({ vault, body: { id: 'vt-0001', by: 'alice' } });
+  assert.strictEqual(res.status, 200);
+  const show = await handlers.show({ vault, body: { id: 'vt-0001' } });
+  assert.strictEqual(show.body.status, 'in_progress');
+  assert.strictEqual(show.body.claimed_by, 'alice');
+});
+
+test('task_claim 409 on already-claimed without force', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  await handlers.claim({ vault, body: { id: 'vt-0001', by: 'alice' } });
+  const res = await handlers.claim({ vault, body: { id: 'vt-0001', by: 'bob' } });
+  assert.strictEqual(res.status, 409);
+});
+
+test('task_claim force=true overrides', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  await handlers.claim({ vault, body: { id: 'vt-0001', by: 'alice' } });
+  const res = await handlers.claim({ vault, body: { id: 'vt-0001', by: 'bob', force: true } });
+  assert.strictEqual(res.status, 200);
+  const show = await handlers.show({ vault, body: { id: 'vt-0001' } });
+  assert.strictEqual(show.body.claimed_by, 'bob');
+});
+
+test('task_update changes status', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  const res = await handlers.update({ vault, body: { id: 'vt-0001', status: 'blocked' } });
+  assert.strictEqual(res.status, 200);
+  const show = await handlers.show({ vault, body: { id: 'vt-0001' } });
+  assert.strictEqual(show.body.status, 'blocked');
+});
+
+test('task_update rejects bad status', async () => {
+  const vault = tmpVault();
+  await handlers.create({ vault, body: { title: 'demo' } });
+  const res = await handlers.update({ vault, body: { id: 'vt-0001', status: 'weird' } });
+  assert.strictEqual(res.status, 400);
+});
