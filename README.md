@@ -26,6 +26,7 @@
   <a href="#components">All components</a> &middot;
   <a href="#install">Install</a> &middot;
   <a href="#configuration">Configuration</a> &middot;
+  <a href="#agent-setup">Agent setup</a> &middot;
   <a href="#faq">FAQ</a>
 </p>
 
@@ -316,6 +317,155 @@ Set in `.env` before `./deploy.sh install`:
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for the full service map and data flow, [`docs/operations.md`](docs/operations.md) for backup/restore/scaling, and [`docs/api.md`](docs/api.md) for the REST + MCP reference.
+
+---
+
+## Agent Setup
+
+Once the stack is up, point your agent at it. Two paths: **MCP** (recommended for Claude Code, Codex, Gemini CLI) or **REST** (any HTTP client).
+
+You will need:
+- `https://${VAULT_RAG_DOMAIN}/mcp` - the MCP endpoint
+- `VAULT_RAG_API_TOKEN` - printed by `./deploy.sh install`, also in `.env`
+
+### Claude Code
+
+Add the server to your project's `.mcp.json` (or to user-level `~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "vault-rag": {
+      "type": "http",
+      "url": "https://your-domain/mcp",
+      "headers": {
+        "X-Vault-Token": "PASTE_VAULT_RAG_API_TOKEN_HERE"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code, then `/mcp` should list `vault-rag` with tools `vault.put`, `vault.search`, `vault.get`, `vault.backlinks`.
+
+### Codex CLI
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.vault-rag]
+url = "https://your-domain/mcp"
+
+[mcp_servers.vault-rag.headers]
+X-Vault-Token = "PASTE_VAULT_RAG_API_TOKEN_HERE"
+```
+
+### Gemini CLI
+
+In `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "vault-rag": {
+      "httpUrl": "https://your-domain/mcp",
+      "headers": { "X-Vault-Token": "PASTE_VAULT_RAG_API_TOKEN_HERE" }
+    }
+  }
+}
+```
+
+### Plain REST (any agent / script)
+
+```bash
+export VAULT="https://your-domain"
+export TOKEN="PASTE_VAULT_RAG_API_TOKEN_HERE"
+
+curl -sS "$VAULT/api/healthz"
+curl -sS -H "X-Vault-Token: $TOKEN" "$VAULT/api/search?query=hello"
+curl -sS -H "X-Vault-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"path":"00-inbox/note.md","content":"# hi","mode":"create"}' \
+  "$VAULT/api/put"
+```
+
+### Telling the agent how to use the vault
+
+After wiring MCP, give the agent a one-time briefing so it knows the conventions. Drop this into your project's `CLAUDE.md` / `AGENTS.md` / system prompt:
+
+```
+You have access to vault-rag via the `vault-rag` MCP server.
+
+Conventions:
+- Before answering anything project-related, call `vault.search` with the
+  user's query. Read the top results with `vault.get` if the snippets are
+  not enough.
+- When you learn something durable (decision, pattern, gotcha), persist it
+  via `vault.put` to `09-resources/notes/YYYY-MM-DD-slug.md`.
+- Drop session dumps and long chat threads into `05-sessions/`.
+- Never write outside your agent namespace except `00-inbox/` (intake) and
+  `05-sessions/` (transcripts) and `09-resources/notes/` (knowledge).
+- For tasks, use the `vt` CLI on the host (not MCP). Tasks live in
+  `06-tasks/vt-NNNN-slug.md`. `vt ready` to find work, `vt claim` to take it.
+
+The vault is the source of truth. Search before asking. Persist what matters.
+```
+
+### Bootstrap prompt (zero-to-running)
+
+Want an agent to bring up vault-rag on a fresh box for you? Paste this into a Claude Code / Codex / Gemini session opened at the target host (or with SSH access to it):
+
+````
+You are deploying vault-rag, a self-hosted multi-agent RAG stack, on this
+Linux host. Work step by step. Verify every step before moving on. Do not
+proceed past a failure - fix it first.
+
+Goal: a fully running vault-rag at https://<VAULT_RAG_DOMAIN>/, with the
+MCP endpoint reachable and a fresh vault skeleton indexed.
+
+Inputs the user must supply (ask if missing):
+- VAULT_RAG_DOMAIN: a domain pointing at this host (A/AAAA record set).
+- Optional: ACME email for Let's Encrypt.
+
+Steps:
+1. Pre-flight checks:
+   - `docker --version`, `docker compose version` - must succeed
+   - `openssl version`, `which envsubst` - must succeed
+   - confirm port 80 and 443 are free on this host
+2. Clone the repo:
+   `git clone https://github.com/bringie/vault-rag.git /opt/vault-rag`
+   `cd /opt/vault-rag`
+3. Create `.env` from `.env.example`. Set `VAULT_RAG_DOMAIN`. Leave the
+   secret fields empty - the installer will fill them.
+4. Run `./deploy.sh install`. Capture the printed
+   `VAULT_RAG_API_TOKEN` and `GRAFANA_ADMIN_PASSWORD`.
+5. Health checks (retry for up to 2 minutes, the stack warms up):
+   - `curl -fsS https://${VAULT_RAG_DOMAIN}/api/healthz` -> 200
+   - `docker ps --format '{{.Names}} {{.Status}}'` - all 14 containers `Up`
+   - `curl -fsS -H "X-Vault-Token: $TOKEN" \
+       "https://${VAULT_RAG_DOMAIN}/api/search?query=index"` -> JSON array
+6. Trigger an indexer run and confirm it completed:
+   `docker exec vault-rag-tools /usr/local/bin/run-indexer.sh`
+   then `psql ... -c "SELECT status, started_at FROM job_runs
+   ORDER BY started_at DESC LIMIT 1;"` - last row `status='ok'`.
+7. Print the final summary to the user:
+   - MCP URL: https://${VAULT_RAG_DOMAIN}/mcp
+   - REST base: https://${VAULT_RAG_DOMAIN}/api
+   - Grafana: https://${VAULT_RAG_DOMAIN}/grafana/  (admin / <password>)
+   - Forgejo: https://${VAULT_RAG_DOMAIN}/git/
+   - VAULT_RAG_API_TOKEN: <token>
+8. Offer to write the MCP config block for the user's agent
+   (Claude Code / Codex / Gemini CLI - ask which).
+
+Rules:
+- Never edit `obsidian-vault/` directly during install - it is the user's
+  data dir. The skeleton is in `vault-skeleton/` and is copied on first run.
+- Never commit secrets. `.env` and `secrets/` are gitignored.
+- If a container is unhealthy after 2 minutes, run `./deploy.sh logs <svc>`
+  and report the actual error to the user before retrying.
+- Idempotent: re-running `./deploy.sh install` is safe.
+````
+
+Hand the agent that prompt plus shell access (or run it yourself in a Claude Code session at the host). When it finishes, you have a running stack and the credentials needed to wire any other agent at it.
 
 ---
 

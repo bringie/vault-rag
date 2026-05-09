@@ -26,6 +26,7 @@
   <a href="#компоненты">Все компоненты</a> &middot;
   <a href="#установка">Установка</a> &middot;
   <a href="#конфигурация">Конфигурация</a> &middot;
+  <a href="#настройка-агента">Настройка агента</a> &middot;
   <a href="#faq">FAQ</a>
 </p>
 
@@ -316,6 +317,156 @@ cp .env.example .env
 ```
 
 См. [`docs/architecture.md`](docs/architecture.md) - полная карта сервисов и data flow, [`docs/operations.md`](docs/operations.md) - бэкап/restore/масштабирование, [`docs/api.md`](docs/api.md) - REST + MCP reference.
+
+---
+
+## Настройка агента
+
+Когда стек поднят, направьте на него агента. Два пути: **MCP** (рекомендуется для Claude Code, Codex, Gemini CLI) или **REST** (любой HTTP-клиент).
+
+Понадобится:
+- `https://${VAULT_RAG_DOMAIN}/mcp` - MCP-эндпоинт
+- `VAULT_RAG_API_TOKEN` - печатает `./deploy.sh install`, также в `.env`
+
+### Claude Code
+
+Добавьте сервер в `.mcp.json` проекта (или в user-level `~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "vault-rag": {
+      "type": "http",
+      "url": "https://your-domain/mcp",
+      "headers": {
+        "X-Vault-Token": "PASTE_VAULT_RAG_API_TOKEN_HERE"
+      }
+    }
+  }
+}
+```
+
+Перезапустите Claude Code, `/mcp` должен показать `vault-rag` с инструментами `vault.put`, `vault.search`, `vault.get`, `vault.backlinks`.
+
+### Codex CLI
+
+В `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.vault-rag]
+url = "https://your-domain/mcp"
+
+[mcp_servers.vault-rag.headers]
+X-Vault-Token = "PASTE_VAULT_RAG_API_TOKEN_HERE"
+```
+
+### Gemini CLI
+
+В `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "vault-rag": {
+      "httpUrl": "https://your-domain/mcp",
+      "headers": { "X-Vault-Token": "PASTE_VAULT_RAG_API_TOKEN_HERE" }
+    }
+  }
+}
+```
+
+### Plain REST (любой агент / скрипт)
+
+```bash
+export VAULT="https://your-domain"
+export TOKEN="PASTE_VAULT_RAG_API_TOKEN_HERE"
+
+curl -sS "$VAULT/api/healthz"
+curl -sS -H "X-Vault-Token: $TOKEN" "$VAULT/api/search?query=hello"
+curl -sS -H "X-Vault-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"path":"00-inbox/note.md","content":"# hi","mode":"create"}' \
+  "$VAULT/api/put"
+```
+
+### Как объяснить агенту, что делать с волтом
+
+После подключения MCP, дайте агенту единоразовый брифинг про конвенции. Положите это в `CLAUDE.md` / `AGENTS.md` / system prompt вашего проекта:
+
+```
+У тебя есть доступ к vault-rag через MCP-сервер `vault-rag`.
+
+Конвенции:
+- Перед ответом на любой проектный вопрос - вызови `vault.search` с
+  запросом пользователя. Если сниппетов мало - подтяни топ-результаты
+  через `vault.get`.
+- Когда узнаёшь что-то долгоживущее (решение, паттерн, нюанс) - сохрани
+  через `vault.put` в `09-resources/notes/YYYY-MM-DD-slug.md`.
+- Дампы сессий и длинные чат-треды кидай в `05-sessions/`.
+- Никогда не пиши вне своего agent namespace кроме `00-inbox/` (приём),
+  `05-sessions/` (транскрипты) и `09-resources/notes/` (знания).
+- Для задач используй `vt` CLI на хосте (не MCP). Задачи живут в
+  `06-tasks/vt-NNNN-slug.md`. `vt ready` - найти работу, `vt claim` - взять.
+
+Волт - source of truth. Сначала ищи, потом спрашивай. Сохраняй важное.
+```
+
+### Bootstrap-промт (от нуля до работающего)
+
+Хотите, чтобы агент сам поднял vault-rag на свежей коробке? Вставьте это в сессию Claude Code / Codex / Gemini, открытую на целевом хосте (или с SSH-доступом):
+
+````
+Ты разворачиваешь vault-rag - self-hosted multi-agent RAG-стек на этом
+Linux-хосте. Работай по шагам. Проверяй каждый шаг перед переходом к
+следующему. Не двигайся дальше при ошибке - сначала исправь.
+
+Цель: полностью работающий vault-rag на https://<VAULT_RAG_DOMAIN>/, с
+доступным MCP-эндпоинтом и проиндексированным свежим скелетом волта.
+
+Входы, которые должен дать пользователь (спроси, если не задано):
+- VAULT_RAG_DOMAIN: домен, направленный на этот хост (A/AAAA-запись).
+- Опционально: ACME email для Let's Encrypt.
+
+Шаги:
+1. Pre-flight проверки:
+   - `docker --version`, `docker compose version` - должны работать
+   - `openssl version`, `which envsubst` - должны работать
+   - подтверди что порты 80 и 443 свободны на хосте
+2. Клонирование репо:
+   `git clone https://github.com/bringie/vault-rag.git /opt/vault-rag`
+   `cd /opt/vault-rag`
+3. Создай `.env` из `.env.example`. Поставь `VAULT_RAG_DOMAIN`. Поля
+   секретов оставь пустыми - инсталлер заполнит сам.
+4. Запусти `./deploy.sh install`. Сохрани напечатанные
+   `VAULT_RAG_API_TOKEN` и `GRAFANA_ADMIN_PASSWORD`.
+5. Health-проверки (retry до 2 минут, стек прогревается):
+   - `curl -fsS https://${VAULT_RAG_DOMAIN}/api/healthz` -> 200
+   - `docker ps --format '{{.Names}} {{.Status}}'` - все 14 контейнеров `Up`
+   - `curl -fsS -H "X-Vault-Token: $TOKEN" \
+       "https://${VAULT_RAG_DOMAIN}/api/search?query=index"` -> JSON-массив
+6. Триггерни индексер и подтверди что отработал:
+   `docker exec vault-rag-tools /usr/local/bin/run-indexer.sh`
+   затем `psql ... -c "SELECT status, started_at FROM job_runs
+   ORDER BY started_at DESC LIMIT 1;"` - последняя строка `status='ok'`.
+7. Напечатай финальную сводку пользователю:
+   - MCP URL: https://${VAULT_RAG_DOMAIN}/mcp
+   - REST base: https://${VAULT_RAG_DOMAIN}/api
+   - Grafana: https://${VAULT_RAG_DOMAIN}/grafana/  (admin / <пароль>)
+   - Forgejo: https://${VAULT_RAG_DOMAIN}/git/
+   - VAULT_RAG_API_TOKEN: <токен>
+8. Предложи записать MCP-конфиг в файл агента пользователя
+   (Claude Code / Codex / Gemini CLI - спроси какой).
+
+Правила:
+- Никогда не редактируй `obsidian-vault/` напрямую во время установки -
+  это data-директория пользователя. Скелет в `vault-skeleton/`, копируется
+  при первом запуске.
+- Никогда не коммить секреты. `.env` и `secrets/` в gitignore.
+- Если контейнер unhealthy через 2 минуты - запусти `./deploy.sh logs <svc>`
+  и сообщи реальную ошибку пользователю до повторных попыток.
+- Идемпотентно: повторный запуск `./deploy.sh install` безопасен.
+````
+
+Дайте агенту этот промт плюс shell-доступ (или запустите сами в Claude Code-сессии на хосте). Когда закончит - получите работающий стек и креды чтобы подключить любого другого агента.
 
 ---
 
