@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# vt: vault-task CLI launcher.
+# Resolves repo root via git, falls back to script directory.
+
+set -euo pipefail
+
+if SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); then
+  VT_JS="$SCRIPT_DIR/../vt.js"
+else
+  VT_JS="$(dirname "$0")/../vt.js"
+fi
+
+# Ensure cwd is the repo root so vt-config can find the vault.
+if REPO=$(git -C "$(dirname "$VT_JS")" rev-parse --show-toplevel 2>/dev/null); then
+  cd "$REPO"
+fi
+
+exec node "$VT_JS" "$@"
