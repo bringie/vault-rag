@@ -9,6 +9,7 @@ const path   = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
 const lib = require('./lib/vault-lib');
+const vtRoutes = require('./lib/vt-routes');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -229,10 +230,39 @@ const ROUTES = {
   '/put':       handlePut,
 };
 
+const TASK_ROUTES = {
+  '/task/create':  'create',
+  '/task/list':    'list',
+  '/task/ready':   'ready',
+  '/task/show':    'show',
+  '/task/claim':   'claim',
+  '/task/close':   'close',
+  '/task/update':  'update',
+  '/task/dep_add': 'dep_add',
+  '/task/dep_rm':  'dep_rm',
+  '/task/import':  'import_task',
+};
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+
+  if (TASK_ROUTES[req.url]) {
+    const name = TASK_ROUTES[req.url];
+    const handler = vtRoutes.handlers[name];
+    if (!handler) return send(res, 404, { error: `no handler: ${name}` });
+    try {
+      const body = await readBody(req);
+      const out = await handler({ vault: VAULT, body });
+      send(res, out.status, out.body);
+    } catch (e) {
+      console.error(`[rag-api] ${req.url}: ${e.stack || e.message}`);
+      send(res, 500, { error: String(e.message || e) });
+    }
+    return;
+  }
+
   const handler = ROUTES[req.url];
   if (!handler) return send(res, 404, { error: 'not found' });
   try {
