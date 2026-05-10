@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseClaudeResponse } = require('../lib/classifier-lib');
+const { parseClaudeResponse, validateTargetFolder } = require('../lib/classifier-lib');
 
 test('parseClaudeResponse: valid JSON', () => {
   const stdout = JSON.stringify({
@@ -39,4 +39,25 @@ test('parseClaudeResponse: clamps confidence to [0,1]', () => {
     target_folder: '06-resources', tags: ['x'], summary: 's', type: 'note', confidence: 1.4,
   });
   assert.equal(parseClaudeResponse(stdout).confidence, 1);
+});
+
+test('validateTargetFolder: allows whitelisted folders', () => {
+  assert.doesNotThrow(() => validateTargetFolder('01-knowledge'));
+  assert.doesNotThrow(() => validateTargetFolder('02-projects'));
+  assert.doesNotThrow(() => validateTargetFolder('05-logs'));
+  assert.doesNotThrow(() => validateTargetFolder('06-resources'));
+});
+
+test('validateTargetFolder: rejects unknown folder', () => {
+  assert.throws(() => validateTargetFolder('07-trash'), /invalid_target/);
+});
+
+test('validateTargetFolder: rejects path traversal', () => {
+  assert.throws(() => validateTargetFolder('../etc'), /invalid_target/);
+  assert.throws(() => validateTargetFolder('01-knowledge/../etc'), /invalid_target/);
+});
+
+test('validateTargetFolder: rejects empty/null', () => {
+  assert.throws(() => validateTargetFolder(''), /invalid_target/);
+  assert.throws(() => validateTargetFolder(null), /invalid_target/);
 });

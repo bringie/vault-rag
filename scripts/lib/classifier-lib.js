@@ -42,4 +42,19 @@ function parseClaudeResponse(stdout) {
   };
 }
 
-module.exports = { parseClaudeResponse };
+const ALLOWED_TARGETS = new Set(['01-knowledge', '02-projects', '05-logs', '06-resources']);
+
+function validateTargetFolder(folder) {
+  if (!folder || typeof folder !== 'string') {
+    const e = new Error('invalid_target: empty');
+    e.code = 'invalid_target';
+    throw e;
+  }
+  if (!ALLOWED_TARGETS.has(folder)) {
+    const e = new Error(`invalid_target: ${folder}`);
+    e.code = 'invalid_target';
+    throw e;
+  }
+}
+
+module.exports = { parseClaudeResponse, validateTargetFolder, ALLOWED_TARGETS };
