@@ -13,7 +13,7 @@ No auth. Returns `200 OK` with `{"ok":true}`.
 
 ### `POST /api/put`
 Body: `{"path": "00-inbox/foo.md", "content": "...", "mode": "create|upsert|append", "reindex": true}`.
-- `path` may begin with `00-inbox/` or `05-sessions/` (no agent_id required), or `<agent_id>/<any>`.
+- `path` may begin with `00-inbox/` or `03-sessions/` (no agent_id required), or `<agent_id>/<any>`.
 - `content` is the markdown body (key is `content`, NOT `body`).
 - `mode=append` splits by `# heading` -> multiple chunks.
 - `reindex=true` (default) embeds immediately; `false` defers to next cron tick.

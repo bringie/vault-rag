@@ -4,14 +4,14 @@ Two drop-in scripts that turn Claude Code's hooks into a vault-rag client:
 
 | Script | Purpose |
 |--------|---------|
-| `precompact-snapshot.py` | PreCompact hook. Dumps the full transcript to `05-sessions/` in the vault before Claude Code summarizes (and discards) it. Lossless recovery point. |
+| `precompact-snapshot.py` | PreCompact hook. Dumps the full transcript to `03-sessions/` in the vault before Claude Code summarizes (and discards) it. Lossless recovery point. |
 | `cost-statusline.sh` | Statusline that shows `ctx N% (used/max)` alongside cost and burn rate. Lets you see how full the context window is and `/clear` proactively before auto-compact fires. |
 
 Both are independent: install one, both, or neither.
 
 ## Why
 
-- **PreCompact**: auto-compact replaces conversation history with a lossy summary. Tool calls, exact code snippets, error messages - all collapsed. With this hook, the raw turns are persisted to the vault under `05-sessions/<ts>-precompact-<sid>.md` *before* the summary happens, so `vt search` (or a manual fetch) can retrieve them later.
+- **PreCompact**: auto-compact replaces conversation history with a lossy summary. Tool calls, exact code snippets, error messages - all collapsed. With this hook, the raw turns are persisted to the vault under `03-sessions/<ts>-precompact-<sid>.md` *before* the summary happens, so `vt search` (or a manual fetch) can retrieve them later.
 - **Statusline**: Claude Code does not show context usage by default. You only learn the window is full when auto-compact triggers. This script reads the transcript JSONL, sums the latest assistant turn's `input_tokens + cache_creation + cache_read`, and shows a percentage. Threshold colors: green <70%, yellow 70-85%, red >85%.
 
 ## Install
@@ -70,7 +70,7 @@ Adjust the paths if you installed under a different `$HOME`.
 - Writes a per-line log to `$VAULT_PRECOMPACT_LOG` (default `~/.claude/precompact-snapshot.log`) so you can audit what was captured.
 - Catches every exception and exits 0 so a vault outage never blocks compact.
 
-The vault path lands at `05-sessions/<UTC-ts>-precompact-<short-session-id>.md`. `05-sessions/` is on the default `WRITABLE_PREFIXES` allowlist of `rag-api.js`, so no `agent_id` is needed.
+The vault path lands at `03-sessions/<UTC-ts>-precompact-<short-session-id>.md`. `03-sessions/` is on the default `WRITABLE_PREFIXES` allowlist of `rag-api.js`, so no `agent_id` is needed.
 
 ## How `cost-statusline.sh` works
 
@@ -90,5 +90,5 @@ The vault path lands at `05-sessions/<UTC-ts>-precompact-<short-session-id>.md`.
 ## Caveats
 
 - These scripts are tuned for a single-user Linux box with `python3` and `jq` installed (the bash one needs `jq` and `bc`). Windows / WSL untested.
-- The PreCompact hook script writes to `05-sessions/` without an `agent_id`. If your `rag-api.js` deployment locks `WRITABLE_PREFIXES` down further, pass `agent_id` in the payload and the API will remap to `agents/<id>/...`.
+- The PreCompact hook script writes to `03-sessions/` without an `agent_id`. If your `rag-api.js` deployment locks `WRITABLE_PREFIXES` down further, pass `agent_id` in the payload and the API will remap to `agents/<id>/...`.
 - The statusline script tails the transcript JSONL with `tac`. On macOS, replace `tac` with `tail -r` or install `coreutils`.

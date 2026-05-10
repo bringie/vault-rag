@@ -221,7 +221,7 @@ vt search "indexer chunk size"                  # búsqueda vectorial vía /api/
 
 | Comando | Qué hace |
 |---|---|
-| `vt create [-t type] [-p prio] "title"` | Nueva tarea en `06-tasks/vt-NNNN-slug.md` |
+| `vt create [-t type] [-p prio] "title"` | Nueva tarea en `04-tasks/vt-NNNN-slug.md` |
 | `vt list [--all] [--status X]` | Lista tareas |
 | `vt show <id> [--json]` | Imprime tarea |
 | `vt claim <id> [--by agent] [--force]` | Reclama tarea |
@@ -229,7 +229,7 @@ vt search "indexer chunk size"                  # búsqueda vectorial vía /api/
 | `vt update <id> --status X` | Actualiza status |
 | `vt ready` | Tareas abiertas sin blockers activos, ordenadas por prioridad |
 | `vt dep add\|rm <id> --blocked-by <other>` | Gestiona el grafo de dependencias |
-| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Nota en `09-resources/notes/`, auto-POST a prod `/api/put` (Bearer) |
+| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Nota en `06-resources/notes/`, auto-POST a prod `/api/put` (Bearer) |
 | `vt search "query" [--limit N] [--json]` | Búsqueda vectorial vía `/api/search` (POST + Bearer) |
 | `vt prime` | Imprime referencia completa de comandos |
 
@@ -258,9 +258,9 @@ obsidian-vault/
 +-- 00-inbox/           # suelta notas nuevas aquí, el indexador las recoge
 +-- 01-daily/           # logs diarios
 +-- 02-projects/        # cuadernos por proyecto
-+-- 05-sessions/        # dumps de sesiones de chat de los agentes
-+-- 06-tasks/           # archivos de tareas vt-NNNN-slug.md
-+-- 09-resources/       # referencias de larga vida
++-- 03-sessions/        # dumps de sesiones de chat de los agentes
++-- 04-tasks/           # archivos de tareas vt-NNNN-slug.md
++-- 06-resources/       # referencias de larga vida
 |   +-- notes/          # vt remember escribe aquí
 |   +-- prompts/        # prompts guardados
 +-- _CLAUDE.md          # manual de operación para agentes
@@ -364,7 +364,7 @@ Añade el server al `.mcp.json` del proyecto (o al `~/.claude.json` a nivel de u
 
 Reinicia Claude Code y `/mcp` debería listar `vault-rag` con las tools `put`, `search`, `get`, `backlinks`.
 
-Para integraciones opcionales - un hook `PreCompact` que vuelca el transcript completo a `05-sessions/` antes de que auto-compact lo descarte, y un statusline que muestra `ctx N% (used/max)` para que ejecutes `/clear` proactivamente - mira [`examples/claude-code/`](examples/claude-code/).
+Para integraciones opcionales - un hook `PreCompact` que vuelca el transcript completo a `03-sessions/` antes de que auto-compact lo descarte, y un statusline que muestra `ctx N% (used/max)` para que ejecutes `/clear` proactivamente - mira [`examples/claude-code/`](examples/claude-code/).
 
 ### Codex CLI
 
@@ -425,13 +425,13 @@ Convenciones:
   tool `search` con la consulta del usuario. Lee los top results con
   `get` si los snippets no alcanzan.
 - Cuando aprendas algo durable (decisión, patrón, gotcha), persístelo
-  vía `put` en `09-resources/notes/YYYY-MM-DD-slug.md`.
-- Tira los session dumps y los hilos largos de chat a `05-sessions/`.
+  vía `put` en `06-resources/notes/YYYY-MM-DD-slug.md`.
+- Tira los session dumps y los hilos largos de chat a `03-sessions/`.
 - Nunca escribas fuera de tu namespace de agente excepto `00-inbox/`
-  (intake), `05-sessions/` (transcripts) y `09-resources/notes/`
+  (intake), `03-sessions/` (transcripts) y `06-resources/notes/`
   (conocimiento).
 - Para las tasks usa la CLI `vt` en el host (no MCP). Las tasks viven
-  en `06-tasks/vt-NNNN-slug.md`. `vt ready` para encontrar trabajo,
+  en `04-tasks/vt-NNNN-slug.md`. `vt ready` para encontrar trabajo,
   `vt claim` para tomarlo.
 
 El vault es la fuente de verdad. Buscá antes de preguntar. Persiste lo

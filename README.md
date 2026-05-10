@@ -221,7 +221,7 @@ vt search "indexer chunk size"                  # vector search via /api/search
 
 | Command | What it does |
 |---|---|
-| `vt create [-t type] [-p prio] "title"` | New task in `06-tasks/vt-NNNN-slug.md` |
+| `vt create [-t type] [-p prio] "title"` | New task in `04-tasks/vt-NNNN-slug.md` |
 | `vt list [--all] [--status X]` | List tasks |
 | `vt show <id> [--json]` | Print task |
 | `vt claim <id> [--by agent] [--force]` | Claim task |
@@ -229,7 +229,7 @@ vt search "indexer chunk size"                  # vector search via /api/search
 | `vt update <id> --status X` | Update status |
 | `vt ready` | Open tasks with no active blockers, priority-sorted |
 | `vt dep add\|rm <id> --blocked-by <other>` | Manage dep graph |
-| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Note in `09-resources/notes/`, auto-POST to prod `/api/put` (Bearer) |
+| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Note in `06-resources/notes/`, auto-POST to prod `/api/put` (Bearer) |
 | `vt search "query" [--limit N] [--json]` | Vector search via `/api/search` (POST + Bearer) |
 | `vt prime` | Print full command reference |
 
@@ -258,9 +258,9 @@ obsidian-vault/
 +-- 00-inbox/           # drop new notes here, indexer picks them up
 +-- 01-daily/           # daily logs
 +-- 02-projects/        # per-project notebooks
-+-- 05-sessions/        # chat session dumps from agents
-+-- 06-tasks/           # vt-NNNN-slug.md task files
-+-- 09-resources/       # long-lived references
++-- 03-sessions/        # chat session dumps from agents
++-- 04-tasks/           # vt-NNNN-slug.md task files
++-- 06-resources/       # long-lived references
 |   +-- notes/          # vt remember writes here
 |   +-- prompts/        # saved prompts
 +-- _CLAUDE.md          # operating manual for agents
@@ -367,7 +367,7 @@ Add the server to your project's `.mcp.json` (or to user-level `~/.claude.json`)
 
 Restart Claude Code, then `/mcp` should list `vault-rag` with tools `put`, `search`, `get`, `backlinks`.
 
-For optional integrations - a `PreCompact` hook that dumps the full transcript to `05-sessions/` before auto-compact discards it, and a statusline that shows `ctx N% (used/max)` so you can `/clear` proactively - see [`examples/claude-code/`](examples/claude-code/).
+For optional integrations - a `PreCompact` hook that dumps the full transcript to `03-sessions/` before auto-compact discards it, and a statusline that shows `ctx N% (used/max)` so you can `/clear` proactively - see [`examples/claude-code/`](examples/claude-code/).
 
 ### Codex CLI
 
@@ -428,12 +428,12 @@ Conventions:
   the user's query. Read the top results with the `get` tool if the snippets
   are not enough.
 - When you learn something durable (decision, pattern, gotcha), persist it
-  via the `put` tool to `09-resources/notes/YYYY-MM-DD-slug.md`.
-- Drop session dumps and long chat threads into `05-sessions/`.
+  via the `put` tool to `06-resources/notes/YYYY-MM-DD-slug.md`.
+- Drop session dumps and long chat threads into `03-sessions/`.
 - Never write outside your agent namespace except `00-inbox/` (intake) and
-  `05-sessions/` (transcripts) and `09-resources/notes/` (knowledge).
+  `03-sessions/` (transcripts) and `06-resources/notes/` (knowledge).
 - For tasks, use the `vt` CLI on the host (not MCP). Tasks live in
-  `06-tasks/vt-NNNN-slug.md`. `vt ready` to find work, `vt claim` to take it.
+  `04-tasks/vt-NNNN-slug.md`. `vt ready` to find work, `vt claim` to take it.
 
 The vault is the source of truth. Search before asking. Persist what matters.
 ```

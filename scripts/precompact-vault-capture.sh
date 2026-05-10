@@ -36,7 +36,7 @@ curl -fsS -m 3 -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5679/healthz >
 DATE=$(date -u +%Y-%m-%d)
 TIME=$(date -u +%H%M)
 SHORT_ID=${SESSION_ID:0:8}
-PATH_REL="05-sessions/${DATE}-${TIME}-${SHORT_ID:-unknown}.md"
+PATH_REL="03-sessions/${DATE}-${TIME}-${SHORT_ID:-unknown}.md"
 
 TRANSCRIPT_TEXT=$(python3 - "$TRANSCRIPT" <<'PY' 2>>"$LOG"
 import json, sys

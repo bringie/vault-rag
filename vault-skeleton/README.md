@@ -9,8 +9,8 @@ Reference layout for the Obsidian vault that vault-rag indexes.
 | `00-inbox/` | Quick captures, unsorted notes |
 | `01-daily/` | Daily notes (one file per day) |
 | `02-projects/` | Long-running projects, each in its own subfolder |
-| `05-sessions/` | Conversation transcripts, agent session logs |
-| `09-resources/` | Reference material, prompts, snippets |
+| `03-sessions/` | Conversation transcripts, agent session logs |
+| `06-resources/` | Reference material, prompts, snippets |
 
 ## How vault-rag uses it
 

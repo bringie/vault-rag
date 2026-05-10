@@ -44,7 +44,7 @@ const TOOLS = [
   },
   {
     name: 'put',
-    description: 'Create or update a vault note. Auto-frontmatter (created/updated/source). Triggers reindex unless reindex=false. Writes under agents/<agent_id>/ unless path begins with 00-inbox/ or 05-sessions/.',
+    description: 'Create or update a vault note. Auto-frontmatter (created/updated/source). Triggers reindex unless reindex=false. Writes under agents/<agent_id>/ unless path begins with 00-inbox/ or 03-sessions/.',
     inputSchema: {
       type: 'object',
       properties: {

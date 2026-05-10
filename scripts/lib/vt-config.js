@@ -41,10 +41,10 @@ function resolveConfig() {
     );
   }
 
-  const tasksDir = path.join(vaultDir, '06-tasks');
+  const tasksDir = path.join(vaultDir, '04-tasks');
   const seqDir   = path.join(vaultDir, '.vt');
   const seqFile  = path.join(seqDir, 'seq');
-  const notesDir = path.join(vaultDir, '09-resources', 'notes');
+  const notesDir = path.join(vaultDir, '06-resources', 'notes');
 
   const apiBase = process.env.VT_API_BASE
     || get('VAULT_RAG_API_URL')

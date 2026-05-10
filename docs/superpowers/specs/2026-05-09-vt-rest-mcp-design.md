@@ -9,7 +9,7 @@ Make `vt` (vault task tracker) a first-class part of the vault-rag stack. Tasks 
 
 ## Why
 
-- Today `vt` writes to `<oss-repo>/obsidian-vault/06-tasks/`, but production MCP indexes a different vault (`/root/obsidian-vault` on the brain server). Tasks are invisible to agents.
+- Today `vt` writes to `<oss-repo>/obsidian-vault/04-tasks/`, but production MCP indexes a different vault (`/root/obsidian-vault` on the brain server). Tasks are invisible to agents.
 - We want one task tracker shared across all agents, queryable through the same API surface as the rest of the vault.
 - We want vt to ship as part of the vault-rag project, advertised in the README.
 
@@ -17,7 +17,7 @@ Make `vt` (vault task tracker) a first-class part of the vault-rag stack. Tasks 
 
 | Area | Decision |
 |---|---|
-| Storage of truth | Markdown files in `/vault/06-tasks/*.md` (no extra DB table). |
+| Storage of truth | Markdown files in `/vault/04-tasks/*.md` (no extra DB table). |
 | CLI mode | REST-only thin client. Requires `VAULT_RAG_URL` + `VAULT_RAG_API_TOKEN`. |
 | Scope v1 | Full parity with current vt: create, list, ready, show, claim, close, update, dep add, dep rm, remember. |
 | Agent identity | Self-declared via `by` field in body (or `X-Agent` header). One shared API token. |
@@ -34,10 +34,10 @@ File layout (under /opt/vault-rag/scripts/):
   mcp-shim.js      MODIFY    Registers 9 task_* tools. Each tool proxies to rag-api over HTTP.
   vt.js            REWRITE   REST client (~150 LOC). CLI parsing + fetch. No filesystem code.
   bin/vt           UNCHANGED Launcher script.
-  vt-migrate.js    NEW       One-shot: copy local 06-tasks/*.md into vault via /api/task/import.
+  vt-migrate.js    NEW       One-shot: copy local 04-tasks/*.md into vault via /api/task/import.
 
 Containers:
-  vault-rag-api    only writer to /vault/06-tasks/. Already mounts /vault rw.
+  vault-rag-api    only writer to /vault/04-tasks/. Already mounts /vault rw.
   vault-rag-mcp    talks to rag-api over docker network (existing pattern).
 
 Concurrency:
@@ -53,7 +53,7 @@ vt CLI:
     → POST https://brain/api/task/create  Bearer ...
        Body {title:"Goal", type:"epic", priority:1}
     → rag-api: vt-core.create(VAULT_PATH, args)
-    → write /vault/06-tasks/vt-NNNN-goal.md
+    → write /vault/04-tasks/vt-NNNN-goal.md
     → return {id:"vt-NNNN", path:...}
 
 Agent via MCP:
@@ -80,7 +80,7 @@ Body:
   "by": "agent-name (optional, default: 'agent')"
 }
 ```
-Returns: `{id:"vt-NNNN", path:"06-tasks/vt-NNNN-slug.md"}`. Increments `.vt/seq` atomically.
+Returns: `{id:"vt-NNNN", path:"04-tasks/vt-NNNN-slug.md"}`. Increments `.vt/seq` atomically.
 
 ### `POST /api/task/list`
 
@@ -177,9 +177,9 @@ If env missing: print actionable error and exit 1.
 Hard cut, no backward compat:
 
 1. Implement server side + new CLI on a branch.
-2. Run `vt-migrate.js`: reads existing `<oss-repo>/obsidian-vault/06-tasks/*.md` and posts each to `POST /api/task/import` with body `{path: "06-tasks/vt-NNNN-slug.md", content: "<full markdown including frontmatter>"}`. The endpoint writes verbatim and updates `.vt/seq` to `max(seq, max(id))`. It is gated on env `VAULT_RAG_ALLOW_IMPORT=1` and refuses if the file already exists.
+2. Run `vt-migrate.js`: reads existing `<oss-repo>/obsidian-vault/04-tasks/*.md` and posts each to `POST /api/task/import` with body `{path: "04-tasks/vt-NNNN-slug.md", content: "<full markdown including frontmatter>"}`. The endpoint writes verbatim and updates `.vt/seq` to `max(seq, max(id))`. It is gated on env `VAULT_RAG_ALLOW_IMPORT=1` and refuses if the file already exists.
 3. After migration verified: remove `/api/task/import`, remove old vt.js filesystem code paths.
-4. Existing local `obsidian-vault/06-tasks/` in the OSS repo is left as documentation/example, not used at runtime.
+4. Existing local `obsidian-vault/04-tasks/` in the OSS repo is left as documentation/example, not used at runtime.
 
 The two existing tasks (vt-0001, vt-0002) get migrated.
 
@@ -225,4 +225,4 @@ CI: extend existing test pipeline to include the new node and bats tests.
 - All 9 MCP `task_*` tools listed by `tools/list` and callable.
 - Existing `tests/test-vt.bats` passes against the new REST-backed CLI.
 - README docs show three call patterns (curl, MCP, vt) and they all work.
-- vt-0001 and vt-0002 visible in `/vault/06-tasks/` on prod after migration.
+- vt-0001 and vt-0002 visible in `/vault/04-tasks/` on prod after migration.

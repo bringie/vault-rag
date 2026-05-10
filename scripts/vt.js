@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// vt: vault-task CLI. Replaces beads. Tasks live as markdown in obsidian-vault/06-tasks/.
+// vt: vault-task CLI. Replaces beads. Tasks live as markdown in obsidian-vault/04-tasks/.
 
 const fs = require('fs');
 const path = require('path');
@@ -260,7 +260,7 @@ async function cmdRemember(cfg, args) {
 }
 
 function cmdPrime() {
-  const help = `vt - vault-task CLI. Tasks as markdown in obsidian-vault/06-tasks/.
+  const help = `vt - vault-task CLI. Tasks as markdown in obsidian-vault/04-tasks/.
 
 Commands:
   vt create -t task|epic|bug -p N "Title"  Create task. Returns vt-NNNN.
@@ -273,7 +273,7 @@ Commands:
   vt dep add|rm <id> --blocked-by <other>
   vt search <query> [--limit N] [--json]   Vector search via /api/search (POST + Bearer).
   vt remember "note" [--tags a,b] [--no-sync] [--quiet]
-                                           Save note → 09-resources/notes/, then auto-sync to prod
+                                           Save note → 06-resources/notes/, then auto-sync to prod
                                            via /api/put (requires VAULT_RAG_API_URL + _TOKEN env).
   vt prime                                  This help.
 
@@ -288,7 +288,7 @@ Frontmatter schema:
   priority (0-3), created, updated, closed, closed_reason, claimed_by, claimed_at,
   blocked_by[], discovered_from, epic, tags[]
 
-Storage: obsidian-vault/06-tasks/vt-NNNN-slug.md
+Storage: obsidian-vault/04-tasks/vt-NNNN-slug.md
 Counter: obsidian-vault/.vt/seq (atomic O_EXCL lock)
 `;
   process.stdout.write(help);

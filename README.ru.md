@@ -221,7 +221,7 @@ vt search "indexer chunk size"                  # векторный поиск 
 
 | Команда | Что делает |
 |---|---|
-| `vt create [-t type] [-p prio] "title"` | Новая задача в `06-tasks/vt-NNNN-slug.md` |
+| `vt create [-t type] [-p prio] "title"` | Новая задача в `04-tasks/vt-NNNN-slug.md` |
 | `vt list [--all] [--status X]` | Список задач |
 | `vt show <id> [--json]` | Печать задачи |
 | `vt claim <id> [--by agent] [--force]` | Захват задачи |
@@ -229,7 +229,7 @@ vt search "indexer chunk size"                  # векторный поиск 
 | `vt update <id> --status X` | Обновить статус |
 | `vt ready` | Открытые задачи без активных блокеров, с сортировкой по приоритету |
 | `vt dep add\|rm <id> --blocked-by <other>` | Управление графом зависимостей |
-| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Заметка в `09-resources/notes/`, авто-POST в прод `/api/put` (Bearer) |
+| `vt remember "text" [--tags ...] [--no-sync] [--quiet]` | Заметка в `06-resources/notes/`, авто-POST в прод `/api/put` (Bearer) |
 | `vt search "query" [--limit N] [--json]` | Векторный поиск через `/api/search` (POST + Bearer) |
 | `vt prime` | Полный справочник команд |
 
@@ -258,9 +258,9 @@ obsidian-vault/
 +-- 00-inbox/           # бросайте новые заметки сюда, индексер подберёт
 +-- 01-daily/           # ежедневные логи
 +-- 02-projects/        # ноутбуки по проектам
-+-- 05-sessions/        # дампы чат-сессий от агентов
-+-- 06-tasks/           # vt-NNNN-slug.md файлы задач
-+-- 09-resources/       # долгоживущие референсы
++-- 03-sessions/        # дампы чат-сессий от агентов
++-- 04-tasks/           # vt-NNNN-slug.md файлы задач
++-- 06-resources/       # долгоживущие референсы
 |   +-- notes/          # сюда пишет vt remember
 |   +-- prompts/        # сохранённые промты
 +-- _CLAUDE.md          # operating manual для агентов
@@ -367,7 +367,7 @@ cp .env.example .env
 
 Перезапустите Claude Code, `/mcp` должен показать `vault-rag` с инструментами `put`, `search`, `get`, `backlinks`.
 
-Дополнительные интеграции - `PreCompact` хук, сбрасывающий полный transcript в `05-sessions/` до того как auto-compact его потеряет, и statusline с `ctx N% (used/max)`, чтобы вовремя жать `/clear` - смотри [`examples/claude-code/`](examples/claude-code/).
+Дополнительные интеграции - `PreCompact` хук, сбрасывающий полный transcript в `03-sessions/` до того как auto-compact его потеряет, и statusline с `ctx N% (used/max)`, чтобы вовремя жать `/clear` - смотри [`examples/claude-code/`](examples/claude-code/).
 
 ### Codex CLI
 
@@ -428,12 +428,12 @@ curl -sS -X POST -H "Authorization: Bearer $API_TOKEN" \
   запросом пользователя. Если сниппетов мало - подтяни топ-результаты
   через `get`.
 - Когда узнаёшь что-то долгоживущее (решение, паттерн, нюанс) - сохрани
-  через `put` в `09-resources/notes/YYYY-MM-DD-slug.md`.
-- Дампы сессий и длинные чат-треды кидай в `05-sessions/`.
+  через `put` в `06-resources/notes/YYYY-MM-DD-slug.md`.
+- Дампы сессий и длинные чат-треды кидай в `03-sessions/`.
 - Никогда не пиши вне своего agent namespace кроме `00-inbox/` (приём),
-  `05-sessions/` (транскрипты) и `09-resources/notes/` (знания).
+  `03-sessions/` (транскрипты) и `06-resources/notes/` (знания).
 - Для задач используй `vt` CLI на хосте (не MCP). Задачи живут в
-  `06-tasks/vt-NNNN-slug.md`. `vt ready` - найти работу, `vt claim` - взять.
+  `04-tasks/vt-NNNN-slug.md`. `vt ready` - найти работу, `vt claim` - взять.
 
 Волт - source of truth. Сначала ищи, потом спрашивай. Сохраняй важное.
 ```

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreCompact hook: dump full transcript to vault-rag 05-sessions/ before lossy summary."""
+"""PreCompact hook: dump full transcript to vault-rag 03-sessions/ before lossy summary."""
 
 import json
 import os
@@ -185,7 +185,7 @@ def main() -> int:
     body = render_markdown(turns, session_id, trigger)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
     short = session_id[:8] if session_id != "unknown" else "anon"
-    vault_path = f"05-sessions/{ts}-precompact-{short}.md"
+    vault_path = f"03-sessions/{ts}-precompact-{short}.md"
 
     env = load_env()
     ok, msg = post_to_vault(env, vault_path, body)
