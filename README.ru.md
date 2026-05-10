@@ -256,15 +256,16 @@ VAULT_RAG_API_TOKEN=<из /opt/vault-rag/.env на сервере>
 obsidian-vault/
 +-- .vt/                # счётчик и состояние vt (gitignored из скелета)
 +-- 00-inbox/           # бросайте новые заметки сюда, индексер подберёт
-+-- 01-daily/           # ежедневные логи
++-- 01-knowledge/       # долговечные знания, конвенции, референсы
 +-- 02-projects/        # ноутбуки по проектам
-+-- 03-sessions/        # дампы чат-сессий от агентов
++-- 03-sessions/        # дампы чат-сессий от агентов (precompact-снимки)
 +-- 04-tasks/           # vt-NNNN-slug.md файлы задач
++-- 05-logs/            # build-логи, активность сессий, audit trails
 +-- 06-resources/       # долгоживущие референсы
 |   +-- notes/          # сюда пишет vt remember
 |   +-- prompts/        # сохранённые промты
 +-- _CLAUDE.md          # operating manual для агентов
-+-- index.md            # точка входа
++-- _index/             # INDEX.md, knowledge-index.md, recent.md (точки входа)
 ```
 
 ---

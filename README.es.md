@@ -256,15 +256,16 @@ Sin esto, `vt remember` cae a modo local-only e imprime `vt: local-only (no VAUL
 obsidian-vault/
 +-- .vt/                # contador y estado de vt (gitignored desde el skeleton)
 +-- 00-inbox/           # suelta notas nuevas aquí, el indexador las recoge
-+-- 01-daily/           # logs diarios
++-- 01-knowledge/       # conocimiento duradero, convenciones, referencias
 +-- 02-projects/        # cuadernos por proyecto
-+-- 03-sessions/        # dumps de sesiones de chat de los agentes
++-- 03-sessions/        # dumps de sesiones de chat de los agentes (snapshots precompact)
 +-- 04-tasks/           # archivos de tareas vt-NNNN-slug.md
++-- 05-logs/            # build logs, actividad de sesión, audit trails
 +-- 06-resources/       # referencias de larga vida
 |   +-- notes/          # vt remember escribe aquí
 |   +-- prompts/        # prompts guardados
 +-- _CLAUDE.md          # manual de operación para agentes
-+-- index.md            # punto de entrada
++-- _index/             # INDEX.md, knowledge-index.md, recent.md (puntos de entrada)
 ```
 
 ---
