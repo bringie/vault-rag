@@ -57,4 +57,11 @@ function validateTargetFolder(folder) {
   }
 }
 
-module.exports = { parseClaudeResponse, validateTargetFolder, ALLOWED_TARGETS };
+function shouldSkip(basename, frontmatter) {
+  if (basename === 'current-context.md') return true;
+  if (basename.startsWith('_')) return true;
+  if (frontmatter && frontmatter.type === 'index') return true;
+  return false;
+}
+
+module.exports = { parseClaudeResponse, validateTargetFolder, shouldSkip, ALLOWED_TARGETS };

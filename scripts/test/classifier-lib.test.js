@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseClaudeResponse, validateTargetFolder } = require('../lib/classifier-lib');
+const { parseClaudeResponse, validateTargetFolder, shouldSkip } = require('../lib/classifier-lib');
 
 test('parseClaudeResponse: valid JSON', () => {
   const stdout = JSON.stringify({
@@ -60,4 +60,24 @@ test('validateTargetFolder: rejects path traversal', () => {
 test('validateTargetFolder: rejects empty/null', () => {
   assert.throws(() => validateTargetFolder(''), /invalid_target/);
   assert.throws(() => validateTargetFolder(null), /invalid_target/);
+});
+
+test('shouldSkip: current-context.md', () => {
+  assert.equal(shouldSkip('current-context.md', {}), true);
+});
+
+test('shouldSkip: type=index frontmatter', () => {
+  assert.equal(shouldSkip('foo.md', { type: 'index' }), true);
+});
+
+test('shouldSkip: underscore prefix', () => {
+  assert.equal(shouldSkip('_internal.md', {}), true);
+});
+
+test('shouldSkip: regular file is processed', () => {
+  assert.equal(shouldSkip('regular-note.md', { tags: ['x'] }), false);
+});
+
+test('shouldSkip: missing frontmatter is processed', () => {
+  assert.equal(shouldSkip('regular-note.md', null), false);
 });
