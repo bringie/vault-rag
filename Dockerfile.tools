@@ -1,7 +1,9 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache git openssh-client tini ca-certificates wget \
+RUN apk add --no-cache git openssh-client tini ca-certificates wget bash postgresql-client \
  && rm -rf /var/cache/apk/*
+
+RUN npm install -g @anthropic-ai/claude-code
 
 ENV HOME=/root
 WORKDIR /scripts
