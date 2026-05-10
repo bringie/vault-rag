@@ -79,7 +79,45 @@ function enrichFrontmatter(existing, result, nowIso) {
   return mergeFrontmatter(base, patch);
 }
 
+const yaml = require('js-yaml');
+
+const SYSTEM = [
+  'You classify markdown notes into a Johnny.Decimal vault.',
+  'Folders:',
+  '  01-knowledge  : durable concepts, references, cheat-sheets',
+  '  02-projects   : ongoing project artefacts (active work)',
+  '  05-logs       : session logs, incident notes, debug transcripts',
+  '  06-resources  : external links, prompts, raw resources',
+  '',
+  'Output JSON only, no prose:',
+  '{',
+  '  "target_folder": "01-knowledge"|"02-projects"|"05-logs"|"06-resources",',
+  '  "tags": [3-5 short kebab-case strings],',
+  '  "summary": "<= 200 chars",',
+  '  "type": "note|log|reference|project|prompt|other",',
+  '  "confidence": 0.0-1.0',
+  '}',
+].join('\n');
+
+function buildPrompt({ basename, frontmatter, body }) {
+  const fmText =
+    frontmatter && Object.keys(frontmatter).length
+      ? yaml.dump(frontmatter, { lineWidth: -1, sortKeys: false }).trimEnd()
+      : '(none)';
+  const cappedBody = (body || '').slice(0, 6000);
+  return [
+    SYSTEM,
+    '',
+    `PATH: 00-inbox/${basename}`,
+    'EXISTING_FRONTMATTER:',
+    fmText,
+    '',
+    'BODY:',
+    cappedBody,
+  ].join('\n');
+}
+
 module.exports = {
   parseClaudeResponse, validateTargetFolder, shouldSkip,
-  enrichFrontmatter, ALLOWED_TARGETS,
+  enrichFrontmatter, buildPrompt, ALLOWED_TARGETS,
 };

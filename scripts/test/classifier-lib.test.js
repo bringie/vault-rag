@@ -1,6 +1,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseClaudeResponse, validateTargetFolder, shouldSkip, enrichFrontmatter } = require('../lib/classifier-lib');
+const {
+  parseClaudeResponse, validateTargetFolder, shouldSkip,
+  enrichFrontmatter, buildPrompt,
+} = require('../lib/classifier-lib');
 
 test('parseClaudeResponse: valid JSON', () => {
   const stdout = JSON.stringify({
@@ -128,4 +131,38 @@ test('enrichFrontmatter: handles null base', () => {
     '2026-05-10T10:00:00Z'
   );
   assert.deepEqual(out.tags, ['x']);
+});
+
+test('buildPrompt: includes basename, frontmatter, body', () => {
+  const p = buildPrompt({
+    basename: 'foo.md',
+    frontmatter: { tags: ['x'] },
+    body: 'hello world',
+  });
+  assert.match(p, /PATH: 00-inbox\/foo\.md/);
+  assert.match(p, /tags:/);
+  assert.match(p, /hello world/);
+});
+
+test('buildPrompt: caps body at 6000 chars', () => {
+  const big = 'a'.repeat(8000);
+  const p = buildPrompt({ basename: 'big.md', frontmatter: {}, body: big });
+  const m = p.match(/BODY:\n(a+)/);
+  assert.ok(m);
+  assert.ok(m[1].length <= 6000);
+});
+
+test('buildPrompt: empty frontmatter is rendered as "(none)"', () => {
+  const p = buildPrompt({ basename: 'foo.md', frontmatter: {}, body: 'x' });
+  assert.match(p, /EXISTING_FRONTMATTER:\n\(none\)/);
+});
+
+test('buildPrompt: includes allowed-folder list and required output schema', () => {
+  const p = buildPrompt({ basename: 'foo.md', frontmatter: {}, body: 'x' });
+  assert.match(p, /01-knowledge/);
+  assert.match(p, /02-projects/);
+  assert.match(p, /05-logs/);
+  assert.match(p, /06-resources/);
+  assert.match(p, /target_folder/);
+  assert.match(p, /confidence/);
 });
