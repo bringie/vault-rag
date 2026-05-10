@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseClaudeResponse, validateTargetFolder, shouldSkip } = require('../lib/classifier-lib');
+const { parseClaudeResponse, validateTargetFolder, shouldSkip, enrichFrontmatter } = require('../lib/classifier-lib');
 
 test('parseClaudeResponse: valid JSON', () => {
   const stdout = JSON.stringify({
@@ -80,4 +80,52 @@ test('shouldSkip: regular file is processed', () => {
 
 test('shouldSkip: missing frontmatter is processed', () => {
   assert.equal(shouldSkip('regular-note.md', null), false);
+});
+
+test('enrichFrontmatter: merges tags with existing, deduped', () => {
+  const out = enrichFrontmatter(
+    { tags: ['rag', 'design'] },
+    { tags: ['rag', 'pgvector'], summary: 's', type: 'note', confidence: 0.9 },
+    '2026-05-10T10:00:00Z'
+  );
+  assert.deepEqual(out.tags, ['rag', 'design', 'pgvector']);
+});
+
+test('enrichFrontmatter: preserves existing type', () => {
+  const out = enrichFrontmatter(
+    { type: 'log' },
+    { tags: [], summary: 's', type: 'note', confidence: 0.9 },
+    '2026-05-10T10:00:00Z'
+  );
+  assert.equal(out.type, 'log');
+});
+
+test('enrichFrontmatter: sets type from result if frontmatter has none', () => {
+  const out = enrichFrontmatter(
+    {},
+    { tags: [], summary: 's', type: 'reference', confidence: 0.9 },
+    '2026-05-10T10:00:00Z'
+  );
+  assert.equal(out.type, 'reference');
+});
+
+test('enrichFrontmatter: sets classified_* fields', () => {
+  const out = enrichFrontmatter(
+    {},
+    { tags: ['x'], summary: 's', type: 'note', confidence: 0.85 },
+    '2026-05-10T10:00:00Z'
+  );
+  assert.equal(out.classified_at, '2026-05-10T10:00:00Z');
+  assert.equal(out.classified_by, 'haiku/inbox-classifier-v1');
+  assert.equal(out.classifier_confidence, 0.85);
+  assert.equal(out.summary, 's');
+});
+
+test('enrichFrontmatter: handles null base', () => {
+  const out = enrichFrontmatter(
+    null,
+    { tags: ['x'], summary: 's', type: 'note', confidence: 0.85 },
+    '2026-05-10T10:00:00Z'
+  );
+  assert.deepEqual(out.tags, ['x']);
 });

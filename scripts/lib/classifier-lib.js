@@ -64,4 +64,22 @@ function shouldSkip(basename, frontmatter) {
   return false;
 }
 
-module.exports = { parseClaudeResponse, validateTargetFolder, shouldSkip, ALLOWED_TARGETS };
+const { mergeFrontmatter } = require('./vault-lib');
+
+function enrichFrontmatter(existing, result, nowIso) {
+  const base = existing || {};
+  const patch = {
+    tags: result.tags,
+    summary: result.summary,
+    classified_at: nowIso,
+    classified_by: 'haiku/inbox-classifier-v1',
+    classifier_confidence: result.confidence,
+  };
+  if (!base.type) patch.type = result.type;
+  return mergeFrontmatter(base, patch);
+}
+
+module.exports = {
+  parseClaudeResponse, validateTargetFolder, shouldSkip,
+  enrichFrontmatter, ALLOWED_TARGETS,
+};
