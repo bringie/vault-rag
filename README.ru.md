@@ -367,6 +367,8 @@ cp .env.example .env
 
 Перезапустите Claude Code, `/mcp` должен показать `vault-rag` с инструментами `put`, `search`, `get`, `backlinks`.
 
+Дополнительные интеграции - `PreCompact` хук, сбрасывающий полный transcript в `05-sessions/` до того как auto-compact его потеряет, и statusline с `ctx N% (used/max)`, чтобы вовремя жать `/clear` - смотри [`examples/claude-code/`](examples/claude-code/).
+
 ### Codex CLI
 
 В `~/.codex/config.toml`:

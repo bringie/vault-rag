@@ -364,6 +364,8 @@ Añade el server al `.mcp.json` del proyecto (o al `~/.claude.json` a nivel de u
 
 Reinicia Claude Code y `/mcp` debería listar `vault-rag` con las tools `put`, `search`, `get`, `backlinks`.
 
+Para integraciones opcionales - un hook `PreCompact` que vuelca el transcript completo a `05-sessions/` antes de que auto-compact lo descarte, y un statusline que muestra `ctx N% (used/max)` para que ejecutes `/clear` proactivamente - mira [`examples/claude-code/`](examples/claude-code/).
+
 ### Codex CLI
 
 En `~/.codex/config.toml`:
