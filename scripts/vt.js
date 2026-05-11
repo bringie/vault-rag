@@ -227,11 +227,17 @@ async function cmdRemember(cfg, args) {
   const fm = `---\ntype: note\ncreated: ${nowIso()}\ntags: ${JSON.stringify(tags)}\n---\n`;
   const body = `# ${titleLine}\n\n${text}\n`;
   const fileContent = fm + body;
-  fs.writeFileSync(file, fileContent);
-  process.stdout.write(`remembered → ${file}\n`);
+  const serverOnly = !!args.flags['server-only'];
+  if (!serverOnly) {
+    fs.writeFileSync(file, fileContent);
+    process.stdout.write(`remembered → ${file}\n`);
+  }
 
   if (args.flags['no-sync']) return;
   if (!cfg.apiBase || !cfg.apiToken) {
+    if (serverOnly) {
+      die('vt: --server-only requires VAULT_RAG_API_URL + VAULT_RAG_API_TOKEN');
+    }
     if (!args.flags.quiet) {
       process.stderr.write(`vt: local-only (no VAULT_RAG_API_URL/TOKEN — note NOT pushed to prod)\n`);
     }
@@ -272,9 +278,11 @@ Commands:
   vt close <id> --reason "..."
   vt dep add|rm <id> --blocked-by <other>
   vt search <query> [--limit N] [--json]   Vector search via /api/search (POST + Bearer).
-  vt remember "note" [--tags a,b] [--no-sync] [--quiet]
+  vt remember "note" [--tags a,b] [--no-sync] [--quiet] [--server-only]
                                            Save note → 06-resources/notes/, then auto-sync to prod
                                            via /api/put (requires VAULT_RAG_API_URL + _TOKEN env).
+                                           --server-only: skip local write, push to brain only
+                                           (brain commits + pushes; avoids local/brain race).
   vt prime                                  This help.
 
 Workflow:
