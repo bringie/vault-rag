@@ -67,6 +67,58 @@ const TOOLS = [
       required: ['target'],
     },
   },
+  {
+    name: 'secret_get',
+    description: 'Read a secret value by name from the encrypted vault. Returns the plain-text value. Secrets are stored age-encrypted in vault-rag git; server decrypts on the fly.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Secret name (e.g. GITLAB_TOKEN)' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'secret_list',
+    description: 'List all secret names (no values). Excludes the _meta entry.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'secret_set',
+    description: 'Create or update a secret. Triggers a git commit + push. Returns the committed sha.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name:  { type: 'string', description: 'Secret name' },
+        value: { type: 'string', description: 'Secret value (plain-text)' },
+      },
+      required: ['name', 'value'],
+    },
+  },
+  {
+    name: 'secret_delete',
+    description: 'Delete a secret by name. Triggers commit + push.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'secret_rotate',
+    description: 'Rotate a secret value. If value omitted or null, server generates a 32-byte hex value. Updates _meta.rotated_at[name].',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name:  { type: 'string' },
+        value: { type: ['string', 'null'], description: 'Optional new value (omit or null → server generates)' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'secret_verify',
+    description: 'Health check: confirm the encrypted vault decrypts and report version, count, last_rotated map.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 async function ragCall(routePath, body) {
@@ -87,10 +139,16 @@ async function ragCall(routePath, body) {
 }
 
 const TOOL_IMPL = {
-  search:    (args) => ragCall('/search',    args),
-  get:       (args) => ragCall('/get',       args),
-  put:       (args) => ragCall('/put',       args),
-  backlinks: (args) => ragCall('/backlinks', args),
+  search:         (args) => ragCall('/search',          args),
+  get:            (args) => ragCall('/get',             args),
+  put:            (args) => ragCall('/put',             args),
+  backlinks:      (args) => ragCall('/backlinks',       args),
+  secret_get:     (args) => ragCall('/secrets/get',     args),
+  secret_list:    ()     => ragCall('/secrets/list',    {}),
+  secret_set:     (args) => ragCall('/secrets/set',     args),
+  secret_delete:  (args) => ragCall('/secrets/delete',  args),
+  secret_rotate:  (args) => ragCall('/secrets/rotate',  args),
+  secret_verify:  ()     => ragCall('/secrets/verify',  {}),
 };
 
 function tokenEqual(a, b) {
