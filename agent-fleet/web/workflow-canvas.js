@@ -58,7 +58,9 @@
 
     let def = JSON.parse(JSON.stringify(definition || { start: null, nodes: [], edges: [] }));
     let selectedId = null;
-    let connectFrom = null;
+    let connectFrom = null;     // node id whose out-port is "armed"
+    let cursorPt = null;        // last svg-space mouse coords for ghost line
+    let ghostPath = null;       // <path> element for the ghost edge
 
     function render() {
       gNodes.innerHTML = '';
@@ -105,53 +107,60 @@
           el('animate', { attributeName: 'opacity', from: 1, to: 0.2, dur: '0.8s', repeatCount: 'indefinite' }, pulse);
         }
         if (interactive) {
-          el('circle', { cx: 0,      cy: NODE_H / 2, r: 5, fill: '#7ad1ff', class: 'wf-port wf-port-in', 'data-node': n.id }, g);
-          el('circle', { cx: NODE_W, cy: NODE_H / 2, r: 5, fill: '#7ad1ff', class: 'wf-port wf-port-out','data-node': n.id }, g);
-          attachNodeInteractions(g, n);
+          const portIn = el('circle', {
+            cx: 0, cy: NODE_H / 2, r: 7,
+            fill: connectFrom && connectFrom !== n.id ? '#f0e060' : '#7ad1ff',
+            stroke: '#0a0a0c', 'stroke-width': 1,
+            class: 'wf-port wf-port-in', 'data-node': n.id,
+          }, g);
+          const portOut = el('circle', {
+            cx: NODE_W, cy: NODE_H / 2, r: 7,
+            fill: connectFrom === n.id ? '#f0e060' : '#7ad1ff',
+            stroke: '#0a0a0c', 'stroke-width': 1,
+            class: 'wf-port wf-port-out', 'data-node': n.id,
+          }, g);
+          portOut.addEventListener('mousedown', (ev) => {
+            ev.stopPropagation();
+            connectFrom = n.id;
+            cursorPt = clientToSvg(ev);
+            render();
+          });
+          portIn.addEventListener('mousedown', (ev) => {
+            ev.stopPropagation();
+            if (connectFrom && connectFrom !== n.id) {
+              // Strip any existing edge from same source to avoid dupes
+              def.edges = def.edges.filter(e => !(e.from === connectFrom && e.to === n.id));
+              def.edges.push({ from: connectFrom, to: n.id });
+              connectFrom = null; cursorPt = null;
+              ghostPath = null; // gEdges was rebuilt in render()
+              notifyChange();
+              render();
+            }
+          });
+          attachNodeDrag(g, n);
         } else {
           g.addEventListener('click', () => { selectedId = n.id; render(); onSelect && onSelect(n); });
         }
       }
     }
 
-    function attachNodeInteractions(g, n) {
-      let dragging = false, offX = 0, offY = 0;
+    // Per-node drag state shared by all node draggers (only one node drags at a time).
+    let dragNode = null, dragOff = { x: 0, y: 0 };
+
+    function attachNodeDrag(g, n) {
       g.addEventListener('mousedown', (ev) => {
         const target = ev.target;
-        if (target.classList && target.classList.contains('wf-port-out')) {
-          connectFrom = n.id;
-          ev.stopPropagation();
-          return;
-        }
-        if (target.classList && target.classList.contains('wf-port-in')) return;
-        dragging = true;
+        // Ports handled by their own listeners; don't start a drag from them.
+        if (target.classList && (target.classList.contains('wf-port-in') || target.classList.contains('wf-port-out'))) return;
+        dragNode = n;
         const pt = clientToSvg(ev);
-        offX = pt.x - n.position.x;
-        offY = pt.y - n.position.y;
+        dragOff.x = pt.x - n.position.x;
+        dragOff.y = pt.y - n.position.y;
         selectedId = n.id;
         onSelect && onSelect(n);
         render();
         ev.stopPropagation();
       });
-      g.addEventListener('mouseup', (ev) => {
-        const target = ev.target;
-        if (connectFrom && connectFrom !== n.id && target.classList && target.classList.contains('wf-port-in')) {
-          def.edges.push({ from: connectFrom, to: n.id });
-          connectFrom = null;
-          notifyChange();
-          render();
-        }
-      });
-      const onMove = (ev) => {
-        if (!dragging) return;
-        const pt = clientToSvg(ev);
-        n.position.x = snap(pt.x - offX);
-        n.position.y = snap(pt.y - offY);
-        render();
-      };
-      const onUp = () => { if (dragging) { dragging = false; notifyChange(); } connectFrom = null; };
-      svg.addEventListener('mousemove', onMove);
-      svg.addEventListener('mouseup', onUp);
     }
 
     function clientToSvg(ev) {
@@ -164,17 +173,64 @@
       onDefinitionChange && onDefinitionChange(JSON.parse(JSON.stringify(def)));
     }
 
+    // Single global listeners for the canvas (one set, regardless of node count).
+    svg.addEventListener('mousemove', (ev) => {
+      if (dragNode) {
+        const pt = clientToSvg(ev);
+        dragNode.position.x = snap(pt.x - dragOff.x);
+        dragNode.position.y = snap(pt.y - dragOff.y);
+        render();
+      } else if (connectFrom) {
+        cursorPt = clientToSvg(ev);
+        drawGhost();
+      }
+    });
+    svg.addEventListener('mouseup', () => {
+      if (dragNode) { dragNode = null; notifyChange(); }
+    });
+
+    function drawGhost() {
+      if (ghostPath && ghostPath.parentNode) ghostPath.parentNode.removeChild(ghostPath);
+      ghostPath = null;
+      if (!connectFrom || !cursorPt) return;
+      const src = def.nodes.find(n => n.id === connectFrom);
+      if (!src) return;
+      const p1 = portPos(src).out;
+      ghostPath = el('path', {
+        d: edgePath(p1, cursorPt),
+        fill: 'none', stroke: '#f0e060', 'stroke-width': 2,
+        'stroke-dasharray': '4,3',
+        'pointer-events': 'none',
+      }, gEdges);
+    }
+
     svg.addEventListener('click', (ev) => {
       if (ev.target === svg || ev.target.parentNode === gGrid) {
-        selectedId = null; connectFrom = null;
+        if (connectFrom) {
+          // Cancel pending connection
+          connectFrom = null; cursorPt = null;
+          if (ghostPath && ghostPath.parentNode) ghostPath.parentNode.removeChild(ghostPath);
+          ghostPath = null;
+          render();
+          return;
+        }
+        selectedId = null;
         onSelect && onSelect(null);
         render();
       }
     });
 
     const keyHandler = (ev) => {
-      if (ev.key !== 'Delete' || !selectedId || !interactive) return;
+      if (!interactive) return;
       if (ev.target && ['INPUT','TEXTAREA','SELECT'].includes(ev.target.tagName)) return;
+      if (ev.key === 'Escape' && connectFrom) {
+        connectFrom = null; cursorPt = null;
+        if (ghostPath && ghostPath.parentNode) ghostPath.parentNode.removeChild(ghostPath);
+        ghostPath = null;
+        render();
+        return;
+      }
+      if (ev.key !== 'Delete' || !selectedId) return;
       def.nodes = def.nodes.filter(n => n.id !== selectedId);
       def.edges = def.edges.filter(e => e.from !== selectedId && e.to !== selectedId);
       if (def.start === selectedId) def.start = (def.nodes[0] && def.nodes[0].id) || null;
