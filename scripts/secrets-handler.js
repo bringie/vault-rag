@@ -53,6 +53,12 @@ class SecretsHandler {
     const out = await execCmd('age', ['-d', '-i', this.ageKeyPath, this.vaultAgePath]);
     return JSON.parse(out.toString('utf8'));
   }
+
+  async _encryptAndWrite(blob) {
+    const json = JSON.stringify(blob);
+    const encrypted = await execCmd('age', ['-R', this.recipientsPath], { stdin: json });
+    fs.writeFileSync(this.vaultAgePath, encrypted);
+  }
 }
 
 module.exports = { SecretsHandler, NotFound, ConflictRetriesExhausted };
