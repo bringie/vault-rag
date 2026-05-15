@@ -217,8 +217,8 @@ async function handleExec({ req, res, body, ctx }) {
   });
   // Read transcript (batcher flush already triggered by session_exit)
   const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out' });
-  const text = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8')
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+  const raw = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8');
+  const text = stripAnsi(raw);
   let cost = null;
   if (ctx.tokmonDb) {
     try { cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, new Date(), s.id); }
@@ -408,14 +408,24 @@ async function handleCostSummary({ req, res, ctx }) {
   send(res, 200, { days, hosts: result });
 }
 
+// Strip both CSI sequences (\x1b[...) — including private-prefix variants like
+// \x1b[?2004h — and 2-byte ESC sequences (\x1b7, \x1b8, \x1b], etc.), and OSC strings.
+function stripAnsi(s) {
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')   // OSC ...BEL or ...ST
+    .replace(/\x1b\[[\d;?<>]*[A-Za-z]/g, '')              // CSI ...final
+    .replace(/\x1b[()][\x20-\x7e]/g, '')                  // charset designate
+    .replace(/\x1b[78=>cDEHMNOPVZ\\]/g, '');              // simple 2-byte ESC sequences
+}
+
 async function handleTranscriptTxt(req, res, ctx) {
-  const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/transcript\\.txt$`, 'i'));
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/transcript\\.txt$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   const rows = await fleetDb.readTranscript(ctx.db, m[1], { sinceSeq: 0, kind: 'pty_out' });
-  const text = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8')
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  const raw = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8');
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-  res.end(text);
+  res.end(stripAnsi(raw));
 }
 
 function dispatchHttp(req, res, ctx) {
