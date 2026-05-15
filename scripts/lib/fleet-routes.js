@@ -4,6 +4,7 @@
 const { WebSocketServer } = require('ws');
 const fleetDb = require('./fleet-db');
 const fleetStatic = require('./fleet-static');
+const fleetCost = require('./fleet-cost');
 const { RingBuffer } = require('./fleet-ring-buffer');
 const { EventBatcher } = require('./fleet-event-batcher');
 
@@ -155,6 +156,33 @@ async function handlePostKill({ req, res, body, ctx }) {
   res.writeHead(204); res.end();
 }
 
+async function handleSessionCost({ req, res, ctx }) {
+  const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/cost$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
+  const s = await fleetDb.getSession(ctx.db, m[1]);
+  if (!s) return send(res, 404, { error: 'session not found' });
+  const host = await fleetDb.getHost(ctx.db, s.host_id);
+  if (!host) return send(res, 404, { error: 'host not found' });
+  const cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, s.ended_at);
+  send(res, 200, { session_id: s.id, host: host.name, ...cost });
+}
+
+async function handleCostSummary({ req, res, ctx }) {
+  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
+  const url = new URL(req.url, 'http://x');
+  const days = parseInt(url.searchParams.get('days') || '7', 10);
+  const hosts = await fleetDb.listHosts(ctx.db);
+  const r = await fleetCost.hostSummary(ctx.tokmonDb, hosts.map(h => h.name), days);
+  const result = hosts.map(h => ({
+    host_id: h.id, host: h.name, status: h.status,
+    usd: r[h.name]?.usd || 0,
+    msgs: r[h.name]?.msgs || 0,
+    by_model: r[h.name]?.by_model || {},
+  }));
+  send(res, 200, { days, hosts: result });
+}
+
 async function handleTranscriptTxt(req, res, ctx) {
   const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/transcript\\.txt$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
@@ -199,6 +227,12 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/transcript\\.txt$`, 'i').test(path)) {
     return handleTranscriptTxt(req, res, ctx);
   }
+
+  // Cost
+  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/cost$`, 'i').test(path)) {
+    return handleSessionCost({ req, res, ctx });
+  }
+  if (method === 'GET' && path === '/fleet/cost/summary') return handleCostSummary({ req, res, ctx });
 
   send(res, 404, { error: 'not found' });
 }

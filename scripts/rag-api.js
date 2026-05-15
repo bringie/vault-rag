@@ -354,6 +354,19 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     try { await pgConnect(); }
     catch (e) { console.error(`[rag-api] pg connect deferred: ${e.message}`); pg = null; }
   }
+  // Connect to tokmon DB for cost queries (best-effort; cost endpoints return 503 if missing)
+  let tokmonPg = null;
+  if (!SKIP_PG) {
+    try {
+      tokmonPg = new Client({ ...PG, database: process.env.VAULT_RAG_TOKMON_DB || 'tokmon' });
+      await tokmonPg.connect();
+      tokmonPg.on('error', (e) => { console.error(`[rag-api] tokmon pg error: ${e.message}`); tokmonPg = null; });
+      fleetCtx.tokmonDb = tokmonPg;
+      console.log(`[rag-api] tokmon db connected for fleet cost ingest`);
+    } catch (e) {
+      console.error(`[rag-api] tokmon connect failed (cost endpoints will 503): ${e.message}`);
+    }
+  }
   // Hand pg client to fleet, run orphan flip + schedule retention.
   if (pg) {
     fleetCtx.db = pg;

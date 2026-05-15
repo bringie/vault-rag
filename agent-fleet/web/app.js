@@ -7,6 +7,7 @@
     token: null,
     hosts: [],
     sessions: [],
+    cost: null,           // { days, hosts: [{host_id, host, usd, msgs}] }
     selected: null,
     ws: null,
     term: null,
@@ -97,13 +98,17 @@
     $('sessions-count').textContent = state.sessions.length;
 
     const hostsUl = $('hosts');
+    const costByHost = {};
+    if (state.cost) for (const h of state.cost.hosts) costByHost[h.host_id] = h.usd;
     hostsUl.innerHTML = state.hosts.length === 0
       ? `<li class="empty"><span class="dot off"></span><span class="host-name" style="color:var(--text-faint)">no hosts registered</span></li>`
       : state.hosts.map(h => {
           const n = state.sessions.filter(s => s.host_id === h.id && s.status === 'running').length;
+          const cost = costByHost[h.id];
+          const costStr = (cost != null) ? `$${cost.toFixed(2)}` : '—';
           return `<li data-host="${h.id}">
             <span class="dot ${dotClass(h.status, 'host')}"></span>
-            <span class="host-name">${esc(h.name)}</span>
+            <span class="host-name">${esc(h.name)} <span class="host-count">· ${costStr}/7d</span></span>
             <span class="host-count">${n} sess</span>
           </li>`;
         }).join('');
@@ -146,6 +151,16 @@
       const [hosts, sessions] = await Promise.all([api('GET', '/hosts'), api('GET', '/sessions')]);
       state.hosts = hosts;
       state.sessions = sessions;
+      // cost is best-effort (503 if tokmon down); don't break refresh
+      try {
+        const cost = await api('GET', '/cost/summary?days=7');
+        state.cost = cost;
+        const total = cost.hosts.reduce((n, h) => n + (h.usd || 0), 0);
+        $('stat-cost').textContent = `$${total.toFixed(2)}`;
+      } catch (e) {
+        state.cost = null;
+        $('stat-cost').textContent = '—';
+      }
       render();
     } catch (e) {
       if (e.message !== 'auth') console.warn('refresh', e);
@@ -177,6 +192,7 @@
   function attachSession(id) {
     if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
     if (state.term) { try { state.term.dispose(); } catch {} state.term = null; }
+    if (state.sessionCostTimer) { clearInterval(state.sessionCostTimer); state.sessionCostTimer = null; }
     state.selected = id;
     document.querySelector('.viewer').classList.remove('exited');
     render();
@@ -184,8 +200,19 @@
     $('v-id').textContent = short(id);
     $('v-host').textContent = '…';
     $('v-cwd').textContent = '…';
+    $('v-cost').textContent = '—';
     setViewerStatus('attaching');
     setOverlay(false);
+
+    // Per-session cost: refresh every 10s while attached
+    const refreshSessCost = async () => {
+      try {
+        const c = await api('GET', `/sessions/${id}/cost`);
+        $('v-cost').textContent = `$${(c.usd || 0).toFixed(4)} · ${c.msgs} msgs`;
+      } catch { $('v-cost').textContent = '—'; }
+    };
+    refreshSessCost();
+    state.sessionCostTimer = setInterval(refreshSessCost, 10_000);
 
     $('v-kill').disabled = false;
     $('v-kill').onclick = async () => {
