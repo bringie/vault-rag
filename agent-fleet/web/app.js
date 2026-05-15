@@ -111,6 +111,7 @@
             <span class="host-name">${esc(h.name)} <span class="host-count">· ${costStr}/7d</span></span>
             <span class="host-actions">
               <button data-edit-host="${h.id}" data-edit-path="CLAUDE.md" title="edit ~/.claude/CLAUDE.md">md</button>
+              <button data-edit-host="${h.id}" data-edit-path="settings.json" title="edit ~/.claude/settings.json">json</button>
               <span class="host-count">${n} sess</span>
             </span>
           </li>`;
@@ -299,6 +300,7 @@
     // The default per-frame write was the bottleneck on bursty claude output.
     let pendingChunks = [];
     let rafScheduled = false;
+    let receivedAnyData = false;
     const flushPending = () => {
       rafScheduled = false;
       if (!pendingChunks.length || !state.term) return;
@@ -312,6 +314,7 @@
       try { state.term.write(merged); } catch {}
     };
     const writeChunk = (u8) => {
+      if (u8.length > 0) receivedAnyData = true;
       pendingChunks.push(u8);
       if (!rafScheduled) {
         rafScheduled = true;
@@ -334,7 +337,14 @@
       } else if (f.type === 'session_exit') {
         document.querySelector('.viewer').classList.add('exited');
         setViewerStatus(f.exit_code === 0 ? 'exited' : 'killed');
-        try { state.term.write(`\r\n\x1b[2m─── session exit code=${f.exit_code} ───\x1b[0m\r\n`); } catch {}
+        // Flush any pending writes before adding the exit marker so order is right.
+        try { flushPending(); } catch {}
+        try {
+          if (!receivedAnyData) {
+            state.term.write('\x1b[2m─── (no transcript captured for this session — likely a legacy run before persisted-flush) ───\x1b[0m\r\n');
+          }
+          state.term.write(`\r\n\x1b[2m─── session exit code=${f.exit_code} ───\x1b[0m\r\n`);
+        } catch {}
       } else if (f.type === 'session_started') {
         setViewerStatus('running');
       }

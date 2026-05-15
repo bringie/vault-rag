@@ -26,6 +26,10 @@ class PtyManager extends EventEmitter {
     });
     this.sessions.set(sessionId, { proc, seq: 0 });
     this.emit('spawn', { sessionId, pid: proc.pid });
+    // Kick TUIs (Ink-based claude in particular) that wait for SIGWINCH before
+    // first render. Two resize ticks shortly after spawn force the redraw.
+    setTimeout(() => { try { proc.resize(121, 30); } catch {} }, 100);
+    setTimeout(() => { try { proc.resize(120, 30); } catch {} }, 250);
     proc.onData((d) => {
       const entry = this.sessions.get(sessionId);
       if (!entry) return;
