@@ -642,16 +642,34 @@ async function handleDeleteWorkflow({ req, res, ctx }) {
   res.writeHead(204); res.end();
 }
 
+async function ensureWorkflowRunner(ctx) {
+  if (ctx.workflowRunner || !ctx.db) return ctx.workflowRunner;
+  // First: orphan stranded runs from previous hub lifetime. Must happen BEFORE
+  // we create new runs in this lifetime; otherwise they'd be caught too.
+  if (!ctx._workflowOrphanDone) {
+    ctx._workflowOrphanDone = true;
+    try { await wfDb.orphanRunningRuns(ctx.db); }
+    catch (e) { console.error('[fleet] orphan workflow runs:', e.message); }
+  }
+  ctx.workflowRunner = createRunner({
+    db: ctx.db,
+    spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(ctx, node, prompt, runId),
+    broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
+  });
+  return ctx.workflowRunner;
+}
+
 async function handleRunWorkflow({ req, res, body, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
   const w = await wfDb.getWorkflow(ctx.db, id);
   if (!w) return send(res, 404, { error: 'workflow not found' });
+  const runner = await ensureWorkflowRunner(ctx);
   const run = await wfDb.createRun(ctx.db, {
     workflowId: w.id,
     snapshot: w.definition,
     state: { inputs: (body && body.inputs) || {} },
   });
-  if (ctx.workflowRunner) ctx.workflowRunner.start(run.id);
+  if (runner) runner.start(run.id);
   send(res, 201, { run_id: run.id });
 }
 
@@ -674,7 +692,8 @@ async function handleGetRun({ req, res, ctx }) {
 
 async function handleCancelRun({ req, res, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
-  if (ctx.workflowRunner) ctx.workflowRunner.cancel(id);
+  const runner = await ensureWorkflowRunner(ctx);
+  if (runner) runner.cancel(id);
   send(res, 200, { ok: true });
 }
 
@@ -1047,14 +1066,8 @@ function attach(server, ctx) {
       write: async (batch) => { if (merged.db) await fleetDb.appendEvents(merged.db, batch); },
     });
   }
-  if (!merged.workflowRunner && merged.db) {
-    merged.workflowRunner = createRunner({
-      db: merged.db,
-      spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(merged, node, prompt, runId),
-      broadcast: (runId, frame) => merged.bus.broadcastWorkflow(runId, frame),
-    });
-    wfDb.orphanRunningRuns(merged.db).catch(e => console.error('[fleet] orphan workflow runs:', e.message));
-  }
+  // Workflow runner is created lazily on first /run or /cancel — ctx.db may be
+  // bound after attach() (see rag-api boot flow). See ensureWorkflowRunner.
   server._fleetCtx = merged;
 
   const wss = new WebSocketServer({ noServer: true });
@@ -1148,13 +1161,7 @@ function makeContext({ token, db, version }) {
     flushSize: 50, flushIntervalMs: 200,
     write: async (batch) => { if (ctx.db) await fleetDb.appendEvents(ctx.db, batch); },
   });
-  if (db) {
-    ctx.workflowRunner = createRunner({
-      db, spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(ctx, node, prompt, runId),
-      broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
-    });
-    wfDb.orphanRunningRuns(db).catch(e => console.error('[fleet] orphan workflow runs:', e.message));
-  }
+  // Workflow runner is created lazily — see ensureWorkflowRunner.
   return ctx;
 }
 
