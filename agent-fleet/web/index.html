@@ -47,6 +47,9 @@
         <div class="stat"><span class="lbl">7D SPEND</span><span id="stat-cost" class="val val-warn">$—</span></div>
       </div>
       <div class="controls">
+        <button id="nav-dashboard" class="btn-ghost active-nav">⊞ dashboard</button>
+        <button id="nav-archive"   class="btn-ghost">📜 archive</button>
+        <button id="nav-cost"      class="btn-ghost">$ trends</button>
         <button id="reload" title="refresh" class="btn-icon">⟳</button>
         <button id="logout" class="btn-ghost">ABORT</button>
       </div>
@@ -80,6 +83,11 @@
           <label><span class="lbl">CWD</span><input id="spawn-cwd" value="~" spellcheck="false" placeholder="~ (resolved to host $HOME)"></label>
           <label><span class="lbl">ARGS</span><input id="spawn-args" placeholder="--print 'hi'" spellcheck="false"></label>
           <button id="spawn-btn" class="btn-primary">▶ EXECUTE</button>
+          <details style="margin-top:.6em">
+            <summary class="lbl" style="cursor:pointer">broadcast to tag…</summary>
+            <label style="margin-top:.3em"><span class="lbl">TAG</span><input id="spawn-tag" placeholder="dev / prod / …" spellcheck="false"></label>
+            <button id="bcast-btn" class="btn-ghost" style="width:100%; margin-top:.3em">📡 broadcast</button>
+          </details>
         </section>
       </aside>
 
@@ -168,6 +176,123 @@
       <span class="footdot"></span>
       <span class="footver">FLEET v0.1.0 / proto=v0.1</span>
     </footer>
+  </div>
+
+  <!-- ARCHIVE PAGE -->
+  <div id="archive" hidden>
+    <header class="archive-head">
+      <div>
+        <span class="display" style="font-size:1.1em">SESSIONS ARCHIVE</span>
+        <span id="archive-count" class="lbl" style="margin-left:1em">— sessions</span>
+      </div>
+      <div>
+        <button id="archive-close" class="btn-ghost">× back</button>
+      </div>
+    </header>
+    <section class="archive-filters">
+      <label><span class="lbl">search</span><input id="ar-q" placeholder="label / notes / cwd"></label>
+      <label><span class="lbl">host</span><select id="ar-host"><option value="">any</option></select></label>
+      <label><span class="lbl">status</span><select id="ar-status">
+        <option value="">any</option>
+        <option value="running">running</option>
+        <option value="pending">pending</option>
+        <option value="orphaned">orphaned</option>
+        <option value="exited">exited</option>
+        <option value="killed">killed</option>
+      </select></label>
+      <label><span class="lbl">since</span><input id="ar-since" type="datetime-local"></label>
+      <label><span class="lbl">until</span><input id="ar-until" type="datetime-local"></label>
+      <button id="ar-apply" class="btn-primary" style="padding:.4em 1em">apply</button>
+      <button id="ar-reset" class="btn-ghost">reset</button>
+    </section>
+    <div class="archive-table-wrap">
+      <table class="archive-table">
+        <thead><tr>
+          <th>started</th><th>id</th><th>host</th><th>status</th><th>cwd</th><th>label / notes</th><th>cost</th><th></th>
+        </tr></thead>
+        <tbody id="ar-rows"></tbody>
+      </table>
+    </div>
+    <footer class="archive-foot">
+      <button id="ar-prev" class="btn-ghost">← prev</button>
+      <span id="ar-page" class="lbl">0–0</span>
+      <button id="ar-next" class="btn-ghost">next →</button>
+    </footer>
+  </div>
+
+  <!-- SESSION DETAIL PAGE -->
+  <div id="sdetail" hidden>
+    <header class="sd-head">
+      <div>
+        <span class="lbl">SESSION //</span>
+        <span id="sd-id" class="callsign">—</span>
+        <span class="lbl">·</span>
+        <span class="lbl">host</span>
+        <span id="sd-host" class="val">—</span>
+        <span class="lbl">·</span>
+        <span class="lbl">status</span>
+        <span id="sd-status" class="val">—</span>
+      </div>
+      <div>
+        <button id="sd-attach" class="btn-ghost">▶ attach</button>
+        <button id="sd-rerun" class="btn-ghost">↻ rerun</button>
+        <button id="sd-close" class="btn-ghost">× back</button>
+      </div>
+    </header>
+    <main class="sd-grid">
+      <section class="sd-meta">
+        <h4>META</h4>
+        <div class="hd-grid">
+          <div><span class="lbl">created_by</span><span id="sd-by" class="val">—</span></div>
+          <div><span class="lbl">started</span><span id="sd-started" class="val">—</span></div>
+          <div><span class="lbl">ended</span><span id="sd-ended" class="val">—</span></div>
+          <div><span class="lbl">exit_code</span><span id="sd-exit" class="val">—</span></div>
+          <div><span class="lbl">cwd</span><span id="sd-cwd" class="val">—</span></div>
+          <div><span class="lbl">pid</span><span id="sd-pid" class="val">—</span></div>
+        </div>
+        <h4 style="margin-top:1.5em">ARGS</h4>
+        <pre id="sd-args" class="sd-args">—</pre>
+        <h4 style="margin-top:1.5em">NOTES</h4>
+        <textarea id="sd-notes" placeholder="(annotate this session)"></textarea>
+        <button id="sd-save-notes" class="btn-primary" style="margin-top:.4em; width:auto; padding:.4em 1em">save notes</button>
+        <h4 style="margin-top:1.5em">COST</h4>
+        <div id="sd-cost" class="val">—</div>
+      </section>
+      <section class="sd-main">
+        <div class="sd-tabs">
+          <button class="sd-tab active" data-tab="transcript">transcript</button>
+          <button class="sd-tab" data-tab="timeline">timeline</button>
+        </div>
+        <div id="sd-tab-transcript" class="sd-pane active">
+          <pre id="sd-transcript" class="sd-transcript">loading…</pre>
+        </div>
+        <div id="sd-tab-timeline" class="sd-pane">
+          <ul id="sd-timeline" class="sd-timeline"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- COST TIMELINE OVERLAY -->
+  <div id="costview" hidden>
+    <header class="archive-head">
+      <div><span class="display" style="font-size:1.1em">COST TRENDS</span></div>
+      <div>
+        <label class="lbl">days
+          <select id="cv-days" style="margin-left:.4em">
+            <option value="7" selected>7</option>
+            <option value="14">14</option>
+            <option value="30">30</option>
+          </select>
+        </label>
+        <button id="costview-close" class="btn-ghost">× back</button>
+      </div>
+    </header>
+    <div id="cv-summary" class="cv-summary"></div>
+    <div id="cv-chart-wrap">
+      <svg id="cv-chart" width="100%" height="320" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
+      <div id="cv-legend" class="cv-legend"></div>
+    </div>
   </div>
 
   <!-- FILE EDITOR MODAL -->

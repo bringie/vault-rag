@@ -493,6 +493,20 @@
         alert(`deleted ${r.deleted} session(s)`);
       } catch (e) { alert('cleanup failed: ' + e.message); }
     };
+    $('bcast-btn').onclick = async () => {
+      const tag = $('spawn-tag').value.trim();
+      if (!tag) { alert('tag required'); return; }
+      const cwd = $('spawn-cwd').value || '~';
+      const args = parseArgs($('spawn-args').value);
+      const matching = state.hosts.filter(h => h.status === 'online' && (h.capabilities || []).includes(tag));
+      if (!confirm(`Broadcast to ${matching.length} host(s) with tag '${tag}': ${matching.map(h => h.display_name || h.name).join(', ')}?`)) return;
+      try {
+        const r = await api('POST', '/broadcast', { tag, cwd, args, label: 'bcast:' + tag });
+        await refresh();
+        alert(`spawned ${r.count} sessions${r.results.some(x => !x.ok) ? ' (some failed, see console)' : ''}`);
+        console.log('broadcast results:', r.results);
+      } catch (e) { alert('broadcast failed: ' + e.message); }
+    };
   }
 
   // ============ Host detail ============
@@ -648,6 +662,269 @@
     };
   }
 
+  // ============ Routing (hash-based) ============
+  // Routes: #/dashboard (default), #/archive, #/sessions/:id, #/cost
+  function currentRoute() {
+    const h = location.hash || '#/dashboard';
+    const parts = h.replace(/^#\/?/, '').split('/');
+    return { name: parts[0] || 'dashboard', arg: parts[1] || null };
+  }
+  function navigate(path) { if (location.hash !== '#' + path) location.hash = path; else applyRoute(); }
+  function applyRoute() {
+    const r = currentRoute();
+    const setNav = (active) => {
+      $('nav-dashboard').classList.toggle('active-nav', active === 'dashboard');
+      $('nav-archive').classList.toggle('active-nav', active === 'archive');
+      $('nav-cost').classList.toggle('active-nav', active === 'cost');
+    };
+    $('archive').hidden = true;
+    $('sdetail').hidden = true;
+    $('costview').hidden = true;
+    if (r.name === 'archive') { setNav('archive'); openArchive(); $('archive').hidden = false; return; }
+    if (r.name === 'sessions' && r.arg) { setNav('archive'); openSessionDetail(r.arg); $('sdetail').hidden = false; return; }
+    if (r.name === 'cost') { setNav('cost'); openCostView(); $('costview').hidden = false; return; }
+    setNav('dashboard');
+  }
+  window.addEventListener('hashchange', applyRoute);
+
+  // ============ Archive ============
+  let archiveState = { offset: 0, limit: 50, filter: {}, total: 0 };
+  async function openArchive() {
+    // populate host filter once
+    const sel = $('ar-host');
+    sel.innerHTML = '<option value="">any</option>' +
+      state.hosts.map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
+    $('ar-apply').onclick = () => { archiveState.offset = 0; loadArchive(); };
+    $('ar-reset').onclick = () => {
+      ['ar-q','ar-since','ar-until'].forEach(id => $(id).value = '');
+      ['ar-host','ar-status'].forEach(id => $(id).value = '');
+      archiveState.offset = 0; loadArchive();
+    };
+    $('ar-prev').onclick = () => {
+      archiveState.offset = Math.max(0, archiveState.offset - archiveState.limit);
+      loadArchive();
+    };
+    $('ar-next').onclick = () => {
+      if (archiveState.offset + archiveState.limit < archiveState.total) {
+        archiveState.offset += archiveState.limit;
+        loadArchive();
+      }
+    };
+    $('archive-close').onclick = () => navigate('/dashboard');
+    loadArchive();
+  }
+  async function loadArchive() {
+    const params = new URLSearchParams({ with_count: '1', limit: archiveState.limit, offset: archiveState.offset });
+    const filters = {
+      q:        $('ar-q').value.trim(),
+      host_id:  $('ar-host').value,
+      status:   $('ar-status').value,
+      since:    $('ar-since').value ? new Date($('ar-since').value).toISOString() : '',
+      until:    $('ar-until').value ? new Date($('ar-until').value).toISOString() : '',
+    };
+    for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v);
+    archiveState.filter = filters;
+    try {
+      const r = await api('GET', '/sessions?' + params.toString());
+      archiveState.total = r.total;
+      renderArchive(r.rows);
+      $('archive-count').textContent = `${r.total} sessions`;
+      const end = Math.min(archiveState.offset + r.rows.length, r.total);
+      $('ar-page').textContent = `${archiveState.offset + 1}–${end} of ${r.total}`;
+      $('ar-prev').disabled = archiveState.offset === 0;
+      $('ar-next').disabled = end >= r.total;
+    } catch (e) { console.warn('archive load', e); }
+  }
+  function renderArchive(rows) {
+    const body = $('ar-rows');
+    body.innerHTML = rows.length === 0
+      ? '<tr><td colspan="8" style="text-align:center; padding:2em; color:var(--text-faint)">no sessions match</td></tr>'
+      : rows.map(s => {
+          const host = state.hosts.find(h => h.id === s.host_id);
+          const ts = new Date(s.started_at);
+          const exitTag = s.exit_code != null ? ` exit=${s.exit_code}` : '';
+          const labelText = (s.label || '') + (s.notes ? ` — ${s.notes.replace(/\n.*/, '')}` : '');
+          return `<tr>
+            <td class="nowrap">${ts.toLocaleString()}</td>
+            <td class="sess-id-cell" data-sid="${s.id}">${short(s.id)}</td>
+            <td>${esc(host?.display_name || host?.name || '?')}</td>
+            <td class="nowrap">${s.status}${exitTag}</td>
+            <td class="cwd-cell" title="${esc(s.cwd || '')}">${esc(s.cwd || '—')}</td>
+            <td class="label-cell" title="${esc(labelText)}">${esc(labelText || '—')}</td>
+            <td class="nowrap" id="cost-${s.id.slice(0,8)}">—</td>
+            <td><button class="btn-ghost" data-rerun="${s.id}" style="font-size:.75em; padding:.2em .6em">↻</button></td>
+          </tr>`;
+        }).join('');
+    body.querySelectorAll('.sess-id-cell').forEach(td => {
+      td.onclick = () => navigate('/sessions/' + td.dataset.sid);
+    });
+    body.querySelectorAll('button[data-rerun]').forEach(b => {
+      b.onclick = (e) => { e.stopPropagation(); rerunSession(b.dataset.rerun); };
+    });
+    // lazy-load cost per row
+    for (const s of rows) {
+      api('GET', `/sessions/${s.id}/cost`).then(c => {
+        const el = document.getElementById('cost-' + s.id.slice(0,8));
+        if (el) {
+          const tag = c.attribution === 'approximate' ? '~' : '';
+          el.textContent = c.usd ? `$${c.usd.toFixed(4)}${tag}` : '—';
+        }
+      }).catch(() => {});
+    }
+  }
+
+  async function rerunSession(sid) {
+    try {
+      const s = await api('GET', `/sessions/${sid}`);
+      if (!confirm(`Rerun session on ${state.hosts.find(h=>h.id===s.host_id)?.name}?\nargs: ${JSON.stringify(s.args)}`)) return;
+      const r = await api('POST', '/sessions', {
+        host_id: s.host_id, cwd: s.cwd, args: s.args, env: s.env || {},
+        label: 'rerun: ' + (s.label || short(sid)),
+        metadata: { rerun_of: sid },
+      });
+      navigate('/dashboard');
+      setTimeout(() => attachSession(r.session_id), 200);
+    } catch (e) { alert('rerun failed: ' + e.message); }
+  }
+
+  // ============ Session detail ============
+  async function openSessionDetail(sid) {
+    $('sd-id').textContent = short(sid);
+    $('sd-host').textContent = '…'; $('sd-status').textContent = '…';
+    $('sd-by').textContent = '—'; $('sd-started').textContent = '—'; $('sd-ended').textContent = '—';
+    $('sd-exit').textContent = '—'; $('sd-cwd').textContent = '—'; $('sd-pid').textContent = '—';
+    $('sd-args').textContent = '—'; $('sd-notes').value = ''; $('sd-cost').textContent = '—';
+    $('sd-transcript').textContent = 'loading…';
+    $('sd-timeline').innerHTML = '';
+    $('sd-close').onclick = () => history.length > 1 ? history.back() : navigate('/archive');
+    $('sd-attach').onclick = () => { navigate('/dashboard'); setTimeout(() => attachSession(sid), 200); };
+    $('sd-rerun').onclick  = () => rerunSession(sid);
+    $('sd-save-notes').onclick = async () => {
+      try {
+        await fetch('/api/fleet/sessions/' + sid, {
+          method: 'PATCH',
+          headers: { 'authorization': 'Bearer ' + state.token, 'content-type': 'application/json' },
+          body: JSON.stringify({ notes: $('sd-notes').value }),
+        });
+        $('sd-save-notes').textContent = 'saved ✓';
+        setTimeout(() => { $('sd-save-notes').textContent = 'save notes'; }, 1500);
+      } catch (e) { alert('save failed: ' + e.message); }
+    };
+    document.querySelectorAll('.sd-tab').forEach(t => {
+      t.onclick = () => {
+        document.querySelectorAll('.sd-tab').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('.sd-pane').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        document.getElementById('sd-tab-' + t.dataset.tab).classList.add('active');
+      };
+    });
+    try {
+      const s = await api('GET', '/sessions/' + sid);
+      const host = state.hosts.find(h => h.id === s.host_id);
+      $('sd-id').textContent = short(s.id);
+      $('sd-host').textContent = host?.display_name || host?.name || short(s.host_id);
+      $('sd-status').textContent = s.status;
+      $('sd-by').textContent = s.created_by || '—';
+      $('sd-started').textContent = new Date(s.started_at).toLocaleString();
+      $('sd-ended').textContent = s.ended_at ? new Date(s.ended_at).toLocaleString() : '—';
+      $('sd-exit').textContent = s.exit_code != null ? String(s.exit_code) : '—';
+      $('sd-cwd').textContent = s.cwd || '—';
+      $('sd-pid').textContent = s.pid != null ? s.pid : '—';
+      $('sd-args').textContent = JSON.stringify(s.args || [], null, 2);
+      $('sd-notes').value = s.notes || '';
+    } catch (e) { $('sd-id').textContent = 'error'; $('sd-transcript').textContent = e.message; return; }
+    // transcript
+    try {
+      const r = await fetch('/api/fleet/sessions/' + sid + '/transcript.txt', {
+        headers: { authorization: 'Bearer ' + state.token },
+      });
+      const t = await r.text();
+      $('sd-transcript').textContent = t || '(empty)';
+    } catch (e) { $('sd-transcript').textContent = 'load failed: ' + e.message; }
+    // timeline
+    try {
+      const tl = await api('GET', `/sessions/${sid}/timeline`);
+      $('sd-timeline').innerHTML = tl.events.map(ev => `
+        <li class="ev-${esc(ev.kind)}">
+          <span class="ts">${new Date(ev.ts).toISOString()}</span>
+          <span class="kind">${esc(ev.kind)}</span>
+          <span class="detail">${ev.detail ? esc(JSON.stringify(ev.detail)) : ''}</span>
+        </li>`).join('') || '<li class="lbl">no events</li>';
+    } catch {}
+    // cost
+    try {
+      const c = await api('GET', `/sessions/${sid}/cost`);
+      const tag = c.attribution === 'approximate' ? ' ~' : '';
+      $('sd-cost').innerHTML = `$${(c.usd || 0).toFixed(4)}${tag} · ${c.msgs} msgs` +
+        (c.by_model ? '<br><small style="color:var(--text-dim)">' +
+          Object.entries(c.by_model).map(([m, v]) => `${m}: $${v.usd.toFixed(4)} (in=${v.input_tokens}, out=${v.output_tokens})`).join('<br>') +
+          '</small>' : '');
+    } catch {}
+  }
+
+  // ============ Cost timeline view ============
+  async function openCostView() {
+    const days = parseInt($('cv-days').value, 10);
+    $('cv-days').onchange = openCostView;
+    $('costview-close').onclick = () => navigate('/dashboard');
+    let data;
+    try { data = await api('GET', '/cost/timeline?days=' + days); }
+    catch (e) { $('cv-summary').textContent = 'load failed: ' + e.message; return; }
+    renderCostChart(data);
+  }
+  function renderCostChart(data) {
+    const points = data.points || [];
+    const models = Array.from(new Set(points.map(p => p.model)));
+    const byDay = new Map();
+    for (const p of points) {
+      const d = new Date(p.day).toISOString().slice(0, 10);
+      if (!byDay.has(d)) byDay.set(d, {});
+      byDay.get(d)[p.model] = (byDay.get(d)[p.model] || 0) + p.usd;
+    }
+    const days = Array.from(byDay.keys()).sort();
+    // summary
+    const total = points.reduce((n, p) => n + p.usd, 0);
+    const totalMsgs = points.reduce((n, p) => n + p.msgs, 0);
+    $('cv-summary').innerHTML = `
+      <div class="stat"><span class="lbl">${data.days}d total</span><span class="val val-warn">$${total.toFixed(2)}</span></div>
+      <div class="stat"><span class="lbl">messages</span><span class="val">${totalMsgs}</span></div>
+      <div class="stat"><span class="lbl">avg/day</span><span class="val">$${(total / Math.max(data.days, 1)).toFixed(2)}</span></div>
+      <div class="stat"><span class="lbl">models</span><span class="val">${models.length}</span></div>
+    `;
+    // chart
+    const W = 1200, H = 320, PAD_L = 60, PAD_R = 30, PAD_T = 30, PAD_B = 50;
+    const innerW = W - PAD_L - PAD_R, innerH = H - PAD_T - PAD_B;
+    const max = Math.max(0.01, ...days.map(d => Object.values(byDay.get(d)).reduce((n, v) => n + v, 0)));
+    const colors = { 'claude-opus-4-7': '#ff79c6', 'claude-sonnet-4-6': '#6fd5ff', 'claude-haiku-4-5': '#5cf08c' };
+    function colorFor(m) { return colors[m] || colors[m.split('-').slice(0,2).join('-')] || '#ffb547'; }
+    const barW = innerW / Math.max(days.length, 1) * 0.7;
+    const gap  = innerW / Math.max(days.length, 1);
+    let svg = '';
+    // y-axis grid
+    for (let i = 0; i <= 4; i++) {
+      const y = PAD_T + innerH * (i / 4);
+      const val = max * (1 - i / 4);
+      svg += `<line x1="${PAD_L}" y1="${y}" x2="${W - PAD_R}" y2="${y}" stroke="#2a2832" stroke-dasharray="2,3"/>`;
+      svg += `<text x="${PAD_L - 6}" y="${y + 4}" fill="#7a7575" font-family="JetBrains Mono" font-size="10" text-anchor="end">$${val.toFixed(2)}</text>`;
+    }
+    // bars
+    days.forEach((d, i) => {
+      const x = PAD_L + i * gap + (gap - barW) / 2;
+      let yCursor = PAD_T + innerH;
+      for (const m of models) {
+        const v = byDay.get(d)[m] || 0;
+        if (!v) continue;
+        const h = innerH * (v / max);
+        yCursor -= h;
+        svg += `<rect x="${x}" y="${yCursor}" width="${barW}" height="${h}" fill="${colorFor(m)}" opacity="0.85"><title>${d} · ${m}: $${v.toFixed(4)}</title></rect>`;
+      }
+      svg += `<text x="${x + barW/2}" y="${H - PAD_B + 18}" fill="#8a8580" font-family="JetBrains Mono" font-size="10" text-anchor="middle">${d.slice(5)}</text>`;
+    });
+    $('cv-chart').innerHTML = svg;
+    $('cv-legend').innerHTML = models.map(m =>
+      `<span><span class="sw" style="background:${colorFor(m)}"></span>${esc(m)}</span>`).join('');
+  }
+
   // ============ Boot ============
   function boot() {
     readToken();
@@ -655,8 +932,12 @@
     showApp();
     wireSpawn();
     $('reload').onclick = refresh;
+    $('nav-dashboard').onclick = () => navigate('/dashboard');
+    $('nav-archive').onclick = () => navigate('/archive');
+    $('nav-cost').onclick = () => navigate('/cost');
     setOverlay(true, 'STANDBY', 'select a session');
     startPolling();
+    applyRoute();
   }
 
   if (document.readyState === 'loading') {

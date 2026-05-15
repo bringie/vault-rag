@@ -270,11 +270,96 @@ async function handleListSessions({ req, res, ctx }) {
   const filter = {
     hostId: url.searchParams.get('host_id') || undefined,
     status: url.searchParams.get('status') || undefined,
+    since:  url.searchParams.get('since')   || undefined,
+    until:  url.searchParams.get('until')   || undefined,
+    query:  url.searchParams.get('q')       || undefined,
     limit:  parseInt(url.searchParams.get('limit') || '100', 10),
     offset: parseInt(url.searchParams.get('offset') || '0', 10),
   };
-  const rows = await fleetDb.listSessions(ctx.db, filter);
-  send(res, 200, rows);
+  if (url.searchParams.get('with_count') === '1') {
+    const [rows, total] = await Promise.all([
+      fleetDb.listSessions(ctx.db, filter),
+      fleetDb.countSessions(ctx.db, filter),
+    ]);
+    send(res, 200, { rows, total, limit: filter.limit, offset: filter.offset });
+  } else {
+    const rows = await fleetDb.listSessions(ctx.db, filter);
+    send(res, 200, rows);
+  }
+}
+
+async function handlePatchSession({ req, res, body, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  if (!body) return send(res, 422, { error: 'body required' });
+  const patch = {};
+  if ('notes' in body) patch.notes = body.notes;
+  if ('label' in body) patch.label = body.label;
+  const s = await fleetDb.updateSession(ctx.db, m[1], patch);
+  if (!s) return send(res, 404, { error: 'session not found' });
+  send(res, 200, s);
+}
+
+async function handleBroadcast({ req, res, body, ctx }) {
+  if (!body) return send(res, 422, { error: 'body required' });
+  const { tag, cwd, args, env, label, metadata } = body;
+  if (!tag && !body.all) return send(res, 422, { error: 'tag or all=true required' });
+  const all = await fleetDb.listHosts(ctx.db);
+  let candidates = all.filter(h => h.status === 'online');
+  if (tag) candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (!candidates.length) return send(res, 404, { error: 'no matching online hosts' });
+  const results = [];
+  for (const host of candidates) {
+    try {
+      const s = await fleetDb.createSession(ctx.db, {
+        hostId: host.id, cwd: cwd || '~',
+        args: args || [], env: env || {},
+        createdBy: 'broadcast',
+        label: label || (tag ? `bcast:${tag}` : 'bcast:all'),
+        metadata: { ...(metadata || {}), broadcast: true, tag: tag || null },
+      });
+      if (ctx.bus) ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env });
+      results.push({ session_id: s.id, host_id: host.id, host_name: host.name, display_name: host.display_name, ok: true });
+    } catch (e) {
+      results.push({ host_id: host.id, host_name: host.name, ok: false, error: e.message });
+    }
+  }
+  send(res, 201, { count: results.length, results });
+}
+
+async function handleCostTimeline({ req, res, ctx }) {
+  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
+  const url = new URL(req.url, 'http://x');
+  const days = parseInt(url.searchParams.get('days') || '7', 10);
+  const hosts = await fleetDb.listHosts(ctx.db);
+  const rows = await fleetCost.timeline(ctx.tokmonDb, hosts.map(h => h.name), days);
+  send(res, 200, { days, points: rows });
+}
+
+async function handleSessionTimeline({ req, res, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/timeline$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  const sid = m[1];
+  const s = await fleetDb.getSession(ctx.db, sid);
+  if (!s) return send(res, 404, { error: 'session not found' });
+  // Build a lifecycle timeline from the session row + lifecycle events.
+  const { rows: lc } = await ctx.db.query(
+    `SELECT ts, payload FROM fleet_events
+     WHERE session_id = $1 AND kind = 'lifecycle'
+     ORDER BY ts`, [sid]);
+  const events = [
+    { ts: s.started_at, kind: 'created', detail: { cwd: s.cwd, args: s.args, created_by: s.created_by } },
+  ];
+  if (s.pid != null) events.push({ ts: s.started_at, kind: 'spawned', detail: { pid: s.pid } });
+  for (const r of lc) {
+    let detail = null;
+    try { detail = JSON.parse((r.payload || Buffer.alloc(0)).toString('utf8')); } catch {}
+    events.push({ ts: r.ts, kind: 'lifecycle', detail });
+  }
+  if (s.ended_at) events.push({ ts: s.ended_at, kind: s.status, detail: { exit_code: s.exit_code } });
+  send(res, 200, { session_id: sid, status: s.status, events });
 }
 
 async function handleCreateSession({ body, res, ctx }) {
@@ -468,6 +553,16 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'POST' && path === '/fleet/sessions/cleanup') {
     return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
+  if (method === 'PATCH' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) {
+    return readBody(req).then(b => handlePatchSession({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/timeline$`, 'i').test(path)) {
+    return handleSessionTimeline({ req, res, ctx });
+  }
+  if (method === 'POST' && path === '/fleet/broadcast') {
+    return readBody(req).then(b => handleBroadcast({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) return handleGetSession({ req, res, ctx });
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/input$`, 'i').test(path)) {
     return readBody(req).then(b => handlePostInput({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));

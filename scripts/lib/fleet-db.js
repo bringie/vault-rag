@@ -93,11 +93,17 @@ async function getSession(c, id) {
   return rows[0] || null;
 }
 
-async function listSessions(c, { hostId, status, limit = 100, offset = 0 } = {}) {
+async function listSessions(c, { hostId, status, limit = 100, offset = 0, since, until, query } = {}) {
   const where = [];
   const args = [];
   if (hostId) { args.push(hostId); where.push(`host_id = $${args.length}`); }
   if (status) { args.push(status); where.push(`status = $${args.length}`); }
+  if (since)  { args.push(since);  where.push(`started_at >= $${args.length}`); }
+  if (until)  { args.push(until);  where.push(`started_at <= $${args.length}`); }
+  if (query) {
+    args.push('%' + query + '%');
+    where.push(`(label ILIKE $${args.length} OR notes ILIKE $${args.length} OR cwd ILIKE $${args.length})`);
+  }
   const wh = where.length ? `WHERE ${where.join(' AND ')}` : '';
   args.push(limit); args.push(offset);
   const sql = `SELECT * FROM fleet_sessions ${wh}
@@ -105,6 +111,35 @@ async function listSessions(c, { hostId, status, limit = 100, offset = 0 } = {})
                LIMIT $${args.length - 1} OFFSET $${args.length}`;
   const { rows } = await c.query(sql, args);
   return rows;
+}
+
+async function countSessions(c, { hostId, status, since, until, query } = {}) {
+  const where = [];
+  const args = [];
+  if (hostId) { args.push(hostId); where.push(`host_id = $${args.length}`); }
+  if (status) { args.push(status); where.push(`status = $${args.length}`); }
+  if (since)  { args.push(since);  where.push(`started_at >= $${args.length}`); }
+  if (until)  { args.push(until);  where.push(`started_at <= $${args.length}`); }
+  if (query) {
+    args.push('%' + query + '%');
+    where.push(`(label ILIKE $${args.length} OR notes ILIKE $${args.length} OR cwd ILIKE $${args.length})`);
+  }
+  const wh = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const { rows } = await c.query(`SELECT COUNT(*)::int AS n FROM fleet_sessions ${wh}`, args);
+  return rows[0].n;
+}
+
+async function updateSession(c, id, patch) {
+  const updates = [];
+  const args = [];
+  if ('notes' in patch) { args.push(patch.notes);  updates.push(`notes = $${args.length}`); }
+  if ('label' in patch) { args.push(patch.label);  updates.push(`label = $${args.length}`); }
+  if (!updates.length) return await getSession(c, id);
+  args.push(id);
+  const { rows } = await c.query(
+    `UPDATE fleet_sessions SET ${updates.join(', ')} WHERE id = $${args.length} RETURNING *`,
+    args);
+  return rows[0] || null;
 }
 
 async function markSessionRunning(c, id, pid) {
@@ -177,7 +212,7 @@ async function purgeOldEvents(c, intervalStr) {
 
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
-  createSession, getSession, listSessions,
+  createSession, getSession, listSessions, countSessions, updateSession,
   markSessionRunning, markSessionExited, orphanRunningSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
 };

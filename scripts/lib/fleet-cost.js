@@ -98,4 +98,34 @@ async function hostSummary(tokmonPg, hostNames, days = 7) {
   return out;
 }
 
-module.exports = { sessionCost, hostSummary, rowCost, priceFor };
+// Daily aggregate over the last N days: returns one row per (day, model)
+// so the client can render a stacked bar / line chart.
+async function timeline(tokmonPg, hostNames, days = 7) {
+  const where = ['ts > now() - ($1 || \' days\')::interval'];
+  const args = [String(days)];
+  if (hostNames && hostNames.length) {
+    args.push(hostNames);
+    where.push(`host_id = ANY($${args.length})`);
+  }
+  const { rows } = await tokmonPg.query(
+    `SELECT date_trunc('day', ts) AS day, model,
+            SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+            SUM(cache_creation_5m) AS cache_creation_5m, SUM(cache_read) AS cache_read,
+            COUNT(*) AS msgs
+     FROM events
+     WHERE ${where.join(' AND ')}
+     GROUP BY day, model
+     ORDER BY day`, args);
+  return rows.map(r => ({
+    day: r.day,
+    model: r.model,
+    msgs: Number(r.msgs),
+    usd: rowCost(r),
+    input_tokens: Number(r.input_tokens),
+    output_tokens: Number(r.output_tokens),
+    cache_creation_5m: Number(r.cache_creation_5m),
+    cache_read: Number(r.cache_read),
+  }));
+}
+
+module.exports = { sessionCost, hostSummary, timeline, rowCost, priceFor };
