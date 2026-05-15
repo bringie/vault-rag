@@ -50,6 +50,7 @@
         <button id="nav-dashboard" class="btn-ghost active-nav">⊞ dashboard</button>
         <button id="nav-archive"   class="btn-ghost">📜 archive</button>
         <button id="nav-cost"      class="btn-ghost">$ trends</button>
+        <button id="nav-groups"    class="btn-ghost">⌘ groups</button>
         <button id="reload" title="refresh" class="btn-icon">⟳</button>
         <button id="logout" class="btn-ghost">ABORT</button>
       </div>
@@ -84,8 +85,13 @@
           <label><span class="lbl">ARGS</span><input id="spawn-args" placeholder="--print 'hi'" spellcheck="false"></label>
           <button id="spawn-btn" class="btn-primary">▶ EXECUTE</button>
           <details style="margin-top:.6em">
-            <summary class="lbl" style="cursor:pointer">broadcast to tag…</summary>
-            <label style="margin-top:.3em"><span class="lbl">TAG</span><input id="spawn-tag" placeholder="dev / prod / …" spellcheck="false"></label>
+            <summary class="lbl" style="cursor:pointer">broadcast…</summary>
+            <label style="margin-top:.3em"><span class="lbl">GROUP</span>
+              <select id="spawn-group"><option value="">(by tag instead)</option></select>
+            </label>
+            <label style="margin-top:.3em"><span class="lbl">OR TAG</span>
+              <input id="spawn-tag" placeholder="dev / prod / …" spellcheck="false">
+            </label>
             <button id="bcast-btn" class="btn-ghost" style="width:100%; margin-top:.3em">📡 broadcast</button>
           </details>
         </section>
@@ -125,10 +131,17 @@
             </div>
           </section>
           <section class="hd-section">
-            <h4>TAGS / GROUPS</h4>
+            <h4>LABELS / TAGS</h4>
             <div id="hd-tags" class="chip-row"></div>
             <div class="chip-input">
-              <input id="hd-tag-input" placeholder="add tag (press enter)" spellcheck="false">
+              <input id="hd-tag-input" placeholder="add label (press enter)" spellcheck="false">
+            </div>
+          </section>
+          <section class="hd-section">
+            <h4>GROUPS</h4>
+            <div id="hd-groups" class="chip-row"></div>
+            <div class="chip-input">
+              <select id="hd-group-select"><option value="">-- add to group --</option></select>
             </div>
           </section>
           <section class="hd-section">
@@ -273,12 +286,39 @@
     </main>
   </div>
 
+  <!-- GROUPS PAGE -->
+  <div id="groupsview" hidden>
+    <header class="archive-head">
+      <div>
+        <span class="display" style="font-size:1.1em">GROUPS</span>
+        <span id="groups-count" class="lbl" style="margin-left:1em">— groups</span>
+      </div>
+      <div>
+        <button id="grp-new" class="btn-ghost">+ new group</button>
+        <button id="groupsview-close" class="btn-ghost">× back</button>
+      </div>
+    </header>
+    <div class="archive-table-wrap">
+      <table class="archive-table">
+        <thead><tr><th>name</th><th>description</th><th>hosts</th><th>color</th><th></th></tr></thead>
+        <tbody id="grp-rows"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- COST TIMELINE OVERLAY -->
   <div id="costview" hidden>
     <header class="archive-head">
       <div><span class="display" style="font-size:1.1em">COST TRENDS</span></div>
       <div>
-        <label class="lbl">days
+        <label class="lbl">group by
+          <select id="cv-groupby" style="margin-left:.4em">
+            <option value="model" selected>model</option>
+            <option value="host">host</option>
+            <option value="label">label</option>
+          </select>
+        </label>
+        <label class="lbl" style="margin-left:.8em">days
           <select id="cv-days" style="margin-left:.4em">
             <option value="7" selected>7</option>
             <option value="14">14</option>

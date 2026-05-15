@@ -29,6 +29,78 @@ async function upsertHost(c, h) {
   return rows[0];
 }
 
+// ============ Groups ============
+
+async function listGroups(c) {
+  const { rows } = await c.query(`
+    SELECT g.*,
+      COALESCE((SELECT array_agg(hg.host_id) FROM fleet_host_groups hg WHERE hg.group_id = g.id), '{}') AS host_ids
+    FROM fleet_groups g
+    ORDER BY g.name
+  `);
+  return rows;
+}
+
+async function getGroup(c, id) {
+  const { rows } = await c.query('SELECT * FROM fleet_groups WHERE id = $1', [id]);
+  return rows[0] || null;
+}
+
+async function getGroupByName(c, name) {
+  const { rows } = await c.query('SELECT * FROM fleet_groups WHERE name = $1', [name]);
+  return rows[0] || null;
+}
+
+async function createGroup(c, { name, description, color }) {
+  const { rows } = await c.query(
+    `INSERT INTO fleet_groups (name, description, color) VALUES ($1, $2, $3) RETURNING *`,
+    [name, description || null, color || null]);
+  return rows[0];
+}
+
+async function updateGroup(c, id, patch) {
+  const updates = []; const args = [];
+  if ('name' in patch)        { args.push(patch.name);        updates.push(`name = $${args.length}`); }
+  if ('description' in patch) { args.push(patch.description); updates.push(`description = $${args.length}`); }
+  if ('color' in patch)       { args.push(patch.color);       updates.push(`color = $${args.length}`); }
+  if (!updates.length) return await getGroup(c, id);
+  args.push(id);
+  const { rows } = await c.query(
+    `UPDATE fleet_groups SET ${updates.join(', ')} WHERE id = $${args.length} RETURNING *`, args);
+  return rows[0] || null;
+}
+
+async function deleteGroup(c, id) {
+  await c.query('DELETE FROM fleet_groups WHERE id = $1', [id]);
+}
+
+async function addHostToGroup(c, hostId, groupId) {
+  await c.query(
+    `INSERT INTO fleet_host_groups (host_id, group_id) VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`, [hostId, groupId]);
+}
+
+async function removeHostFromGroup(c, hostId, groupId) {
+  await c.query('DELETE FROM fleet_host_groups WHERE host_id = $1 AND group_id = $2', [hostId, groupId]);
+}
+
+async function listGroupsForHost(c, hostId) {
+  const { rows } = await c.query(`
+    SELECT g.* FROM fleet_groups g
+    JOIN fleet_host_groups hg ON hg.group_id = g.id
+    WHERE hg.host_id = $1
+    ORDER BY g.name`, [hostId]);
+  return rows;
+}
+
+async function listHostsInGroup(c, groupId) {
+  const { rows } = await c.query(`
+    SELECT h.* FROM fleet_hosts h
+    JOIN fleet_host_groups hg ON hg.host_id = h.id
+    WHERE hg.group_id = $1`, [groupId]);
+  return rows;
+}
+
 async function setHostMetadata(c, id, info) {
   await c.query(
     `UPDATE fleet_hosts SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
@@ -215,4 +287,6 @@ module.exports = {
   createSession, getSession, listSessions, countSessions, updateSession,
   markSessionRunning, markSessionExited, orphanRunningSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
+  listGroups, getGroup, getGroupByName, createGroup, updateGroup, deleteGroup,
+  addHostToGroup, removeHostFromGroup, listGroupsForHost, listHostsInGroup,
 };

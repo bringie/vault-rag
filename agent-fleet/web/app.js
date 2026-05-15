@@ -7,6 +7,7 @@
     token: null,
     hosts: [],
     sessions: [],
+    groups: [],           // [{id,name,description,color,host_ids}]
     cost: null,           // { days, hosts: [{host_id, host, usd, msgs}] }
     selected: null,       // session_id (when viewMode='session')
     selectedHost: null,   // host_id (when viewMode='host')
@@ -164,6 +165,14 @@
       || `<option value="">no online hosts</option>`;
     if (cur && [...hostSel.options].some(o => o.value === cur)) hostSel.value = cur;
 
+    const grpSel = $('spawn-group');
+    if (grpSel) {
+      const cur2 = grpSel.value;
+      grpSel.innerHTML = '<option value="">(by tag instead)</option>' +
+        state.groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
+      if (cur2 && [...grpSel.options].some(o => o.value === cur2)) grpSel.value = cur2;
+    }
+
     // footbar
     $('footstat').textContent = `${state.hosts.length} hosts · ${state.sessions.length} sessions · ${active} active`;
   }
@@ -171,9 +180,12 @@
   // ============ Poll ============
   async function refresh() {
     try {
-      const [hosts, sessions] = await Promise.all([api('GET', '/hosts'), api('GET', '/sessions')]);
+      const [hosts, sessions, groups] = await Promise.all([
+        api('GET', '/hosts'), api('GET', '/sessions'), api('GET', '/groups'),
+      ]);
       state.hosts = hosts;
       state.sessions = sessions;
+      state.groups = groups;
       // cost is best-effort (503 if tokmon down); don't break refresh
       try {
         const cost = await api('GET', '/cost/summary?days=7');
@@ -495,13 +507,15 @@
     };
     $('bcast-btn').onclick = async () => {
       const tag = $('spawn-tag').value.trim();
-      if (!tag) { alert('tag required'); return; }
+      const groupId = $('spawn-group').value;
+      const groupName = groupId ? state.groups.find(g => g.id === groupId)?.name : null;
+      if (!tag && !groupName) { alert('group or tag required'); return; }
       const cwd = $('spawn-cwd').value || '~';
       const args = parseArgs($('spawn-args').value);
-      const matching = state.hosts.filter(h => h.status === 'online' && (h.capabilities || []).includes(tag));
-      if (!confirm(`Broadcast to ${matching.length} host(s) with tag '${tag}': ${matching.map(h => h.display_name || h.name).join(', ')}?`)) return;
+      const body = { cwd, args, label: 'bcast:' + (groupName || tag) };
+      if (groupName) body.group = groupName; else body.tag = tag;
       try {
-        const r = await api('POST', '/broadcast', { tag, cwd, args, label: 'bcast:' + tag });
+        const r = await api('POST', '/broadcast', body);
         await refresh();
         alert(`spawned ${r.count} sessions${r.results.some(x => !x.ok) ? ' (some failed, see console)' : ''}`);
         console.log('broadcast results:', r.results);
@@ -600,6 +614,47 @@
       await patchHost(h.id, { capabilities: updated });
       inp.value = '';
     };
+    // groups
+    renderHostGroups(h);
+  }
+
+  async function renderHostGroups(h) {
+    // Lazy-load groups if we don't have them
+    if (!state.groups.length) {
+      try { state.groups = await api('GET', '/groups'); } catch {}
+    }
+    const memberGroups = state.groups.filter(g => (g.host_ids || []).includes(h.id));
+    const nonMember = state.groups.filter(g => !(g.host_ids || []).includes(h.id));
+    const el = $('hd-groups');
+    el.innerHTML = memberGroups.length === 0
+      ? `<span class="lbl" style="color:var(--text-faint)">not in any group</span>`
+      : memberGroups.map(g => {
+        const accent = g.color ? `style="border-color:${esc(g.color)};color:${esc(g.color)}"` : '';
+        return `<span class="chip" ${accent}>${esc(g.name)}<button data-rm-group="${g.id}">×</button></span>`;
+      }).join('');
+    el.querySelectorAll('button[data-rm-group]').forEach(btn => {
+      btn.onclick = async () => {
+        await fetch(`/api/fleet/groups/${btn.dataset.rmGroup}/hosts/${h.id}`, {
+          method: 'DELETE', headers: { authorization: 'Bearer ' + state.token },
+        });
+        state.groups = await api('GET', '/groups');
+        renderHostGroups(h);
+      };
+    });
+    const sel = $('hd-group-select');
+    sel.innerHTML = '<option value="">-- add to group --</option>' +
+      nonMember.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
+    sel.onchange = async () => {
+      if (!sel.value) return;
+      await fetch(`/api/fleet/groups/${sel.value}/hosts`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
+        body: JSON.stringify({ host_id: h.id }),
+      });
+      state.groups = await api('GET', '/groups');
+      sel.value = '';
+      renderHostGroups(h);
+    };
   }
 
   async function patchHost(hostId, patch) {
@@ -680,9 +735,11 @@
     $('archive').hidden = true;
     $('sdetail').hidden = true;
     $('costview').hidden = true;
+    $('groupsview').hidden = true;
     if (r.name === 'archive') { setNav('archive'); openArchive(); $('archive').hidden = false; return; }
     if (r.name === 'sessions' && r.arg) { setNav('archive'); openSessionDetail(r.arg); $('sdetail').hidden = false; return; }
     if (r.name === 'cost') { setNav('cost'); openCostView(); $('costview').hidden = false; return; }
+    if (r.name === 'groups') { setNav('groups'); openGroupsView(); $('groupsview').hidden = false; return; }
     setNav('dashboard');
   }
   window.addEventListener('hashchange', applyRoute);
@@ -865,21 +922,27 @@
   // ============ Cost timeline view ============
   async function openCostView() {
     const days = parseInt($('cv-days').value, 10);
+    const groupBy = $('cv-groupby').value;
     $('cv-days').onchange = openCostView;
+    $('cv-groupby').onchange = openCostView;
     $('costview-close').onclick = () => navigate('/dashboard');
     let data;
-    try { data = await api('GET', '/cost/timeline?days=' + days); }
+    try { data = await api('GET', `/cost/timeline?days=${days}&group_by=${groupBy}`); }
     catch (e) { $('cv-summary').textContent = 'load failed: ' + e.message; return; }
     renderCostChart(data);
   }
   function renderCostChart(data) {
     const points = data.points || [];
-    const models = Array.from(new Set(points.map(p => p.model)));
+    const groupBy = data.group_by || 'model';
+    // For backward compat: if dim isn't present, fall back to model.
+    const dimKey = (p) => p.dim != null ? p.dim : p.model;
+    const dims = Array.from(new Set(points.map(dimKey)));
     const byDay = new Map();
     for (const p of points) {
       const d = new Date(p.day).toISOString().slice(0, 10);
       if (!byDay.has(d)) byDay.set(d, {});
-      byDay.get(d)[p.model] = (byDay.get(d)[p.model] || 0) + p.usd;
+      const k = dimKey(p);
+      byDay.get(d)[k] = (byDay.get(d)[k] || 0) + p.usd;
     }
     const days = Array.from(byDay.keys()).sort();
     // summary
@@ -889,40 +952,89 @@
       <div class="stat"><span class="lbl">${data.days}d total</span><span class="val val-warn">$${total.toFixed(2)}</span></div>
       <div class="stat"><span class="lbl">messages</span><span class="val">${totalMsgs}</span></div>
       <div class="stat"><span class="lbl">avg/day</span><span class="val">$${(total / Math.max(data.days, 1)).toFixed(2)}</span></div>
-      <div class="stat"><span class="lbl">models</span><span class="val">${models.length}</span></div>
+      <div class="stat"><span class="lbl">grouped by</span><span class="val">${groupBy} (${dims.length})</span></div>
     `;
     // chart
     const W = 1200, H = 320, PAD_L = 60, PAD_R = 30, PAD_T = 30, PAD_B = 50;
     const innerW = W - PAD_L - PAD_R, innerH = H - PAD_T - PAD_B;
     const max = Math.max(0.01, ...days.map(d => Object.values(byDay.get(d)).reduce((n, v) => n + v, 0)));
-    const colors = { 'claude-opus-4-7': '#ff79c6', 'claude-sonnet-4-6': '#6fd5ff', 'claude-haiku-4-5': '#5cf08c' };
-    function colorFor(m) { return colors[m] || colors[m.split('-').slice(0,2).join('-')] || '#ffb547'; }
+    const presetColors = { 'claude-opus-4-7': '#ff79c6', 'claude-sonnet-4-6': '#6fd5ff', 'claude-haiku-4-5': '#5cf08c' };
+    const palette = ['#ff79c6','#6fd5ff','#5cf08c','#ffb547','#ff4d5e','#bbf3ff','#86ffac','#ffd07a','#ffaae0','#9be4ff'];
+    const colorCache = new Map();
+    function colorFor(k) {
+      if (presetColors[k]) return presetColors[k];
+      if (colorCache.has(k)) return colorCache.get(k);
+      const c = palette[colorCache.size % palette.length];
+      colorCache.set(k, c);
+      return c;
+    }
     const barW = innerW / Math.max(days.length, 1) * 0.7;
     const gap  = innerW / Math.max(days.length, 1);
     let svg = '';
-    // y-axis grid
     for (let i = 0; i <= 4; i++) {
       const y = PAD_T + innerH * (i / 4);
       const val = max * (1 - i / 4);
       svg += `<line x1="${PAD_L}" y1="${y}" x2="${W - PAD_R}" y2="${y}" stroke="#2a2832" stroke-dasharray="2,3"/>`;
       svg += `<text x="${PAD_L - 6}" y="${y + 4}" fill="#7a7575" font-family="JetBrains Mono" font-size="10" text-anchor="end">$${val.toFixed(2)}</text>`;
     }
-    // bars
     days.forEach((d, i) => {
       const x = PAD_L + i * gap + (gap - barW) / 2;
       let yCursor = PAD_T + innerH;
-      for (const m of models) {
-        const v = byDay.get(d)[m] || 0;
+      for (const k of dims) {
+        const v = byDay.get(d)[k] || 0;
         if (!v) continue;
         const h = innerH * (v / max);
         yCursor -= h;
-        svg += `<rect x="${x}" y="${yCursor}" width="${barW}" height="${h}" fill="${colorFor(m)}" opacity="0.85"><title>${d} · ${m}: $${v.toFixed(4)}</title></rect>`;
+        svg += `<rect x="${x}" y="${yCursor}" width="${barW}" height="${h}" fill="${colorFor(k)}" opacity="0.85"><title>${d} · ${k}: $${v.toFixed(4)}</title></rect>`;
       }
       svg += `<text x="${x + barW/2}" y="${H - PAD_B + 18}" fill="#8a8580" font-family="JetBrains Mono" font-size="10" text-anchor="middle">${d.slice(5)}</text>`;
     });
     $('cv-chart').innerHTML = svg;
-    $('cv-legend').innerHTML = models.map(m =>
-      `<span><span class="sw" style="background:${colorFor(m)}"></span>${esc(m)}</span>`).join('');
+    $('cv-legend').innerHTML = dims.map(k =>
+      `<span><span class="sw" style="background:${colorFor(k)}"></span>${esc(k)}</span>`).join('');
+  }
+
+  // ============ Groups page ============
+  async function openGroupsView() {
+    $('groupsview-close').onclick = () => navigate('/dashboard');
+    $('grp-new').onclick = async () => {
+      const name = prompt('group name?');
+      if (!name) return;
+      const description = prompt('description (optional)') || '';
+      const color = prompt('color #hex (optional)') || '';
+      try {
+        await api('POST', '/groups', { name, description, color });
+        await loadGroups();
+      } catch (e) { alert('create failed: ' + e.message); }
+    };
+    await loadGroups();
+  }
+  async function loadGroups() {
+    state.groups = await api('GET', '/groups');
+    $('groups-count').textContent = `${state.groups.length} groups`;
+    const body = $('grp-rows');
+    body.innerHTML = state.groups.length === 0
+      ? '<tr><td colspan="5" style="text-align:center; padding:2em; color:var(--text-faint)">no groups yet — create one</td></tr>'
+      : state.groups.map(g => {
+        const hostNames = (g.host_ids || []).map(id => {
+          const h = state.hosts.find(x => x.id === id);
+          return h ? (h.display_name || h.name) : id.slice(0,8);
+        }).join(', ') || '(none)';
+        return `<tr>
+          <td><strong>${esc(g.name)}</strong></td>
+          <td>${esc(g.description || '—')}</td>
+          <td title="${esc(hostNames)}">${(g.host_ids || []).length}</td>
+          <td>${g.color ? `<span style="background:${esc(g.color)};display:inline-block;width:16px;height:16px;border:1px solid var(--line);vertical-align:middle"></span> ${esc(g.color)}` : '—'}</td>
+          <td><button class="btn-ghost" data-grp-del="${g.id}" style="font-size:.75em; padding:.2em .6em">✕</button></td>
+        </tr>`;
+      }).join('');
+    body.querySelectorAll('button[data-grp-del]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('delete this group? hosts stay, just the group is removed.')) return;
+        await fetch('/api/fleet/groups/' + btn.dataset.grpDel, { method: 'DELETE', headers: { authorization: 'Bearer ' + state.token } });
+        await loadGroups();
+      };
+    });
   }
 
   // ============ Boot ============

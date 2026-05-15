@@ -140,6 +140,7 @@ async function handleGetHost({ req, res, ctx }) {
   const id = pathMatch(req.url, '/fleet/hosts');
   const h = await fleetDb.getHost(ctx.db, id);
   if (!h) return send(res, 404, { error: 'host not found' });
+  h.groups = await fleetDb.listGroupsForHost(ctx.db, id);
   send(res, 200, h);
 }
 
@@ -236,9 +237,9 @@ async function handleExec({ req, res, body, ctx }) {
 
 async function handleDispatch({ req, res, body, ctx }) {
   if (!body) return send(res, 422, { error: 'body required' });
-  const { tag, host_name, host_id, cwd, args, env, label, metadata } = body;
-  if (!tag && !host_name && !host_id) {
-    return send(res, 422, { error: 'one of tag|host_name|host_id required' });
+  const { tag, group, host_name, host_id, cwd, args, env, label, metadata } = body;
+  if (!tag && !group && !host_name && !host_id) {
+    return send(res, 422, { error: 'one of tag|group|host_name|host_id required' });
   }
   // Resolve candidate hosts
   const all = await fleetDb.listHosts(ctx.db);
@@ -246,6 +247,13 @@ async function handleDispatch({ req, res, body, ctx }) {
   if (host_id)   candidates = candidates.filter(h => h.id === host_id);
   if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
   if (tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (group) {
+    const g = await fleetDb.getGroupByName(ctx.db, group);
+    if (!g) return send(res, 404, { error: `group not found: ${group}` });
+    const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
+    const memberIds = new Set(members.map(h => h.id));
+    candidates = candidates.filter(h => memberIds.has(h.id));
+  }
   if (!candidates.length) return send(res, 404, { error: 'no online host matches the criteria' });
   // Pick least-busy (running sessions ascending) as a small UX win.
   const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
@@ -303,11 +311,18 @@ async function handlePatchSession({ req, res, body, ctx }) {
 
 async function handleBroadcast({ req, res, body, ctx }) {
   if (!body) return send(res, 422, { error: 'body required' });
-  const { tag, cwd, args, env, label, metadata } = body;
-  if (!tag && !body.all) return send(res, 422, { error: 'tag or all=true required' });
+  const { tag, group, cwd, args, env, label, metadata } = body;
+  if (!tag && !group && !body.all) return send(res, 422, { error: 'tag|group|all required' });
   const all = await fleetDb.listHosts(ctx.db);
   let candidates = all.filter(h => h.status === 'online');
   if (tag) candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (group) {
+    const g = await fleetDb.getGroupByName(ctx.db, group);
+    if (!g) return send(res, 404, { error: `group not found: ${group}` });
+    const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
+    const memberIds = new Set(members.map(h => h.id));
+    candidates = candidates.filter(h => memberIds.has(h.id));
+  }
   if (!candidates.length) return send(res, 404, { error: 'no matching online hosts' });
   const results = [];
   for (const host of candidates) {
@@ -332,9 +347,10 @@ async function handleCostTimeline({ req, res, ctx }) {
   if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
   const url = new URL(req.url, 'http://x');
   const days = parseInt(url.searchParams.get('days') || '7', 10);
+  const groupBy = url.searchParams.get('group_by') || 'model';
   const hosts = await fleetDb.listHosts(ctx.db);
-  const rows = await fleetCost.timeline(ctx.tokmonDb, hosts.map(h => h.name), days);
-  send(res, 200, { days, points: rows });
+  const rows = await fleetCost.timeline(ctx.tokmonDb, hosts.map(h => h.name), days, groupBy, ctx.db);
+  send(res, 200, { days, group_by: groupBy, points: rows });
 }
 
 async function handleSessionTimeline({ req, res, ctx }) {
@@ -421,6 +437,58 @@ async function handlePostKill({ req, res, body, ctx }) {
     await fleetDb.markSessionExited(ctx.db, s.id, -1, 'killed');
     if (ctx.bus) ctx.bus.broadcastViewers(s.id, { type: 'session_exit', exit_code: -1 });
   }
+  res.writeHead(204); res.end();
+}
+
+// ============ Groups ============
+
+async function handleListGroups({ res, ctx }) {
+  const rows = await fleetDb.listGroups(ctx.db);
+  send(res, 200, rows);
+}
+
+async function handleCreateGroup({ res, body, ctx }) {
+  if (!body || !body.name) return send(res, 422, { error: 'name required' });
+  try {
+    const g = await fleetDb.createGroup(ctx.db, { name: body.name, description: body.description, color: body.color });
+    send(res, 201, g);
+  } catch (e) {
+    if (e.code === '23505') return send(res, 409, { error: 'name already exists' });
+    send(res, 500, { error: e.message });
+  }
+}
+
+async function handlePatchGroup({ req, res, body, ctx }) {
+  const id = pathMatch(req.url, '/fleet/groups');
+  if (!body) return send(res, 422, { error: 'body required' });
+  const patch = {};
+  if ('name' in body)        patch.name = body.name;
+  if ('description' in body) patch.description = body.description;
+  if ('color' in body)       patch.color = body.color;
+  const g = await fleetDb.updateGroup(ctx.db, id, patch);
+  if (!g) return send(res, 404, { error: 'not found' });
+  send(res, 200, g);
+}
+
+async function handleDeleteGroup({ req, res, ctx }) {
+  const id = pathMatch(req.url, '/fleet/groups');
+  await fleetDb.deleteGroup(ctx.db, id);
+  res.writeHead(204); res.end();
+}
+
+async function handleGroupAddHost({ req, res, body, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/groups/(${SID_RE})/hosts$`, 'i'));
+  if (!m || !body || !body.host_id) return send(res, 422, { error: 'host_id required' });
+  await fleetDb.addHostToGroup(ctx.db, body.host_id, m[1]);
+  res.writeHead(204); res.end();
+}
+
+async function handleGroupRemoveHost({ req, res, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/groups/(${SID_RE})/hosts/(${SID_RE})$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  await fleetDb.removeHostFromGroup(ctx.db, m[2], m[1]);
   res.writeHead(204); res.end();
 }
 
@@ -563,6 +631,22 @@ function dispatchHttp(req, res, ctx) {
     return readBody(req).then(b => handleBroadcast({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
   if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
+
+  // Groups
+  if (method === 'GET'    && path === '/fleet/groups') return handleListGroups({ req, res, ctx });
+  if (method === 'POST'   && path === '/fleet/groups') {
+    return readBody(req).then(b => handleCreateGroup({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'PATCH'  && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) {
+    return readBody(req).then(b => handlePatchGroup({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleDeleteGroup({ req, res, ctx });
+  if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/hosts$`, 'i').test(path)) {
+    return readBody(req).then(b => handleGroupAddHost({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}/hosts/${SID_RE}$`, 'i').test(path)) {
+    return handleGroupRemoveHost({ req, res, ctx });
+  }
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) return handleGetSession({ req, res, ctx });
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/input$`, 'i').test(path)) {
     return readBody(req).then(b => handlePostInput({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));

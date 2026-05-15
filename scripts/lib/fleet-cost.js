@@ -98,9 +98,12 @@ async function hostSummary(tokmonPg, hostNames, days = 7) {
   return out;
 }
 
-// Daily aggregate over the last N days: returns one row per (day, model)
-// so the client can render a stacked bar / line chart.
-async function timeline(tokmonPg, hostNames, days = 7) {
+// Daily aggregate over the last N days. `groupBy` selects the second
+// dimension: 'model' (default), 'host' (=tokmon host_id), or 'label'
+// (requires session_id join to fleet_sessions for label column).
+async function timeline(tokmonPg, hostNames, days = 7, groupBy = 'model', vaultPg = null) {
+  if (groupBy === 'label' && vaultPg) return timelineByLabel(tokmonPg, vaultPg, days);
+  const dim = groupBy === 'host' ? 'host_id' : 'model';
   const where = ['ts > now() - ($1 || \' days\')::interval'];
   const args = [String(days)];
   if (hostNames && hostNames.length) {
@@ -108,16 +111,17 @@ async function timeline(tokmonPg, hostNames, days = 7) {
     where.push(`host_id = ANY($${args.length})`);
   }
   const { rows } = await tokmonPg.query(
-    `SELECT date_trunc('day', ts) AS day, model,
+    `SELECT date_trunc('day', ts) AS day, ${dim} AS dim, model,
             SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
             SUM(cache_creation_5m) AS cache_creation_5m, SUM(cache_read) AS cache_read,
             COUNT(*) AS msgs
      FROM events
      WHERE ${where.join(' AND ')}
-     GROUP BY day, model
+     GROUP BY day, ${dim}, model
      ORDER BY day`, args);
   return rows.map(r => ({
     day: r.day,
+    dim: r.dim,
     model: r.model,
     msgs: Number(r.msgs),
     usd: rowCost(r),
@@ -126,6 +130,48 @@ async function timeline(tokmonPg, hostNames, days = 7) {
     cache_creation_5m: Number(r.cache_creation_5m),
     cache_read: Number(r.cache_read),
   }));
+}
+
+// label is a fleet_sessions column. tokmon stores session_id matching fleet
+// session id (since we inject --session-id). Two pools, so we do it in two
+// steps: pull events grouped by session_id from tokmon, then resolve labels
+// from vault_rag.
+async function timelineByLabel(tokmonPg, vaultPg, days = 7) {
+  const { rows: ev } = await tokmonPg.query(
+    `SELECT date_trunc('day', ts) AS day, session_id, model,
+            SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+            SUM(cache_creation_5m) AS cache_creation_5m, SUM(cache_read) AS cache_read,
+            COUNT(*) AS msgs
+     FROM events
+     WHERE ts > now() - ($1 || ' days')::interval
+     GROUP BY day, session_id, model`, [String(days)]);
+  if (!ev.length) return [];
+  const sessionIds = Array.from(new Set(ev.map(r => r.session_id).filter(x => /^[0-9a-f-]{36}$/i.test(x))));
+  const labelById = new Map();
+  if (sessionIds.length) {
+    const { rows: ss } = await vaultPg.query(
+      `SELECT id::text AS id, COALESCE(label, '(unlabeled)') AS label FROM fleet_sessions WHERE id::text = ANY($1)`,
+      [sessionIds]);
+    for (const s of ss) labelById.set(s.id, s.label);
+  }
+  // Now coalesce by (day, label, model)
+  const grouped = new Map();
+  for (const r of ev) {
+    const label = labelById.get(r.session_id) || '(external/unlabeled)';
+    const key = `${r.day.toISOString()}|${label}|${r.model}`;
+    let g = grouped.get(key);
+    if (!g) {
+      g = { day: r.day, dim: label, model: r.model, msgs: 0, input_tokens: 0, output_tokens: 0, cache_creation_5m: 0, cache_read: 0 };
+      grouped.set(key, g);
+    }
+    g.msgs += Number(r.msgs);
+    g.input_tokens += Number(r.input_tokens);
+    g.output_tokens += Number(r.output_tokens);
+    g.cache_creation_5m += Number(r.cache_creation_5m);
+    g.cache_read += Number(r.cache_read);
+  }
+  return Array.from(grouped.values()).map(g => ({ ...g, usd: rowCost(g) }))
+    .sort((a, b) => a.day - b.day);
 }
 
 module.exports = { sessionCost, hostSummary, timeline, rowCost, priceFor };
