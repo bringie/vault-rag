@@ -294,7 +294,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
-  const handler = ROUTES[req.url];
+  // Accept both bare routes and /api/ prefixed (production Caddy strips /api/;
+  // local/test rag-api receives bare paths).
+  const route = req.url.startsWith('/api/') ? req.url.slice(4) : req.url;
+  const handler = ROUTES[route];
   if (!handler) return send(res, 404, { error: 'not found' });
   try {
     const body = await readBody(req);

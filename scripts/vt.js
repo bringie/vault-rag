@@ -265,6 +265,95 @@ async function cmdRemember(cfg, args) {
   }
 }
 
+async function cmdSecrets(cfg, args) {
+  if (!cfg.apiBase || !cfg.apiToken) {
+    die('secrets: VAULT_RAG_API_URL/DOMAIN + VAULT_RAG_API_TOKEN required');
+  }
+  const sub = args.positional[0];
+  const rest = args.positional.slice(1);
+  const apiPost = async (route, body) => {
+    const url = `${cfg.apiBase.replace(/\/$/, '')}/api${route}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${cfg.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    return { code: res.status, body: json };
+  };
+
+  if (sub === 'get') {
+    const name = rest[0];
+    if (!name) die('usage: vt secrets get NAME');
+    const r = await apiPost('/secrets/get', { name });
+    if (r.code !== 200) die(`secrets get: HTTP ${r.code} ${JSON.stringify(r.body)}`);
+    process.stdout.write(r.body.value);
+    return;
+  }
+  if (sub === 'list') {
+    const r = await apiPost('/secrets/list', {});
+    if (r.code !== 200) die(`secrets list: HTTP ${r.code} ${JSON.stringify(r.body)}`);
+    for (const n of r.body.names) process.stdout.write(n + '\n');
+    return;
+  }
+  if (sub === 'set') {
+    const name = rest[0];
+    let value = rest[1];
+    if (!name) die('usage: vt secrets set NAME [VALUE]');
+    if (value === undefined) {
+      const readline = require('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+      value = await new Promise((r) => rl.question(`value for ${name}: `, (v) => { rl.close(); r(v); }));
+    }
+    const r = await apiPost('/secrets/set', { name, value });
+    if (r.code !== 200) die(`secrets set: HTTP ${r.code} ${JSON.stringify(r.body)}`);
+    process.stdout.write(`ok sha=${r.body.committed_sha}\n`);
+    return;
+  }
+  if (sub === 'delete') {
+    const name = rest[0];
+    if (!name) die('usage: vt secrets delete NAME');
+    const r = await apiPost('/secrets/delete', { name });
+    if (r.code !== 200) die(`secrets delete: HTTP ${r.code} ${JSON.stringify(r.body)}`);
+    process.stdout.write(`ok sha=${r.body.committed_sha}\n`);
+    return;
+  }
+  if (sub === 'rotate') {
+    const name = rest[0];
+    const value = rest[1] ?? null;
+    if (!name) die('usage: vt secrets rotate NAME [VALUE]');
+    const r = await apiPost('/secrets/rotate', { name, value });
+    if (r.code !== 200) die(`secrets rotate: HTTP ${r.code} ${JSON.stringify(r.body)}`);
+    process.stdout.write(`ok sha=${r.body.committed_sha}\n`);
+    return;
+  }
+  if (sub === 'verify') {
+    const r = await apiPost('/secrets/verify', {});
+    process.stdout.write(JSON.stringify(r.body, null, 2) + '\n');
+    return;
+  }
+  if (sub === 'export-env') {
+    const list = await apiPost('/secrets/list', {});
+    if (list.code !== 200) die(`secrets list: HTTP ${list.code} ${JSON.stringify(list.body)}`);
+    for (const n of list.body.names) {
+      if (n.endsWith('_env')) continue;
+      const v = await apiPost('/secrets/get', { name: n });
+      if (v.code !== 200) {
+        process.stderr.write(`# error fetching ${n}: ${JSON.stringify(v.body)}\n`);
+        continue;
+      }
+      process.stdout.write(`export ${n}=${JSON.stringify(v.body.value)}\n`);
+    }
+    return;
+  }
+  die('usage: vt secrets {get|list|set|delete|rotate|verify|export-env} ...', 2);
+}
+
 function cmdPrime() {
   const help = `vt - vault-task CLI. Tasks as markdown in obsidian-vault/04-tasks/.
 
@@ -283,6 +372,9 @@ Commands:
                                            via /api/put (requires VAULT_RAG_API_URL + _TOKEN env).
                                            --server-only: skip local write, push to brain only
                                            (brain commits + pushes; avoids local/brain race).
+  vt secrets {get|list|set|delete|rotate|verify|export-env}
+                                           Manage encrypted secrets via /api/secrets/*.
+                                           See docs/superpowers/agent-onboarding-secrets.md.
   vt prime                                  This help.
 
 Workflow:
@@ -314,6 +406,7 @@ const COMMANDS = {
   dep: cmdDep,
   search: cmdSearch,
   remember: cmdRemember,
+  secrets: cmdSecrets,
   prime: cmdPrime,
   help: cmdPrime,
   '--help': cmdPrime,
