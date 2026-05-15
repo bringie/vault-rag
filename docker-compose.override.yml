@@ -1,0 +1,22 @@
+volumes:
+  vault-rag-grafana-data:
+    external: true
+    name: brain_brain-grafana-data
+  vault-rag-pgdata:
+    external: true
+    name: brain_brain-pgdata
+  vault-rag-ollama-data:
+    external: true
+    name: brain_brain-ollama-data
+  vault-rag-forgejo-data:
+    external: true
+    name: brain_brain-forgejo-data
+  vault-rag-vmdata:
+    external: true
+    name: brain_brain-vmdata
+  vault-rag-caddy-data:
+    external: true
+    name: brain_brain-caddy-data
+  vault-rag-caddy-config:
+    external: true
+    name: brain_brain-caddy-config

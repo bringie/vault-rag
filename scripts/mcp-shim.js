@@ -119,6 +119,114 @@ const TOOLS = [
     description: 'Health check: confirm the encrypted vault decrypts and report version, count, last_rotated map.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'task_create',
+    description: 'Create new vt task',
+    inputSchema: {
+      type: 'object',
+      required: ['title'],
+      properties: {
+        title:      { type: 'string' },
+        type:       { type: 'string', enum: ['task', 'epic', 'bug', 'chore'] },
+        priority:   { type: 'integer', minimum: 0, maximum: 3 },
+        epic:       { type: 'string' },
+        blocked_by: { type: 'array', items: { type: 'string' } },
+        by:         { type: 'string', description: 'Agent identifier' },
+      },
+    },
+  },
+  {
+    name: 'task_list',
+    description: 'List tasks (default: open only)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        all:    { type: 'boolean' },
+        status: { type: 'string', enum: ['open', 'in_progress', 'blocked', 'closed'] },
+        type:   { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'task_ready',
+    description: 'List unblocked open tasks sorted by priority',
+    inputSchema: { type: 'object' },
+  },
+  {
+    name: 'task_show',
+    description: 'Show task by id',
+    inputSchema: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id:   { type: 'string' },
+        json: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'task_claim',
+    description: 'Claim a task (sets in_progress, claimed_by)',
+    inputSchema: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id:    { type: 'string' },
+        by:    { type: 'string' },
+        force: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'task_close',
+    description: 'Close a task with reason',
+    inputSchema: {
+      type: 'object',
+      required: ['id', 'reason'],
+      properties: {
+        id:     { type: 'string' },
+        reason: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'task_update',
+    description: 'Update status/priority/body',
+    inputSchema: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id:       { type: 'string' },
+        status:   { type: 'string', enum: ['open', 'in_progress', 'blocked', 'closed'] },
+        priority: { type: 'integer', minimum: 0, maximum: 3 },
+        body:     { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'task_dep_add',
+    description: 'Add blocked_by dependency',
+    inputSchema: {
+      type: 'object',
+      required: ['id', 'blocked_by'],
+      properties: {
+        id:         { type: 'string' },
+        blocked_by: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'task_dep_rm',
+    description: 'Remove blocked_by dependency',
+    inputSchema: {
+      type: 'object',
+      required: ['id', 'blocked_by'],
+      properties: {
+        id:         { type: 'string' },
+        blocked_by: { type: 'string' },
+      },
+    },
+  },
 ];
 
 async function ragCall(routePath, body) {
@@ -149,6 +257,15 @@ const TOOL_IMPL = {
   secret_delete:  (args) => ragCall('/secrets/delete',  args),
   secret_rotate:  (args) => ragCall('/secrets/rotate',  args),
   secret_verify:  ()     => ragCall('/secrets/verify',  {}),
+  task_create:    (args) => ragCall('/task/create',     args),
+  task_list:      (args) => ragCall('/task/list',       args || {}),
+  task_ready:     (args) => ragCall('/task/ready',      args || {}),
+  task_show:      (args) => ragCall('/task/show',       args),
+  task_claim:     (args) => ragCall('/task/claim',      args),
+  task_close:     (args) => ragCall('/task/close',      args),
+  task_update:    (args) => ragCall('/task/update',     args),
+  task_dep_add:   (args) => ragCall('/task/dep_add',    args),
+  task_dep_rm:    (args) => ragCall('/task/dep_rm',     args),
 };
 
 function tokenEqual(a, b) {
