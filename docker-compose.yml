@@ -65,11 +65,18 @@ services:
       - VAULT_RAG_PG_PASS=${VAULT_RAG_PG_PASSWORD}
       - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
       - VAULT_PATH=/vault
+      # Secrets vault (see docs/superpowers/specs/2026-05-14-secrets-vault-design.md)
+      - VAULT_AGE_KEY_PATH=/run/secrets/age.key
+      - VAULT_REPO_PATH=/vault-repo
+      - VAULT_AGE_PATH=/vault/secrets/vault.age
+      - VAULT_RECIPIENTS_PATH=/vault/secrets/recipients
     ports:
       - "127.0.0.1:5679:5679"
     volumes:
       - /root/obsidian-vault:/vault:rw
       - ./scripts:/scripts:ro
+      - /opt/vault-rag:/vault-repo:rw
+      - /opt/vault-rag/.secrets/age.key:/run/secrets/age.key:ro
     networks:
       - vault-rag-net
     healthcheck:
