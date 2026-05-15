@@ -300,14 +300,13 @@
     const flushPending = () => {
       rafScheduled = false;
       if (!pendingChunks.length || !state.term) return;
-      const merged = Buffer.concat ? Buffer.concat(pendingChunks) : (function() {
-        let total = 0; for (const c of pendingChunks) total += c.length;
-        const out = new Uint8Array(total); let o = 0;
-        for (const c of pendingChunks) { out.set(c, o); o += c.length; }
-        return out;
-      })();
+      let total = 0;
+      for (const c of pendingChunks) total += c.length;
+      const merged = new Uint8Array(total);
+      let o = 0;
+      for (const c of pendingChunks) { merged.set(c, o); o += c.length; }
       pendingChunks = [];
-      try { state.term.write(merged); } catch {}
+      try { state.term.write(merged); } catch (e) { console.warn('term.write failed', e); }
     };
     const writeChunk = (u8) => {
       if (u8.length > 0) receivedAnyData = true;
