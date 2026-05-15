@@ -19,7 +19,7 @@ async function withClient(fn) {
 }
 
 async function reset(c) {
-  await c.query('TRUNCATE fleet_hosts, fleet_sessions, fleet_events RESTART IDENTITY CASCADE');
+  await c.query('TRUNCATE fleet_hosts, fleet_sessions, fleet_events, fleet_groups, fleet_host_groups RESTART IDENTITY CASCADE');
 }
 
 test('upsertHost inserts new host on first call', async () => {

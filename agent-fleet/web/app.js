@@ -1034,20 +1034,27 @@
     $('groups-count').textContent = `${state.groups.length} groups`;
     const body = $('grp-rows');
     body.innerHTML = state.groups.length === 0
-      ? '<tr><td colspan="5" style="text-align:center; padding:2em; color:var(--text-faint)">no groups yet — create one</td></tr>'
+      ? '<tr><td colspan="6" style="text-align:center; padding:2em; color:var(--text-faint)">no groups yet — create one</td></tr>'
       : state.groups.map(g => {
         const hostNames = (g.host_ids || []).map(id => {
           const h = state.hosts.find(x => x.id === id);
           return h ? (h.display_name || h.name) : id.slice(0,8);
         }).join(', ') || '(none)';
+        const labelsChips = (g.labels || []).length
+          ? (g.labels || []).map(l => `<span class="chip">${esc(l)}</span>`).join(' ')
+          : '<span style="color:var(--text-faint)">—</span>';
         return `<tr>
-          <td><strong>${esc(g.name)}</strong></td>
+          <td><button class="link-btn" data-grp-open="${g.id}"><strong>${esc(g.name)}</strong></button></td>
           <td>${esc(g.description || '—')}</td>
+          <td>${labelsChips}</td>
           <td title="${esc(hostNames)}">${(g.host_ids || []).length}</td>
           <td>${g.color ? `<span style="background:${esc(g.color)};display:inline-block;width:16px;height:16px;border:1px solid var(--line);vertical-align:middle"></span> ${esc(g.color)}` : '—'}</td>
           <td><button class="btn-ghost" data-grp-del="${g.id}" style="font-size:.75em; padding:.2em .6em">✕</button></td>
         </tr>`;
       }).join('');
+    body.querySelectorAll('button[data-grp-open]').forEach(btn => {
+      btn.onclick = () => openGroupDetail(btn.dataset.grpOpen);
+    });
     body.querySelectorAll('button[data-grp-del]').forEach(btn => {
       btn.onclick = async () => {
         if (!confirm('delete this group? hosts stay, just the group is removed.')) return;
@@ -1055,6 +1062,112 @@
         await loadGroups();
       };
     });
+  }
+
+  // ============ Group detail modal ============
+  async function openGroupDetail(groupId) {
+    const g = await api('GET', '/groups/' + groupId);
+    const modal = $('group-detail-modal');
+    if (!modal) {
+      console.error('group-detail-modal element missing'); return;
+    }
+    modal.hidden = false;
+    modal.innerHTML = `
+      <div class="gd-frame">
+        <div class="gd-head">
+          <span class="display" style="font-size:1.1em">GROUP // ${esc(g.name)}</span>
+          <span style="flex:1"></span>
+          <button class="btn-ghost" data-gd-close>× close</button>
+        </div>
+        <div class="gd-body">
+          <section>
+            <label class="lbl">LABELS (теги наследуются всеми хостами группы)</label>
+            <div id="gd-labels-chip-row"></div>
+            <form id="gd-add-label-form" style="margin-top:.4em">
+              <input id="gd-new-label" type="text" placeholder="new label…" style="width:200px"/>
+              <button type="submit" class="btn-ghost">+ add</button>
+            </form>
+          </section>
+          <section style="margin-top:1.4em">
+            <label class="lbl">HOSTS (${(g.hosts || []).length})</label>
+            <div id="gd-hosts-rows"></div>
+            <form id="gd-add-host-form" style="margin-top:.4em">
+              <select id="gd-host-pick">${state.hosts.filter(h => !(g.hosts||[]).find(gh => gh.id === h.id)).map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('')}</select>
+              <button type="submit" class="btn-ghost">+ add host</button>
+            </form>
+          </section>
+        </div>
+      </div>
+    `;
+    function renderLabels() {
+      const row = $('gd-labels-chip-row');
+      row.innerHTML = (g.labels || []).length
+        ? (g.labels || []).map((l, i) =>
+            `<span class="chip">${esc(l)} <button class="chip-x" data-rm-label="${i}">×</button></span>`).join(' ')
+        : '<span style="color:var(--text-faint)">no labels yet</span>';
+      row.querySelectorAll('[data-rm-label]').forEach(btn => {
+        btn.onclick = async () => {
+          const idx = parseInt(btn.dataset.rmLabel, 10);
+          const newLabels = (g.labels || []).filter((_, i) => i !== idx);
+          await api('PATCH', '/groups/' + g.id, { labels: newLabels });
+          g.labels = newLabels;
+          renderLabels();
+          loadGroups();
+        };
+      });
+    }
+    function renderHosts() {
+      const row = $('gd-hosts-rows');
+      row.innerHTML = (g.hosts || []).length
+        ? (g.hosts || []).map(h =>
+            `<div class="gd-host-row">
+              <span>${esc(h.display_name || h.name)}</span>
+              <span style="flex:1"></span>
+              <button class="btn-ghost" data-rm-host="${h.id}" style="font-size:.75em">remove</button>
+            </div>`).join('')
+        : '<span style="color:var(--text-faint)">no hosts in this group</span>';
+      row.querySelectorAll('[data-rm-host]').forEach(btn => {
+        btn.onclick = async () => {
+          await fetch(`/api/fleet/groups/${g.id}/hosts/${btn.dataset.rmHost}`, {
+            method: 'DELETE', headers: { authorization: 'Bearer ' + state.token } });
+          g.hosts = (g.hosts || []).filter(h => h.id !== btn.dataset.rmHost);
+          renderHosts();
+          // Refresh host picker
+          $('gd-host-pick').innerHTML = state.hosts
+            .filter(h => !(g.hosts||[]).find(gh => gh.id === h.id))
+            .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
+          loadGroups();
+        };
+      });
+    }
+    renderLabels();
+    renderHosts();
+    $('gd-add-label-form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const inp = $('gd-new-label');
+      const v = (inp.value || '').trim();
+      if (!v) return;
+      const newLabels = [...(g.labels || []), v];
+      await api('PATCH', '/groups/' + g.id, { labels: newLabels });
+      g.labels = newLabels;
+      inp.value = '';
+      renderLabels();
+      loadGroups();
+    };
+    $('gd-add-host-form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const hostId = $('gd-host-pick').value;
+      if (!hostId) return;
+      await api('POST', `/groups/${g.id}/hosts`, { host_id: hostId });
+      const added = state.hosts.find(h => h.id === hostId);
+      if (added) g.hosts = [...(g.hosts || []), added];
+      renderHosts();
+      $('gd-host-pick').innerHTML = state.hosts
+        .filter(h => !(g.hosts||[]).find(gh => gh.id === h.id))
+        .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
+      loadGroups();
+    };
+    modal.querySelector('[data-gd-close]').onclick = () => { modal.hidden = true; };
   }
 
   // ============ Boot ============

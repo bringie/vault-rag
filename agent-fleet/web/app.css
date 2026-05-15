@@ -538,6 +538,45 @@ body::after {
 #workflowrunviewer .overlay-header h2 { margin: 0; flex: 1; font-family: var(--font-display); font-size: 16px; }
 #wf-list-body { padding: 1em; }
 
+/* ============ GROUP DETAIL MODAL ============ */
+#group-detail-modal {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 4em;
+}
+#group-detail-modal[hidden] { display: none; }
+.gd-frame {
+  background: var(--panel); border: 1px solid var(--line-2);
+  width: 640px; max-width: 90vw; max-height: 80vh; overflow: auto;
+  font-family: var(--font-mono); font-size: 13px;
+}
+.gd-head {
+  display: flex; align-items: center; gap: 1em;
+  padding: .8em 1.2em; background: var(--bg-warm); border-bottom: 1px solid var(--line);
+}
+.gd-body { padding: 1.2em; }
+.gd-body label.lbl { color: var(--text-dim); font-size: 11px; text-transform: uppercase; display: block; margin-bottom: .6em; }
+.gd-host-row {
+  display: flex; align-items: center; padding: .5em .7em;
+  border: 1px solid var(--line); margin-bottom: .4em; background: var(--bg);
+}
+.link-btn {
+  background: transparent; border: 0; color: var(--accent); cursor: pointer;
+  font-family: var(--font-mono); font-size: inherit; padding: 0; text-align: left;
+}
+.link-btn:hover { text-decoration: underline; }
+.chip {
+  display: inline-block; padding: .2em .6em; margin: 0 .25em .25em 0;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: .85em; color: var(--text);
+}
+.chip-x {
+  background: transparent; border: 0; color: var(--text-dim);
+  cursor: pointer; padding: 0 0 0 .3em; font-size: 1em;
+}
+.chip-x:hover { color: var(--danger); }
+
 /* ============ MOBILE ============ */
 @media (max-width: 768px) {
   .grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
