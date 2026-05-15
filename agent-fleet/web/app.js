@@ -258,9 +258,12 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open($('term'));
-    // NOTE: canvas addon was disabled — it failed to render claude's TUI on
-    // some Chrome versions (full screen blank despite frames arriving). The
-    // perf wins from batch writes + debounced resize are sufficient.
+    // Canvas renderer: ~5-10× faster than DOM for bursty TUI output (claude).
+    try {
+      if (window.CanvasAddon && CanvasAddon.CanvasAddon) {
+        term.loadAddon(new CanvasAddon.CanvasAddon());
+      }
+    } catch (e) { console.warn('canvas addon failed, falling back to DOM:', e); }
     state.term = term; state.fit = fit;
     setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 60);
 
