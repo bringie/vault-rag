@@ -278,7 +278,7 @@ test('reconciliation flips dead session to exited', async () => {
 
 // --- Task 12: viewer WS ---
 
-test('viewer receives backfill from ring buffer + live frames', async () => {
+test('viewer attached to a running session gets hello + live frames (no backfill replay)', async () => {
   const { server, pg, close } = await startWithDb();
   const port = server.address().port;
   const dws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=daemon&host_name=v1`,
@@ -293,14 +293,35 @@ test('viewer receives backfill from ring buffer + live frames', async () => {
   const msgs = [];
   vws.on('message', (b) => msgs.push(JSON.parse(b.toString())));
   await new Promise(r => setTimeout(r, 150));
+  // running session: hello only, no backfill (would corrupt re-attach rendering)
   assert.equal(msgs[0].type, 'hello');
-  assert.equal(msgs[1].type, 'backfill');
-  assert.equal(Buffer.from(msgs[1].data, 'base64').toString(), 'first');
+  assert.ok(!msgs.find(m => m.type === 'backfill'), 'should NOT receive backfill on running session');
   dws.send(JSON.stringify({ type: 'pty_data', session_id: sid, seq: 1, data: Buffer.from('live').toString('base64') }));
   await new Promise(r => setTimeout(r, 100));
   const live = msgs.find(m => m.type === 'pty_data' && m.seq === 1);
   assert.ok(live, 'live frame should arrive');
   dws.close(); vws.close();
+  await close();
+});
+
+test('viewer attached to an exited session gets hello + backfill replay', async () => {
+  const { server, pg, close } = await startWithDb();
+  const port = server.address().port;
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('xv') RETURNING id")).rows[0].id;
+  const s = (await pg.query("INSERT INTO fleet_sessions (host_id, cwd, status, exit_code, ended_at) VALUES ($1,'/','exited',0,now()) RETURNING id", [h])).rows[0].id;
+  await pg.query(`INSERT INTO fleet_events (session_id, kind, seq, payload) VALUES
+    ($1, 'pty_out', 0, decode('616263','hex'))`, [s]);
+  const port2 = server.address().port;
+  const vws = new WebSocket(`ws://127.0.0.1:${port2}/fleet/ws?role=viewer&session_id=${s}`,
+    { headers: { authorization: 'Bearer T' } });
+  const msgs = [];
+  vws.on('message', (b) => msgs.push(JSON.parse(b.toString())));
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(msgs[0].type, 'hello');
+  const bf = msgs.find(m => m.type === 'backfill');
+  assert.ok(bf, 'exited session should backfill');
+  assert.equal(Buffer.from(bf.data, 'base64').toString(), 'abc');
+  vws.close();
   await close();
 });
 

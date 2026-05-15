@@ -357,22 +357,25 @@
       try { f = JSON.parse(e.data); } catch { return; }
       if (f.type === 'hello') {
         const host = state.hosts.find(h => h.id === f.host_id);
-        $('v-host').textContent = host?.name || short(f.host_id);
+        $('v-host').textContent = host?.display_name || host?.name || short(f.host_id);
         $('v-cwd').textContent = f.cwd || '—';
         setViewerStatus(f.status);
-      } else if (f.type === 'backfill') {
-        // Reset xterm to clean state before replaying historical escape sequences.
-        // Without this, cursor positions accumulated over a long TUI session drift
-        // when the terminal is re-attached.
-        try { state.term.write('\x1bc'); state.term.reset?.(); } catch {}
-        writeChunk(b64ToBytes(f.data));
-        // After replay, ask the live process for a fresh redraw (Ctrl+L).
-        // Most TUIs (including claude/Ink) handle it as repaint.
-        if (state.viewerStatusValue === 'running' && state.ws && state.ws.readyState === 1) {
+        // For live sessions the server skips backfill. Reset xterm and trigger
+        // a redraw from claude so the screen reflects the current PTY state at
+        // the viewer's dimensions (avoids cursor-pos drift from replayed history).
+        if (f.status === 'running' || f.status === 'pending') {
+          try { state.term.reset?.(); } catch {}
           setTimeout(() => {
-            try { state.ws.send(JSON.stringify({ type: 'input', data: '\x0c' })); } catch {}
-          }, 80);
+            try {
+              sendResize();
+              state.ws.send(JSON.stringify({ type: 'input', data: '\x0c' }));
+            } catch {}
+          }, 150);
         }
+      } else if (f.type === 'backfill') {
+        // Only fires for exited sessions now (server-side policy).
+        try { state.term.reset?.(); } catch {}
+        writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'pty_data') {
         writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'session_exit') {
