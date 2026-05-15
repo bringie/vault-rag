@@ -454,3 +454,113 @@ test('WS role workflow_viewer rejects missing run_id', async () => {
   assert.equal(closeCode, 4002);
   await close();
 });
+
+// --- Pricing ---
+
+async function startWithPrices() {
+  const pg = new Client(PG);
+  await pg.connect();
+  await pg.query('TRUNCATE fleet_model_prices RESTART IDENTITY');
+  await pg.query(`
+    INSERT INTO fleet_model_prices (match_pattern, priority, valid_from, input_per_mtok, output_per_mtok, cache_create_per_mtok, cache_read_per_mtok, flagged)
+    VALUES
+      ('claude-opus-%',   200, '1970-01-01', 15, 75, 18.75, 1.50, false),
+      ('%',                 0, '1970-01-01',  0,  0,     0,    0, true)`);
+  const server = await startTestServer({ token: 'T', db: pg });
+  return { server, pg, close: async () => { server.close(); await pg.end(); } };
+}
+
+test('GET /fleet/prices lists active rows', async () => {
+  const { server, close } = await startWithPrices();
+  const r = await reqJson(server, 'GET', '/fleet/prices', { token: 'T' });
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.body));
+  assert.ok(r.body.find(p => p.match_pattern === 'claude-opus-%'));
+  await close();
+});
+
+test('POST /fleet/prices inserts new snapshot row', async () => {
+  const { server, close } = await startWithPrices();
+  const r = await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'gpt-4o%', input_per_mtok: 2.5, output_per_mtok: 10 },
+  });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.match_pattern, 'gpt-4o%');
+  await close();
+});
+
+test('POST /fleet/prices rejects missing fields', async () => {
+  const { server, close } = await startWithPrices();
+  const r = await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'x' },
+  });
+  assert.equal(r.status, 422);
+  await close();
+});
+
+test('DELETE /fleet/prices/:id soft-deletes', async () => {
+  const { server, pg, close } = await startWithPrices();
+  const created = await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'temp%', input_per_mtok: 1, output_per_mtok: 1 },
+  });
+  const id = created.body.id;
+  const del = await reqJson(server, 'DELETE', `/fleet/prices/${id}`, { token: 'T' });
+  assert.equal(del.status, 204);
+  const { rows } = await pg.query('SELECT deleted_at FROM fleet_model_prices WHERE id = $1', [id]);
+  assert.ok(rows[0].deleted_at);
+  await close();
+});
+
+test('POST /fleet/prices/resolve returns matched row + ZERO_PRICE for unknown', async () => {
+  const { server, close } = await startWithPrices();
+  const known = await reqJson(server, 'POST', '/fleet/prices/resolve', {
+    token: 'T', body: { model: 'claude-opus-4-7' },
+  });
+  assert.equal(known.status, 200);
+  assert.equal(known.body.matched.input, 15);
+  assert.equal(known.body.matched.flagged, false);
+
+  const unknown = await reqJson(server, 'POST', '/fleet/prices/resolve', {
+    token: 'T', body: { model: 'totally-new-llm' },
+  });
+  assert.equal(unknown.body.matched.flagged, true);
+  await close();
+});
+
+test('POST /fleet/prices invalidates cache: subsequent resolve sees new price', async () => {
+  const { server, close } = await startWithPrices();
+  const r1 = await reqJson(server, 'POST', '/fleet/prices/resolve', {
+    token: 'T', body: { model: 'claude-opus-4-7' },
+  });
+  assert.equal(r1.body.matched.input, 15);
+  await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'claude-opus-4-7', priority: 500, input_per_mtok: 99, output_per_mtok: 99 },
+  });
+  const r2 = await reqJson(server, 'POST', '/fleet/prices/resolve', {
+    token: 'T', body: { model: 'claude-opus-4-7' },
+  });
+  assert.equal(r2.body.matched.input, 99);
+  await close();
+});
+
+test('GET /fleet/prices?history=1 includes soft-deleted rows', async () => {
+  const { server, close } = await startWithPrices();
+  const created = await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'tmp-%', input_per_mtok: 5, output_per_mtok: 5 },
+  });
+  await reqJson(server, 'DELETE', `/fleet/prices/${created.body.id}`, { token: 'T' });
+
+  const active = await reqJson(server, 'GET', '/fleet/prices', { token: 'T' });
+  assert.ok(!active.body.find(p => p.id === created.body.id), 'soft-deleted hidden by default');
+
+  const all = await reqJson(server, 'GET', '/fleet/prices?history=1', { token: 'T' });
+  assert.ok(all.body.find(p => p.id === created.body.id), 'soft-deleted visible with history=1');
+  await close();
+});
+
+test('GET /fleet/prices rejects missing auth', async () => {
+  const { server, close } = await startWithPrices();
+  const r = await reqJson(server, 'GET', '/fleet/prices');
+  assert.equal(r.status, 401);
+  await close();
+});
