@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# fleet: CLI for agent-fleet (REST client).
+set -euo pipefail
+
+require_env() {
+  : "${VAULT_RAG_API_URL:?set VAULT_RAG_API_URL}"
+  : "${VAULT_RAG_API_TOKEN:?set VAULT_RAG_API_TOKEN}"
+}
+
+api() {
+  require_env
+  local method="$1"; shift
+  local path="$1"; shift
+  curl -fsSL -X "$method" \
+    -H "Authorization: Bearer $VAULT_RAG_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$@" \
+    "$VAULT_RAG_API_URL/api/fleet$path"
+}
+
+cmd="${1:-help}"; shift || true
+
+case "$cmd" in
+  hosts)
+    api GET /hosts | python3 -m json.tool
+    ;;
+  sessions)
+    sub="${1:-list}"; shift || true
+    case "$sub" in
+      list)
+        q=""
+        if [ "${1:-}" = "--host" ]; then q="?host_id=$2"; shift 2; fi
+        api GET "/sessions${q}" | python3 -m json.tool
+        ;;
+      tail)
+        sid="${1:?session id required}"
+        api GET "/sessions/${sid}/transcript.txt"
+        ;;
+      spawn)
+        if [ "${1:-}" != "--host" ]; then echo "fleet sessions spawn --host <id> -- <command...>" >&2; exit 2; fi
+        host="$2"; shift 2
+        if [ "${1:-}" != "--" ]; then echo "expected '--' separator" >&2; exit 2; fi
+        shift
+        args_json=$(printf '"%s",' "$@" | sed 's/,$//')
+        body=$(printf '{"host_id":"%s","cwd":"/tmp","args":[%s]}' "$host" "$args_json")
+        api POST /sessions --data "$body"
+        ;;
+      kill)
+        sid="${1:?session id required}"
+        api POST "/sessions/${sid}/kill" --data '{}'
+        ;;
+      *)
+        echo "fleet sessions {list|tail|spawn|kill}" >&2; exit 2;;
+    esac
+    ;;
+  help|*)
+    cat <<EOF
+Usage: fleet <command> [args]
+
+  hosts                                  list registered hosts
+  sessions list [--host <id>]            list sessions
+  sessions tail <session_id>             stream transcript (text)
+  sessions spawn --host <id> -- <args>   spawn a session (args after --)
+  sessions kill <session_id>             kill session
+EOF
+    ;;
+esac
