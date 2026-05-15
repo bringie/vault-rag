@@ -40,13 +40,16 @@ class EventBatcher {
       this.flushing = false;
     }
   }
-  async shutdown() {
-    this.stopped = true;
-    clearInterval(this.timer);
+  async flush() {
     while (this.queue.length && !this.flushing) {
       await this._maybeFlush();
     }
     while (this.flushing) await new Promise(r => setTimeout(r, 10));
+  }
+  async shutdown() {
+    this.stopped = true;
+    clearInterval(this.timer);
+    await this.flush();
   }
 }
 

@@ -289,11 +289,13 @@ async function handleDaemonWs(ws, params, ctx) {
       }
       if (f.type === 'session_exit') {
         const status = f.signal ? 'killed' : 'exited';
-        await fleetDb.markSessionExited(ctx.db, f.session_id, f.exit_code, status);
         ctx.batcher.push({
           sessionId: f.session_id, kind: 'lifecycle', seq: Number.MAX_SAFE_INTEGER,
           payload: Buffer.from(JSON.stringify({ exit_code: f.exit_code, signal: f.signal || null })),
         });
+        // Flush pending pty_data BEFORE marking exited so late viewers see transcript.
+        try { await ctx.batcher.flush(); } catch {}
+        await fleetDb.markSessionExited(ctx.db, f.session_id, f.exit_code, status);
         ctx.bus.broadcastViewers(f.session_id, { type: 'session_exit', exit_code: f.exit_code });
         ctx.rings.delete(f.session_id);
         return;
@@ -366,6 +368,24 @@ async function handleViewerWs(ws, params, ctx) {
     }
   }
   ctx.bus.addViewer(s.id, ws);
+
+  // Race recovery: session may have transitioned during our async setup above.
+  // Re-fetch status; if terminal, replay any missed transcript + session_exit so the
+  // viewer doesn't hang waiting for frames that already broadcasted to no one.
+  const fresh = await fleetDb.getSession(ctx.db, s.id);
+  if (fresh && (fresh.status === 'exited' || fresh.status === 'killed')) {
+    const rows2 = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out', limit: 1024 });
+    if (rows2.length) {
+      const merged = Buffer.concat(rows2.map(r => r.payload || Buffer.alloc(0)));
+      ws.send(JSON.stringify({
+        type: 'backfill',
+        from_seq: Number(rows2[0].seq),
+        to_seq: Number(rows2[rows2.length - 1].seq),
+        data: merged.toString('base64'),
+      }));
+    }
+    ws.send(JSON.stringify({ type: 'session_exit', exit_code: fresh.exit_code }));
+  }
 
   // Drain queued frames now that session is ready
   while (queue.length) {

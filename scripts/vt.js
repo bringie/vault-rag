@@ -20,6 +20,12 @@ function parseArgs(argv) {
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '--') {
+      // bare '--' is a stop-parsing separator; everything after is positional.
+      positional.push('--');
+      for (let j = i + 1; j < argv.length; j++) positional.push(argv[j]);
+      break;
+    }
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       if (eq >= 0) {
@@ -354,6 +360,149 @@ async function cmdSecrets(cfg, args) {
   die('usage: vt secrets {get|list|set|delete|rotate|verify|export-env} ...', 2);
 }
 
+async function cmdRemote(cfg, args) {
+  if (!cfg.apiBase || !cfg.apiToken) {
+    die('remote: VAULT_RAG_API_URL/DOMAIN + VAULT_RAG_API_TOKEN required');
+  }
+  const sub = args.positional[0];
+  const rest = args.positional.slice(1);
+  const base = cfg.apiBase.replace(/\/$/, '');
+  const wsBase = base.replace(/^http/, 'ws');
+
+  const req = async (method, route, body) => {
+    const res = await fetch(`${base}/api${route}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${cfg.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    let json = null;
+    if (text) { try { json = JSON.parse(text); } catch { json = { raw: text }; } }
+    return { code: res.status, body: json };
+  };
+
+  async function listHosts() {
+    const r = await req('GET', '/fleet/hosts');
+    if (r.code !== 200) die(`hosts: HTTP ${r.code}`);
+    if (args.flags.json) { process.stdout.write(JSON.stringify(r.body, null, 2) + '\n'); return; }
+    if (!r.body.length) { process.stdout.write('(no hosts)\n'); return; }
+    const w = (s, n) => String(s).padEnd(n).slice(0, n);
+    for (const h of r.body) {
+      const sym = h.status === 'online' ? '●' : '○';
+      process.stdout.write(`${sym} ${w(h.name, 16)} ${w(h.id.slice(0, 8), 9)} ${w(h.os || '?', 8)} ${(h.capabilities || []).join(',')}\n`);
+    }
+  }
+
+  async function listSessions() {
+    const q = args.flags.host ? `?host_id=${args.flags.host}` : '';
+    const r = await req('GET', `/fleet/sessions${q}`);
+    if (r.code !== 200) die(`sessions: HTTP ${r.code}`);
+    if (args.flags.json) { process.stdout.write(JSON.stringify(r.body, null, 2) + '\n'); return; }
+    const hostsR = await req('GET', '/fleet/hosts');
+    const hosts = new Map((hostsR.body || []).map(h => [h.id, h.name]));
+    for (const s of r.body) {
+      const sym = { running: '▶', exited: '◇', killed: '✕', orphaned: '?', pending: '·' }[s.status] || '·';
+      const hostName = hosts.get(s.host_id) || s.host_id.slice(0, 8);
+      process.stdout.write(`${sym} ${s.id.slice(0, 8)}  ${String(hostName).padEnd(14)} ${s.status.padEnd(10)} ${s.started_at}\n`);
+    }
+  }
+
+  async function spawn() {
+    const hostName = args.flags.host;
+    if (!hostName) die('usage: vt remote run --host=NAME -- <args...>');
+    const cwd = args.flags.cwd || process.cwd();
+    // split: everything after '--' becomes args
+    const dashdash = args.positional.indexOf('--');
+    const spawnArgs = dashdash >= 0 ? args.positional.slice(dashdash + 1) : args.positional.slice(1);
+    // resolve host name → id
+    const hostsR = await req('GET', '/fleet/hosts');
+    if (hostsR.code !== 200) die(`hosts lookup: HTTP ${hostsR.code}`);
+    const host = (hostsR.body || []).find(h => h.name === hostName || h.id === hostName);
+    if (!host) die(`host not found: ${hostName}`);
+    if (host.status !== 'online') die(`host ${host.name} is offline`);
+    const r = await req('POST', '/fleet/sessions', { host_id: host.id, cwd, args: spawnArgs });
+    if (r.code !== 201) die(`spawn: HTTP ${r.code} ${JSON.stringify(r.body)}`);
+    const sid = r.body.session_id;
+    process.stderr.write(`spawned ${sid} on ${host.name}\n`);
+    if (args.flags['no-tail']) { process.stdout.write(sid + '\n'); return; }
+    // auto-tail
+    await streamSession(sid, /*interactive=*/!!args.flags.interactive);
+  }
+
+  async function streamSession(sid, interactive) {
+    const WebSocket = require('ws');
+    const url = `${wsBase}/api/fleet/ws?role=viewer&session_id=${sid}`;
+    const ws = new WebSocket(url, ['bearer.' + cfg.apiToken]);
+    let exitCode = 0;
+    let isRaw = false;
+    function restoreTty() {
+      if (isRaw && process.stdin.isTTY) { try { process.stdin.setRawMode(false); } catch {} }
+      try { process.stdin.pause(); } catch {}
+    }
+    await new Promise((resolve, reject) => {
+      ws.on('open', () => {
+        if (interactive && process.stdin.isTTY) {
+          process.stdin.setRawMode?.(true);
+          isRaw = true;
+          process.stdin.resume();
+          process.stdin.on('data', (chunk) => {
+            try { ws.send(JSON.stringify({ type: 'input', data: chunk.toString('binary') })); } catch {}
+          });
+          // Forward terminal size + resize events
+          const sendResize = () => {
+            try {
+              ws.send(JSON.stringify({ type: 'resize', cols: process.stdout.columns, rows: process.stdout.rows }));
+            } catch {}
+          };
+          sendResize();
+          process.stdout.on('resize', sendResize);
+          process.on('SIGINT', () => { try { ws.send(JSON.stringify({ type: 'input', data: '' })); } catch {} });
+        }
+      });
+      ws.on('message', (raw) => {
+        let f;
+        try { f = JSON.parse(raw.toString()); } catch { return; }
+        if (f.type === 'pty_data' || f.type === 'backfill') {
+          try { process.stdout.write(Buffer.from(f.data, 'base64')); } catch {}
+        } else if (f.type === 'session_exit') {
+          exitCode = f.exit_code === 0 ? 0 : (f.exit_code || 1);
+          process.stderr.write(`\n[session ${sid.slice(0,8)} exit=${f.exit_code}]\n`);
+          try { ws.close(); } catch {}
+        }
+      });
+      ws.on('close', () => { restoreTty(); resolve(); });
+      ws.on('error', (e) => { restoreTty(); reject(e); });
+    });
+    process.exit(exitCode);
+  }
+
+  async function transcript(sid) {
+    const r = await fetch(`${base}/api/fleet/sessions/${sid}/transcript.txt`, {
+      headers: { Authorization: `Bearer ${cfg.apiToken}` },
+    });
+    if (r.status !== 200) die(`transcript: HTTP ${r.status}`);
+    process.stdout.write(await r.text());
+  }
+
+  async function killSession(sid) {
+    const r = await req('POST', `/fleet/sessions/${sid}/kill`, {});
+    if (r.code !== 204 && r.code !== 200) die(`kill: HTTP ${r.code}`);
+    process.stderr.write(`killed ${sid}\n`);
+  }
+
+  if (sub === 'hosts')      return listHosts();
+  if (sub === 'ls' || sub === 'list' || sub === 'sessions') return listSessions();
+  if (sub === 'run')        return spawn();
+  if (sub === 'attach')     return streamSession(rest[0] || die('usage: vt remote attach <id>'), true);
+  if (sub === 'tail')       return streamSession(rest[0] || die('usage: vt remote tail <id>'), false);
+  if (sub === 'cat')        return transcript(rest[0] || die('usage: vt remote cat <id>'));
+  if (sub === 'kill')       return killSession(rest[0] || die('usage: vt remote kill <id>'));
+  die(`unknown remote subcommand: ${sub || '(missing)'}\nUsage: vt remote {hosts|ls|run|attach|tail|cat|kill}`);
+}
+
 function cmdPrime() {
   const help = `vt - vault-task CLI. Tasks as markdown in obsidian-vault/04-tasks/.
 
@@ -375,6 +524,15 @@ Commands:
   vt secrets {get|list|set|delete|rotate|verify|export-env}
                                            Manage encrypted secrets via /api/secrets/*.
                                            See docs/superpowers/agent-onboarding-secrets.md.
+  vt remote {hosts|ls|run|attach|tail|cat|kill}
+                                           Drive agent-fleet sessions on remote hosts via REST/WS.
+                                           Examples:
+                                             vt remote hosts
+                                             vt remote run --host=mac1 -- claude -p "fix bug X"
+                                             vt remote attach <session_id>    # interactive
+                                             vt remote tail   <session_id>    # read-only stream
+                                             vt remote cat    <session_id>    # full transcript
+                                             vt remote kill   <session_id>
   vt prime                                  This help.
 
 Workflow:
@@ -407,6 +565,7 @@ const COMMANDS = {
   search: cmdSearch,
   remember: cmdRemember,
   secrets: cmdSecrets,
+  remote: cmdRemote,
   prime: cmdPrime,
   help: cmdPrime,
   '--help': cmdPrime,
@@ -424,8 +583,8 @@ async function main() {
     return;
   }
   let cfg;
-  if (cmd === 'secrets') {
-    // secrets subcommand only needs apiBase/apiToken — no vault directory.
+  if (cmd === 'secrets' || cmd === 'remote') {
+    // secrets/remote subcommands only need apiBase/apiToken — no vault directory.
     cfg = {
       apiBase: process.env.VT_API_BASE
         || process.env.VAULT_RAG_API_URL
