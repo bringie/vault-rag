@@ -246,7 +246,7 @@ async function handleExec({ req, res, body, ctx }) {
   const text = stripAnsi(raw);
   let cost = null;
   if (ctx.tokmonDb) {
-    try { cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, new Date(), s.id); }
+    try { cost = await fleetCost.sessionCost(ctx.tokmonDb, ctx.db, host.name, s.started_at, new Date(), s.id); }
     catch {}
   }
   send(res, 200, {
@@ -378,7 +378,7 @@ async function handleCostTimeline({ req, res, ctx }) {
   const days = parseInt(url.searchParams.get('days') || '7', 10);
   const groupBy = url.searchParams.get('group_by') || 'model';
   const hosts = await fleetDb.listHosts(ctx.db);
-  const rows = await fleetCost.timeline(ctx.tokmonDb, hosts.map(h => h.name), days, groupBy, ctx.db);
+  const rows = await fleetCost.timeline(ctx.tokmonDb, ctx.db, hosts.map(h => h.name), days, groupBy);
   send(res, 200, { days, group_by: groupBy, points: rows });
 }
 
@@ -590,7 +590,7 @@ async function handleSessionCost({ req, res, ctx }) {
   if (!s) return send(res, 404, { error: 'session not found' });
   const host = await fleetDb.getHost(ctx.db, s.host_id);
   if (!host) return send(res, 404, { error: 'host not found' });
-  const cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, s.ended_at, s.id);
+  const cost = await fleetCost.sessionCost(ctx.tokmonDb, ctx.db, host.name, s.started_at, s.ended_at, s.id);
   send(res, 200, { session_id: s.id, host: host.name, ...cost });
 }
 
@@ -599,7 +599,7 @@ async function handleCostSummary({ req, res, ctx }) {
   const url = new URL(req.url, 'http://x');
   const days = parseInt(url.searchParams.get('days') || '7', 10);
   const hosts = await fleetDb.listHosts(ctx.db);
-  const r = await fleetCost.hostSummary(ctx.tokmonDb, hosts.map(h => h.name), days);
+  const r = await fleetCost.hostSummary(ctx.tokmonDb, ctx.db, hosts.map(h => h.name), days);
   const result = hosts.map(h => ({
     host_id: h.id, host: h.name, status: h.status,
     usd: r[h.name]?.usd || 0,
