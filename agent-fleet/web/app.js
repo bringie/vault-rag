@@ -109,9 +109,18 @@
           return `<li data-host="${h.id}">
             <span class="dot ${dotClass(h.status, 'host')}"></span>
             <span class="host-name">${esc(h.name)} <span class="host-count">· ${costStr}/7d</span></span>
-            <span class="host-count">${n} sess</span>
+            <span class="host-actions">
+              <button data-edit-host="${h.id}" data-edit-path="CLAUDE.md" title="edit ~/.claude/CLAUDE.md">md</button>
+              <span class="host-count">${n} sess</span>
+            </span>
           </li>`;
         }).join('');
+    hostsUl.querySelectorAll('button[data-edit-host]').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        openEditor(btn.dataset.editHost, btn.dataset.editPath);
+      };
+    });
 
     const sessUl = $('sessions');
     sessUl.innerHTML = state.sessions.length === 0
@@ -225,6 +234,10 @@
       fontFamily: '"JetBrains Mono", ui-monospace, monospace',
       fontSize: 13,
       lineHeight: 1.25,
+      scrollback: 5000,
+      // batch terminal writes for throughput; default is too eager for fast claude output
+      windowsMode: false,
+      convertEol: false,
       theme: {
         background: '#0a0a0c',
         foreground: '#e8e6e1',
@@ -244,10 +257,22 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open($('term'));
+    // Canvas renderer is dramatically faster than the default DOM renderer
+    // for the bursty output Claude produces.
+    try {
+      if (window.CanvasAddon && CanvasAddon.CanvasAddon) {
+        term.loadAddon(new CanvasAddon.CanvasAddon());
+      }
+    } catch (e) { console.warn('canvas addon failed', e); }
     state.term = term; state.fit = fit;
     setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 60);
 
-    const ro = new ResizeObserver(() => { try { fit.fit(); sendResize(); } catch {} });
+    // Debounce resize observer; rapid fires were causing layout thrash.
+    let resizeT = null;
+    const ro = new ResizeObserver(() => {
+      clearTimeout(resizeT);
+      resizeT = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 120);
+    });
     ro.observe($('term'));
 
     term.onData(d => {
@@ -270,6 +295,30 @@
     const ws = new WebSocket(url, ['bearer.' + state.token]);
     state.ws = ws;
     ws.onopen = () => { state.backoff = 800; };
+    // Coalesce rapid pty_data frames into one term.write per animation frame.
+    // The default per-frame write was the bottleneck on bursty claude output.
+    let pendingChunks = [];
+    let rafScheduled = false;
+    const flushPending = () => {
+      rafScheduled = false;
+      if (!pendingChunks.length || !state.term) return;
+      const merged = Buffer.concat ? Buffer.concat(pendingChunks) : (function() {
+        let total = 0; for (const c of pendingChunks) total += c.length;
+        const out = new Uint8Array(total); let o = 0;
+        for (const c of pendingChunks) { out.set(c, o); o += c.length; }
+        return out;
+      })();
+      pendingChunks = [];
+      try { state.term.write(merged); } catch {}
+    };
+    const writeChunk = (u8) => {
+      pendingChunks.push(u8);
+      if (!rafScheduled) {
+        rafScheduled = true;
+        requestAnimationFrame(flushPending);
+      }
+    };
+
     ws.onmessage = (e) => {
       let f;
       try { f = JSON.parse(e.data); } catch { return; }
@@ -279,13 +328,13 @@
         $('v-cwd').textContent = f.cwd || '—';
         setViewerStatus(f.status);
       } else if (f.type === 'backfill') {
-        try { state.term.write(b64ToBytes(f.data)); } catch {}
+        writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'pty_data') {
-        try { state.term.write(b64ToBytes(f.data)); } catch {}
+        writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'session_exit') {
         document.querySelector('.viewer').classList.add('exited');
         setViewerStatus(f.exit_code === 0 ? 'exited' : 'killed');
-        setOverlay(true, `EXIT CODE ${f.exit_code}`);
+        try { state.term.write(`\r\n\x1b[2m─── session exit code=${f.exit_code} ───\x1b[0m\r\n`); } catch {}
       } else if (f.type === 'session_started') {
         setViewerStatus('running');
       }
@@ -320,7 +369,7 @@
   async function spawn() {
     const host_id = $('spawn-host').value;
     if (!host_id) { alert('no host selected'); return; }
-    const cwd = $('spawn-cwd').value || '/tmp';
+    const cwd = $('spawn-cwd').value || '~';
     const args = parseArgs($('spawn-args').value);
     try {
       const r = await api('POST', '/sessions', { host_id, cwd, args });
@@ -333,6 +382,49 @@
     $('spawn-args').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') spawn();
     });
+  }
+
+  // ============ File editor ============
+  async function openEditor(hostId, filePath) {
+    const host = state.hosts.find(h => h.id === hostId);
+    if (!host) return;
+    if (host.status !== 'online') { alert(`host ${host.name} is offline`); return; }
+    $('editor').hidden = false;
+    $('editor-path').textContent = filePath;
+    $('editor-host').textContent = host.name;
+    $('editor-content').value = '';
+    $('editor-content').disabled = true;
+    $('editor-status').textContent = 'loading…';
+    try {
+      const r = await api('GET', `/hosts/${hostId}/file?path=${encodeURIComponent(filePath)}`);
+      $('editor-content').value = r.content || '';
+      $('editor-status').textContent = r.exists ? `loaded ${(r.content || '').length} bytes` : 'file does not exist (will create on save)';
+    } catch (e) {
+      $('editor-status').textContent = 'load failed: ' + e.message;
+    } finally {
+      $('editor-content').disabled = false;
+      $('editor-content').focus();
+    }
+    $('editor-cancel').onclick = () => { $('editor').hidden = true; };
+    $('editor-save').onclick = async () => {
+      $('editor-save').disabled = true;
+      $('editor-status').textContent = 'saving…';
+      try {
+        const r = await fetch('/api/fleet/hosts/' + hostId + '/file', {
+          method: 'PUT',
+          headers: { 'authorization': 'Bearer ' + state.token, 'content-type': 'application/json' },
+          body: JSON.stringify({ path: filePath, content: $('editor-content').value }),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        $('editor-status').textContent = `saved ${j.bytes} bytes`;
+        setTimeout(() => { $('editor').hidden = true; }, 600);
+      } catch (e) {
+        $('editor-status').textContent = 'save failed: ' + e.message;
+      } finally {
+        $('editor-save').disabled = false;
+      }
+    };
   }
 
   // ============ Boot ============

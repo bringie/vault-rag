@@ -67,7 +67,7 @@
         <section class="panel panel-spawn">
           <div class="panel-head"><h3>SPAWN</h3></div>
           <label><span class="lbl">HOST</span><select id="spawn-host"></select></label>
-          <label><span class="lbl">CWD</span><input id="spawn-cwd" value="/tmp" spellcheck="false"></label>
+          <label><span class="lbl">CWD</span><input id="spawn-cwd" value="~" spellcheck="false" placeholder="~ (resolved to host $HOME)"></label>
           <label><span class="lbl">ARGS</span><input id="spawn-args" placeholder="--print 'hi'" spellcheck="false"></label>
           <button id="spawn-btn" class="btn-primary">▶ EXECUTE</button>
         </section>
@@ -113,8 +113,28 @@
     </footer>
   </div>
 
+  <!-- FILE EDITOR MODAL -->
+  <div id="editor" hidden>
+    <div class="editor-frame">
+      <div class="editor-head">
+        <span class="lbl">EDIT FILE //</span>
+        <span id="editor-path" class="callsign">—</span>
+        <span class="lbl" style="margin-left:.6em">@</span>
+        <span id="editor-host" class="val">—</span>
+        <span style="flex:1"></span>
+        <button id="editor-cancel" class="btn-ghost">CANCEL</button>
+        <button id="editor-save" class="btn-primary" style="width:auto; padding:.5em 1.2em; margin-left:.5em">SAVE</button>
+      </div>
+      <textarea id="editor-content" spellcheck="false" placeholder="(file not found — type to create)"></textarea>
+      <div class="editor-foot">
+        <span id="editor-status" class="lbl">ready</span>
+      </div>
+    </div>
+  </div>
+
   <script src="/fleet/static/xterm.min.js"></script>
   <script src="/fleet/static/xterm-fit.min.js"></script>
+  <script src="/fleet/static/xterm-canvas.min.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
 </html>

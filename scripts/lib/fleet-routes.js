@@ -41,6 +41,7 @@ const SID_RE = '[0-9a-f-]{36}';
 function makeBus() {
   const daemonsByHost = new Map();          // host_id -> ws
   const viewersBySession = new Map();       // session_id -> Set<ws>
+  const pendingFileReqs = new Map();        // req_id -> {resolve, reject, timer}
   return {
     registerDaemon(hostId, ws) {
       const prev = daemonsByHost.get(hostId);
@@ -77,6 +78,34 @@ function makeBus() {
       const d = daemonsByHost.get(hostId);
       if (!d) return false;
       try { d.send(JSON.stringify({ type: 'kill', session_id: sessionId, signal })); return true; } catch { return false; }
+    },
+    // Request file read/write from a daemon. Returns a Promise resolved by file_data/file_ok
+    // frame, or rejected on timeout / file_err.
+    async fileOp(hostId, op, path, content) {
+      const d = daemonsByHost.get(hostId);
+      if (!d) throw new Error('host offline');
+      const req_id = Math.random().toString(36).slice(2);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingFileReqs.delete(req_id);
+          reject(new Error('daemon timeout'));
+        }, 5000);
+        pendingFileReqs.set(req_id, { resolve, reject, timer });
+        try {
+          d.send(JSON.stringify({ type: op, req_id, path, content }));
+        } catch (e) {
+          clearTimeout(timer);
+          pendingFileReqs.delete(req_id);
+          reject(e);
+        }
+      });
+    },
+    resolveFileReq(req_id, payload, isError) {
+      const p = pendingFileReqs.get(req_id);
+      if (!p) return;
+      clearTimeout(p.timer);
+      pendingFileReqs.delete(req_id);
+      if (isError) p.reject(new Error(payload.error || 'unknown')); else p.resolve(payload);
     },
   };
 }
@@ -156,6 +185,40 @@ async function handlePostKill({ req, res, body, ctx }) {
   res.writeHead(204); res.end();
 }
 
+async function handleHostFileGet({ req, res, ctx }) {
+  const m = req.url.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  const url = new URL(req.url, 'http://x');
+  const pathName = url.searchParams.get('path');
+  if (!pathName) return send(res, 422, { error: 'path query required' });
+  const host = await fleetDb.getHost(ctx.db, m[1]);
+  if (!host) return send(res, 404, { error: 'host not found' });
+  if (host.status !== 'online') return send(res, 410, { error: 'host offline' });
+  try {
+    const r = await ctx.bus.fileOp(host.id, 'read_file', pathName);
+    send(res, 200, { path: r.path, exists: r.exists, content: r.content });
+  } catch (e) {
+    send(res, 502, { error: e.message });
+  }
+}
+
+async function handleHostFilePut({ req, res, body, ctx }) {
+  const m = req.url.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  if (!body || !body.path || typeof body.content !== 'string') {
+    return send(res, 422, { error: 'path and content required' });
+  }
+  const host = await fleetDb.getHost(ctx.db, m[1]);
+  if (!host) return send(res, 404, { error: 'host not found' });
+  if (host.status !== 'online') return send(res, 410, { error: 'host offline' });
+  try {
+    const r = await ctx.bus.fileOp(host.id, 'write_file', body.path, body.content);
+    send(res, 200, { path: r.path, bytes: r.bytes });
+  } catch (e) {
+    send(res, 502, { error: e.message });
+  }
+}
+
 async function handleSessionCost({ req, res, ctx }) {
   const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/cost$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
@@ -211,6 +274,10 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET'    && path === '/fleet/hosts')   return handleGetHosts({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleGetHost({ req, res, ctx });
   if (method === 'DELETE' && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleDeleteHost({ req, res, ctx });
+  if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) return handleHostFileGet({ req, res, ctx });
+  if (method === 'PUT'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) {
+    return readBody(req).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
 
   // sessions
   if (method === 'GET'  && path === '/fleet/sessions') return handleListSessions({ req, res, ctx });
@@ -299,6 +366,12 @@ async function handleDaemonWs(ws, params, ctx) {
         ctx.bus.broadcastViewers(f.session_id, { type: 'session_exit', exit_code: f.exit_code });
         ctx.rings.delete(f.session_id);
         return;
+      }
+      if (f.type === 'file_data' || f.type === 'file_ok') {
+        ctx.bus.resolveFileReq(f.req_id, f, false); return;
+      }
+      if (f.type === 'file_err') {
+        ctx.bus.resolveFileReq(f.req_id, f, true); return;
       }
       if (f.type === 'reconciliation') {
         for (const s of (f.sessions || [])) {

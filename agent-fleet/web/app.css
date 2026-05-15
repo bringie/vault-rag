@@ -200,6 +200,13 @@ body::after {
 
 .host-name { color: var(--text); font-weight: 500; }
 .host-count { color: var(--text-faint); font-size: .8em; letter-spacing: .08em; }
+.host-actions { display: inline-flex; gap: .4em; align-items: center; }
+.host-actions button {
+  background: transparent; color: var(--text-faint); border: 1px solid var(--line);
+  font: 9px var(--font-mono); letter-spacing: .1em; padding: 1px 5px;
+  cursor: pointer; text-transform: uppercase;
+}
+.host-actions button:hover { color: var(--accent); border-color: var(--accent); }
 
 .list-sessions li {
   grid-template-columns: 14px 1fr auto auto;
@@ -282,8 +289,9 @@ body::after {
   text-shadow: 0 0 18px var(--ok-glow);
 }
 .ovl-body .ovl-sub { color: var(--text-faint); font-size: .85em; letter-spacing: .1em; }
-.viewer.exited #term-overlay { display: grid; }
-.viewer.exited #ovl-msg { color: var(--warn); text-shadow: 0 0 18px var(--warn-glow); }
+/* exited sessions: keep transcript fully readable, just dim corners + accent in header */
+.viewer.exited .term-corner { border-color: var(--text-faint); }
+.viewer.exited .callsign { color: var(--text-dim); text-shadow: none; }
 
 /* ============ FOOTBAR ============ */
 .footbar {
@@ -294,6 +302,34 @@ body::after {
 }
 .footdot { width: 6px; height: 6px; background: var(--ok); box-shadow: 0 0 6px var(--ok-glow); }
 .footver { color: var(--text-dim); }
+
+/* ============ FILE EDITOR MODAL ============ */
+#editor {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(10, 10, 12, 0.92);
+  display: grid; place-items: center; padding: 4em 2em;
+}
+.editor-frame {
+  width: min(960px, 100%); height: 100%; max-height: 80vh;
+  background: var(--panel); border: 1px solid var(--line);
+  display: grid; grid-template-rows: auto 1fr auto;
+  box-shadow: 0 30px 80px -20px rgba(0,0,0,0.7), 0 0 80px -30px var(--accent);
+}
+.editor-head {
+  display: flex; align-items: center; gap: .6em;
+  padding: .8em 1.2em; border-bottom: 1px solid var(--line);
+  background: var(--bg-warm);
+}
+.editor-head .lbl { font-size: .72em; }
+#editor-content {
+  width: 100%; padding: 1.2em; background: var(--bg); color: var(--text);
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
+  border: 0; outline: 0; resize: none; tab-size: 2;
+}
+.editor-foot {
+  padding: .55em 1.2em; border-top: 1px solid var(--line);
+  background: var(--bg-warm); display: flex; gap: .8em;
+}
 
 /* ============ MOBILE ============ */
 @media (max-width: 768px) {

@@ -2,8 +2,28 @@
 const WebSocket = require('ws');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
+
+// Allowed roots for hub-driven file r/w (CLAUDE.md edit feature).
+// Daemon NEVER reads/writes outside these prefixes regardless of what hub asks.
+function allowedFilePaths() {
+  const home = process.env.HOME || os.homedir() || '/root';
+  return [
+    path.join(home, '.claude', 'CLAUDE.md'),
+    path.join(home, '.claude', 'settings.json'),
+  ];
+}
+function resolveAllowedPath(reqPath) {
+  // Map symbolic names → real path. Reject anything else.
+  const home = process.env.HOME || os.homedir() || '/root';
+  const map = {
+    'CLAUDE.md':       path.join(home, '.claude', 'CLAUDE.md'),
+    'settings.json':   path.join(home, '.claude', 'settings.json'),
+  };
+  return map[reqPath] || null;
+}
 
 const MIN_BACKOFF = 1000;
 const MAX_BACKOFF = 30_000;
@@ -92,6 +112,33 @@ async function runDaemon(opts) {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
           } else if (f.type === 'resize') {
             ptyMgr.resize(f.session_id, f.cols, f.rows);
+          } else if (f.type === 'read_file') {
+            const abs = resolveAllowedPath(f.path);
+            if (!abs) {
+              safeSend(ws, { type: 'file_err', req_id: f.req_id, error: 'path not allowed' });
+            } else {
+              try {
+                const data = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : '';
+                safeSend(ws, { type: 'file_data', req_id: f.req_id, path: f.path, exists: fs.existsSync(abs), content: data });
+              } catch (e) {
+                safeSend(ws, { type: 'file_err', req_id: f.req_id, error: e.message });
+              }
+            }
+          } else if (f.type === 'write_file') {
+            const abs = resolveAllowedPath(f.path);
+            if (!abs) {
+              safeSend(ws, { type: 'file_err', req_id: f.req_id, error: 'path not allowed' });
+            } else {
+              try {
+                fs.mkdirSync(path.dirname(abs), { recursive: true });
+                const tmp = abs + '.tmp.' + process.pid;
+                fs.writeFileSync(tmp, f.content || '');
+                fs.renameSync(tmp, abs);
+                safeSend(ws, { type: 'file_ok', req_id: f.req_id, path: f.path, bytes: (f.content || '').length });
+              } catch (e) {
+                safeSend(ws, { type: 'file_err', req_id: f.req_id, error: e.message });
+              }
+            }
           }
           opts.onFrame?.(f, ws);
         });

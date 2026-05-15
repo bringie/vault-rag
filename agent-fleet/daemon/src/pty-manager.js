@@ -15,8 +15,13 @@ class PtyManager extends EventEmitter {
     this.sessions = new Map();
   }
   spawn({ sessionId, cwd, args = [], env = {} }) {
+    // Resolve '~', '~/', or empty cwd to the daemon's $HOME.
+    const home = process.env.HOME || '/root';
+    let resolvedCwd = cwd;
+    if (!resolvedCwd || resolvedCwd === '~') resolvedCwd = home;
+    else if (resolvedCwd.startsWith('~/')) resolvedCwd = home + resolvedCwd.slice(1);
     const proc = pty.spawn(this.claudeBin, args, {
-      name: 'xterm-color', cols: 120, rows: 30, cwd,
+      name: 'xterm-color', cols: 120, rows: 30, cwd: resolvedCwd,
       env: { ...process.env, ...env },
     });
     this.sessions.set(sessionId, { proc, seq: 0 });
