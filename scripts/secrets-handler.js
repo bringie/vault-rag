@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 class NotFound extends Error {}
 class ConflictRetriesExhausted extends Error {}
@@ -48,6 +49,8 @@ class SecretsHandler {
     this.repoPath = repoPath;
     this.skipGit = skipGit;
     this.fetchTtlMs = fetchTtlMs;
+    // Relative path of vault.age inside repoPath — needed for git log lookups.
+    this._vaultAgeRel = repoPath ? path.relative(repoPath, vaultAgePath) : vaultAgePath;
     this._blob = null;
     this._blobSha = null;
     this._lastFetch = 0;
@@ -73,7 +76,7 @@ class SecretsHandler {
     const now = Date.now();
     if (now - this._lastFetch < this.fetchTtlMs && this._blob) return;
     await this._gitFetch();
-    const remoteSha = await this._headShaForFile('obsidian-vault/secrets/vault.age');
+    const remoteSha = await this._headShaForFile(this._vaultAgeRel);
     if (remoteSha !== this._blobSha) {
       await this._gitPull();
       this._blob = await this._decryptVaultAge();
@@ -112,7 +115,7 @@ class SecretsHandler {
           await this._gitPush();
           this._blob = blob;
           this._blobSha = null;
-          return await this._headShaForFile('obsidian-vault/secrets/vault.age');
+          return await this._headShaForFile(this._vaultAgeRel);
         } catch (e) {
           if (!isPushReject(e)) throw e;
           await this._gitResetHard();
@@ -144,7 +147,7 @@ class SecretsHandler {
       await this._gitPush();
       this._blob = blob;
       this._blobSha = null;
-      return await this._headShaForFile('obsidian-vault/secrets/vault.age');
+      return await this._headShaForFile(this._vaultAgeRel);
     } finally {
       release();
     }
@@ -170,7 +173,7 @@ class SecretsHandler {
       await this._gitPush();
       this._blob = blob;
       this._blobSha = null;
-      return await this._headShaForFile('obsidian-vault/secrets/vault.age');
+      return await this._headShaForFile(this._vaultAgeRel);
     } finally {
       release();
     }
