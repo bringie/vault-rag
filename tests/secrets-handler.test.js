@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { execSync } = require('child_process');
-const { SecretsHandler } = require('../scripts/secrets-handler.js');
+const { SecretsHandler, NotFound } = require('../scripts/secrets-handler.js');
 
 function makeTmp() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sh-test-'));
@@ -60,6 +60,30 @@ async function main() {
   assert.strictEqual(back.MY_KEY, 'super-secret-value');
   assert.strictEqual(back._meta.version, 2);
   console.log('encrypt-write OK');
+
+  // Test 3: get/list/set basics
+  const t3 = makeTmp();
+  execSync(
+    `echo '{"_meta":{"schema":1,"version":1,"rotated_at":{}}}' | age -R ${t3.recipients} -o ${t3.vaultAge}`,
+  );
+  const h3 = new SecretsHandler({
+    ageKeyPath: t3.ageKey,
+    recipientsPath: t3.recipients,
+    vaultAgePath: t3.vaultAge,
+    repoPath: t3.dir,
+    skipGit: true,
+  });
+  assert.deepStrictEqual(await h3.list(), []);
+  await h3.set('K1', 'v1');
+  assert.strictEqual(await h3.get('K1'), 'v1');
+  assert.deepStrictEqual(await h3.list(), ['K1']);
+  try {
+    await h3.get('MISSING');
+    assert.fail('expected NotFound');
+  } catch (e) {
+    assert.ok(e instanceof NotFound, 'wrong error type: ' + e.constructor.name);
+  }
+  console.log('api basics OK');
 }
 
 main().catch((e) => {
