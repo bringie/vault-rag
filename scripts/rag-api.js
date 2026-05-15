@@ -9,13 +9,15 @@ const path   = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
 const lib = require('./lib/vault-lib');
+const vtRoutes = require('./lib/vt-routes');
+const gitSync = require('./lib/git-sync');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 const VAULT = process.env.VAULT_PATH || '/vault';
 const TOKEN = process.env.VAULT_RAG_API_TOKEN;
-const PORT  = parseInt(process.env.RAG_PORT || '5679', 10);
+const PORT  = parseInt(process.env.RAG_PORT || process.env.PORT || '5679', 10);
 const SKIP_PG = process.env.VAULT_SECRETS_SKIP_PG === '1';
 
 if (!TOKEN) {
@@ -32,7 +34,7 @@ const PG = {
 };
 
 const AGENT_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const WRITABLE_PREFIXES = ['00-inbox/', '03-sessions/'];
+const WRITABLE_PREFIXES = ['00-inbox/', '03-sessions/', '04-tasks/', '06-resources/notes/'];
 
 let pg;
 
@@ -268,6 +270,8 @@ async function handlePut(body) {
     console.error(`[rag-api] audit insert failed: ${e.message}`);
   }
 
+  gitSync.trigger(VAULT);
+
   return {
     path: finalRel,
     bytes,
@@ -290,14 +294,40 @@ const ROUTES = {
   '/secrets/verify':  handleSecretVerify,
 };
 
+const TASK_ROUTES = {
+  '/task/create':  'create',
+  '/task/list':    'list',
+  '/task/ready':   'ready',
+  '/task/show':    'show',
+  '/task/claim':   'claim',
+  '/task/close':   'close',
+  '/task/update':  'update',
+  '/task/dep_add': 'dep_add',
+  '/task/dep_rm':  'dep_rm',
+};
+
 const server = http.createServer(async (req, res) => {
+  if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
-  // Accept both bare routes and /api/ prefixed (production Caddy strips /api/;
-  // local/test rag-api receives bare paths).
-  const route = req.url.startsWith('/api/') ? req.url.slice(4) : req.url;
-  const handler = ROUTES[route];
+  // VT task routes (vt-rest-mcp) — dispatched separately.
+  if (TASK_ROUTES[req.url]) {
+    const name = TASK_ROUTES[req.url];
+    const handler = vtRoutes.handlers[name];
+    if (!handler) return send(res, 404, { error: `no handler: ${name}` });
+    try {
+      const body = await readBody(req);
+      const out = await handler({ vault: VAULT, body });
+      send(res, out.status, out.body);
+    } catch (e) {
+      console.error(`[rag-api] ${req.url}: ${e.stack || e.message}`);
+      send(res, 500, { error: String(e.message || e) });
+    }
+    return;
+  }
+
+  const handler = ROUTES[req.url];
   if (!handler) return send(res, 404, { error: 'not found' });
   try {
     const body = await readBody(req);
@@ -311,7 +341,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 (async () => {
-  if (!SKIP_PG) await pgConnect();
+  if (!SKIP_PG) {
+    try { await pgConnect(); }
+    catch (e) { console.error(`[rag-api] pg connect deferred: ${e.message}`); pg = null; }
+  }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${SKIP_PG ? 'skipped' : `${PG.host}/${PG.database}`}, auth=Bearer)`);
   });

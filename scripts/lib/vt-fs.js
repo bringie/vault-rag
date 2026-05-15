@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { parseFrontmatter, serializeFrontmatter } = require('./vault-lib');
+const gitSync = require('./git-sync');
 
 const ID_RE = /^vt-(\d{4,})$/;
 const FILE_RE = /^vt-(\d{4,})(?:-[a-z0-9-]+)?\.md$/;
@@ -88,6 +89,8 @@ function writeTask(file, fm, body) {
   const tmp = file + '.tmp.' + process.pid;
   fs.writeFileSync(tmp, text);
   fs.renameSync(tmp, file);
+  // Tasks live at <vault>/04-tasks/<file>.md → vault is two levels up.
+  gitSync.trigger(path.resolve(file, '..', '..'));
   return text;
 }
 
