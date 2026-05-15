@@ -258,13 +258,9 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open($('term'));
-    // Canvas renderer is dramatically faster than the default DOM renderer
-    // for the bursty output Claude produces.
-    try {
-      if (window.CanvasAddon && CanvasAddon.CanvasAddon) {
-        term.loadAddon(new CanvasAddon.CanvasAddon());
-      }
-    } catch (e) { console.warn('canvas addon failed', e); }
+    // NOTE: canvas addon was disabled — it failed to render claude's TUI on
+    // some Chrome versions (full screen blank despite frames arriving). The
+    // perf wins from batch writes + debounced resize are sufficient.
     state.term = term; state.fit = fit;
     setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 60);
 

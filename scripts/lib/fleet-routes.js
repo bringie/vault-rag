@@ -166,7 +166,8 @@ async function handleGetSession({ req, res, ctx }) {
 }
 
 async function handlePostInput({ req, res, body, ctx }) {
-  const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/input$`, 'i'));
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/input$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   if (!body || typeof body.data !== 'string') return send(res, 422, { error: 'data required' });
   const s = await fleetDb.getSession(ctx.db, m[1]);
@@ -176,12 +177,30 @@ async function handlePostInput({ req, res, body, ctx }) {
 }
 
 async function handlePostKill({ req, res, body, ctx }) {
-  const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/kill$`, 'i'));
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/kill$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   const signal = (body && body.signal) || 'SIGTERM';
   const s = await fleetDb.getSession(ctx.db, m[1]);
   if (!s) return send(res, 404, { error: 'session not found' });
-  if (ctx.bus) ctx.bus.sendKill(s.id, s.host_id, signal);
+  // Orphaned/pending sessions: pty is already gone (daemon restart). Mark dead
+  // in DB and broadcast session_exit so any attached viewer unblocks.
+  if (s.status === 'orphaned' || s.status === 'pending') {
+    await fleetDb.markSessionExited(ctx.db, s.id, -1, 'killed');
+    if (ctx.bus) ctx.bus.broadcastViewers(s.id, { type: 'session_exit', exit_code: -1 });
+    res.writeHead(204); res.end();
+    return;
+  }
+  if (s.status === 'exited' || s.status === 'killed') {
+    res.writeHead(204); res.end();
+    return;
+  }
+  // Running session: forward kill to daemon. If host offline, mark as killed.
+  const sent = ctx.bus && ctx.bus.sendKill(s.id, s.host_id, signal);
+  if (!sent) {
+    await fleetDb.markSessionExited(ctx.db, s.id, -1, 'killed');
+    if (ctx.bus) ctx.bus.broadcastViewers(s.id, { type: 'session_exit', exit_code: -1 });
+  }
   res.writeHead(204); res.end();
 }
 
