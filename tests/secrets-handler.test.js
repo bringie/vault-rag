@@ -84,6 +84,52 @@ async function main() {
     assert.ok(e instanceof NotFound, 'wrong error type: ' + e.constructor.name);
   }
   console.log('api basics OK');
+
+  // Test 4: delete/rotate/verify
+  const t4 = makeTmp();
+  execSync(
+    `echo '{"_meta":{"schema":1,"version":1,"rotated_at":{}}}' | age -R ${t4.recipients} -o ${t4.vaultAge}`,
+  );
+  const h4 = new SecretsHandler({
+    ageKeyPath: t4.ageKey,
+    recipientsPath: t4.recipients,
+    vaultAgePath: t4.vaultAge,
+    repoPath: t4.dir,
+    skipGit: true,
+  });
+  await h4.set('K1', 'v1');
+  await h4.set('K2', 'v2');
+
+  await h4.delete('K1');
+  assert.deepStrictEqual(await h4.list(), ['K2']);
+  try {
+    await h4.get('K1');
+    assert.fail();
+  } catch (e) {
+    assert.ok(e instanceof NotFound);
+  }
+
+  try {
+    await h4.delete('MISSING');
+    assert.fail();
+  } catch (e) {
+    assert.ok(e instanceof NotFound);
+  }
+
+  await h4.rotate('K2', 'v2-new');
+  assert.strictEqual(await h4.get('K2'), 'v2-new');
+  const blob4 = await h4._decryptVaultAge();
+  assert.ok(blob4._meta.rotated_at.K2, 'rotated_at not set');
+
+  await h4.rotate('GENERATED');
+  const gen = await h4.get('GENERATED');
+  assert.strictEqual(gen.length, 64);
+  assert.ok(/^[0-9a-f]+$/.test(gen), 'not hex');
+
+  const v = await h4.verify();
+  assert.strictEqual(v.ok, true);
+  assert.strictEqual(v.count, 2);
+  console.log('delete/rotate/verify OK');
 }
 
 main().catch((e) => {

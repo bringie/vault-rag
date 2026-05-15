@@ -125,6 +125,71 @@ class SecretsHandler {
     }
   }
 
+  async delete(name) {
+    const release = await this._acquireWriteLock();
+    try {
+      if (!this.skipGit) await this._gitPull();
+      const blob = await this._decryptVaultAge();
+      if (!(name in blob)) throw new NotFound(`secret not found: ${name}`);
+      delete blob[name];
+      if (blob._meta && blob._meta.rotated_at) delete blob._meta.rotated_at[name];
+      blob._meta = blob._meta || { schema: 1, version: 0, rotated_at: {} };
+      blob._meta.version = (blob._meta.version || 0) + 1;
+      await this._encryptAndWrite(blob);
+      if (this.skipGit) {
+        this._blob = blob;
+        return null;
+      }
+      await this._gitCommit(`secrets: delete ${name}`);
+      await this._gitPush();
+      this._blob = blob;
+      this._blobSha = null;
+      return await this._headShaForFile('obsidian-vault/secrets/vault.age');
+    } finally {
+      release();
+    }
+  }
+
+  async rotate(name, newValue) {
+    const value = newValue ?? require('crypto').randomBytes(32).toString('hex');
+    const release = await this._acquireWriteLock();
+    try {
+      if (!this.skipGit) await this._gitPull();
+      const blob = await this._decryptVaultAge();
+      blob[name] = value;
+      blob._meta = blob._meta || { schema: 1, version: 0, rotated_at: {} };
+      blob._meta.rotated_at = blob._meta.rotated_at || {};
+      blob._meta.rotated_at[name] = new Date().toISOString().slice(0, 10);
+      blob._meta.version = (blob._meta.version || 0) + 1;
+      await this._encryptAndWrite(blob);
+      if (this.skipGit) {
+        this._blob = blob;
+        return null;
+      }
+      await this._gitCommit(`secrets: rotate ${name}`);
+      await this._gitPush();
+      this._blob = blob;
+      this._blobSha = null;
+      return await this._headShaForFile('obsidian-vault/secrets/vault.age');
+    } finally {
+      release();
+    }
+  }
+
+  async verify() {
+    try {
+      const blob = await this._decryptVaultAge();
+      return {
+        ok: true,
+        version: (blob._meta && blob._meta.version) || 0,
+        last_rotated: (blob._meta && blob._meta.rotated_at) || {},
+        count: Object.keys(blob).filter((k) => k !== '_meta').length,
+      };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   _acquireWriteLock() {
     let release;
     const next = new Promise((r) => {
