@@ -186,9 +186,9 @@ async function handlePostKill({ req, res, body, ctx }) {
 }
 
 async function handleHostFileGet({ req, res, ctx }) {
-  const m = req.url.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
   const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
   const pathName = url.searchParams.get('path');
   if (!pathName) return send(res, 422, { error: 'path query required' });
   const host = await fleetDb.getHost(ctx.db, m[1]);
@@ -203,7 +203,8 @@ async function handleHostFileGet({ req, res, ctx }) {
 }
 
 async function handleHostFilePut({ req, res, body, ctx }) {
-  const m = req.url.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   if (!body || !body.path || typeof body.content !== 'string') {
     return send(res, 422, { error: 'path and content required' });
