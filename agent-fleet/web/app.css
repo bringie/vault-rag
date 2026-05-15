@@ -463,6 +463,77 @@ body::after {
   background: var(--bg-warm); display: flex; gap: .8em;
 }
 
+/* ============ WORKFLOWS ============ */
+.wf-canvas { background: var(--bg); user-select: none; display: block; }
+.wf-node { cursor: move; }
+.wf-port { cursor: crosshair; }
+.wf-port:hover { fill: var(--warn); }
+.wf-page {
+  display: grid; grid-template-columns: 200px 1fr 340px;
+  height: calc(100vh - 56px);
+}
+.wf-toolbar {
+  background: var(--panel); padding: 12px;
+  border-right: 1px solid var(--line); overflow-y: auto;
+  font-family: var(--font-mono); font-size: 12px;
+}
+.wf-toolbar button {
+  display: block; width: 100%; margin: 4px 0; padding: 8px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.wf-toolbar button:hover { background: var(--panel); border-color: var(--accent); color: var(--accent); }
+.wf-toolbar hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.wf-canvas-pane { position: relative; overflow: hidden; background: var(--bg); }
+.wf-inspector {
+  background: var(--panel); padding: 12px;
+  border-left: 1px solid var(--line); overflow-y: auto;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text);
+}
+.wf-inspector h3 { margin: 0 0 12px 0; font-family: var(--font-display); font-size: 14px; }
+.wf-inspector label { display: block; margin: 10px 0 4px; color: var(--text-dim); font-size: 11px; text-transform: uppercase; }
+.wf-inspector input, .wf-inspector textarea, .wf-inspector select {
+  width: 100%; padding: 6px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line-2); box-sizing: border-box;
+  font-family: var(--font-mono); font-size: 12px;
+}
+.wf-inspector textarea { min-height: 80px; resize: vertical; }
+.wf-inspector pre {
+  background: var(--bg); color: var(--text); padding: 8px;
+  border: 1px solid var(--line); margin: 4px 0; overflow: auto;
+  font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap;
+}
+.wf-inspector a { color: var(--accent); }
+.wf-errors { color: var(--danger); margin-top: 8px; font-size: 11px; min-height: 14px; }
+.wf-runs-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-family: var(--font-mono); font-size: 12px; }
+.wf-runs-table td, .wf-runs-table th {
+  padding: 6px 8px; border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.wf-runs-table th { color: var(--text-dim); text-transform: uppercase; font-size: 10px; }
+.wf-runs-table button {
+  background: transparent; color: var(--text); border: 1px solid var(--line-2);
+  padding: 4px 8px; cursor: pointer; font-family: var(--font-mono); font-size: 11px;
+  margin-right: 4px;
+}
+.wf-runs-table button:hover { border-color: var(--accent); color: var(--accent); }
+.wf-run-status-pending   { color: var(--text-dim); }
+.wf-run-status-running   { color: var(--accent); }
+.wf-run-status-done      { color: var(--ok); }
+.wf-run-status-failed    { color: var(--danger); }
+.wf-run-status-cancelled { color: var(--warn); }
+#workflowsview, #workfloweditor, #workflowrunviewer { background: var(--bg); }
+#workflowsview .overlay-header,
+#workflowrunviewer .overlay-header {
+  display: flex; align-items: center; gap: 1em; padding: .8em 1.2em;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+#workflowsview .overlay-header h2,
+#workflowrunviewer .overlay-header h2 { margin: 0; flex: 1; font-family: var(--font-display); font-size: 16px; }
+#wf-list-body { padding: 1em; }
+
 /* ============ MOBILE ============ */
 @media (max-width: 768px) {
   .grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
