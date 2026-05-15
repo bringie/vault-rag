@@ -410,3 +410,47 @@ test('POST /fleet/workflows/:id/run starts a run', async () => {
   await new Promise(r => setTimeout(r, 100));
   await close();
 });
+
+test('WS role workflow_viewer streams run_state and node_progress', async () => {
+  const { server, close } = await startWithWorkflows();
+  const port = server.address().port;
+  const c = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'T', body: { name: 'wf-ws', definition: TINY_DEF },
+  });
+  const r = await reqJson(server, 'POST', `/fleet/workflows/${c.body.id}/run`, {
+    token: 'T', body: {},
+  });
+  // Sleep briefly so runner has begun (it's async)
+  await new Promise(r => setTimeout(r, 50));
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=workflow_viewer&run_id=${r.body.run_id}`,
+    { headers: { authorization: 'Bearer T' } });
+  const frames = [];
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout, frames=${JSON.stringify(frames)}`)), 1000);
+    ws.on('message', (b) => {
+      const f = JSON.parse(b.toString());
+      frames.push(f);
+      // Either: live frames sent while we attach, or initial replay of done state
+      if (f.type === 'run_state' && (f.status === 'done' || f.status === 'running')) {
+        clearTimeout(timer); resolve();
+      }
+    });
+    ws.on('error', reject);
+  });
+  ws.close();
+  assert.ok(frames.find(f => f.type === 'run_state'), 'must receive run_state frame');
+  await close();
+});
+
+test('WS role workflow_viewer rejects missing run_id', async () => {
+  const { server, close } = await startWithWorkflows();
+  const port = server.address().port;
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=workflow_viewer`,
+    { headers: { authorization: 'Bearer T' } });
+  const closeCode = await new Promise((resolve) => {
+    ws.on('close', (code) => resolve(code));
+    ws.on('error', () => {});
+  });
+  assert.equal(closeCode, 4002);
+  await close();
+});

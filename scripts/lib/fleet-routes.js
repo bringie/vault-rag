@@ -1007,6 +1007,30 @@ async function handleViewerWs(ws, params, ctx) {
   }
 }
 
+async function handleWorkflowViewerWs(ws, params, ctx) {
+  const runId = params.get('run_id');
+  if (!runId) return ws.close(4002, 'run_id required');
+  try {
+    const r = await wfDb.getRun(ctx.db, runId);
+    if (r) {
+      ws.send(JSON.stringify({
+        type: 'run_state', run_id: r.id, status: r.status,
+        started_at: r.started_at, finished_at: r.finished_at,
+      }));
+      const outputs = (r.state && r.state.outputs) || {};
+      for (const [nodeId, out] of Object.entries(outputs)) {
+        ws.send(JSON.stringify({
+          type: 'node_progress', run_id: r.id, node_id: nodeId, status: 'done',
+          output: out.output, exit_code: out.exit_code, session_id: out.session_id,
+        }));
+      }
+    }
+  } catch (e) {
+    console.error('[fleet] workflow_viewer init:', e.message);
+  }
+  ctx.bus.addWorkflowViewer(runId, ws);
+}
+
 // --- Mount ---
 
 function attach(server, ctx) {
@@ -1049,9 +1073,12 @@ function attach(server, ctx) {
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = server._fleetCtx;
       if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
-      if (role !== 'daemon' && role !== 'viewer') return ws.close(4003, 'invalid role');
-      if (role === 'daemon') handleDaemonWs(ws, u.searchParams, ctx);
-      else handleViewerWs(ws, u.searchParams, ctx);
+      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer') {
+        return ws.close(4003, 'invalid role');
+      }
+      if (role === 'daemon')                handleDaemonWs(ws, u.searchParams, ctx);
+      else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, u.searchParams, ctx);
+      else                                  handleViewerWs(ws, u.searchParams, ctx);
     });
   });
 }
@@ -1103,9 +1130,12 @@ function attachUpgrade(server, getCtx) {
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = getCtx();
       if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
-      if (role !== 'daemon' && role !== 'viewer') return ws.close(4003, 'invalid role');
-      if (role === 'daemon') handleDaemonWs(ws, u.searchParams, ctx);
-      else handleViewerWs(ws, u.searchParams, ctx);
+      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer') {
+        return ws.close(4003, 'invalid role');
+      }
+      if (role === 'daemon')                handleDaemonWs(ws, u.searchParams, ctx);
+      else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, u.searchParams, ctx);
+      else                                  handleViewerWs(ws, u.searchParams, ctx);
     });
   });
 }
