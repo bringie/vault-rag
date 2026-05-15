@@ -156,6 +156,11 @@ async function handleGetHost({ req, res, ctx }) {
   const h = await fleetDb.getHost(ctx.db, id);
   if (!h) return send(res, 404, { error: 'host not found' });
   h.groups = await fleetDb.listGroupsForHost(ctx.db, id);
+  const eff = await fleetDb.getEffectiveCapabilities(ctx.db, id);
+  if (eff) {
+    h.effective_capabilities = eff.effective;
+    h.inherited_labels = eff.inherited;
+  }
   send(res, 200, h);
 }
 
@@ -194,7 +199,11 @@ async function handleExec({ req, res, body, ctx }) {
   let candidates = all.filter(h => h.status === 'online');
   if (host_id)   candidates = candidates.filter(h => h.id === host_id);
   if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
-  if (tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (tag) {
+    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
+    const taggedIds = new Set(taggedHosts.map(h => h.id));
+    candidates = candidates.filter(h => taggedIds.has(h.id));
+  }
   if (!candidates.length) return send(res, 404, { error: 'no online host matches' });
   const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
   const busyByHost = {};
@@ -261,7 +270,12 @@ async function handleDispatch({ req, res, body, ctx }) {
   let candidates = all.filter(h => h.status === 'online');
   if (host_id)   candidates = candidates.filter(h => h.id === host_id);
   if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
-  if (tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (tag) {
+    // Effective tag: direct host.capabilities OR any of its groups' labels.
+    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
+    const taggedIds = new Set(taggedHosts.map(h => h.id));
+    candidates = candidates.filter(h => taggedIds.has(h.id));
+  }
   if (group) {
     const g = await fleetDb.getGroupByName(ctx.db, group);
     if (!g) return send(res, 404, { error: `group not found: ${group}` });
@@ -465,7 +479,10 @@ async function handleListGroups({ res, ctx }) {
 async function handleCreateGroup({ res, body, ctx }) {
   if (!body || !body.name) return send(res, 422, { error: 'name required' });
   try {
-    const g = await fleetDb.createGroup(ctx.db, { name: body.name, description: body.description, color: body.color });
+    const g = await fleetDb.createGroup(ctx.db, {
+      name: body.name, description: body.description, color: body.color,
+      labels: Array.isArray(body.labels) ? body.labels : [],
+    });
     send(res, 201, g);
   } catch (e) {
     if (e.code === '23505') return send(res, 409, { error: 'name already exists' });
@@ -480,8 +497,24 @@ async function handlePatchGroup({ req, res, body, ctx }) {
   if ('name' in body)        patch.name = body.name;
   if ('description' in body) patch.description = body.description;
   if ('color' in body)       patch.color = body.color;
-  const g = await fleetDb.updateGroup(ctx.db, id, patch);
+  if ('labels' in body) {
+    if (!Array.isArray(body.labels)) return send(res, 422, { error: 'labels must be array of strings' });
+    patch.labels = body.labels;
+  }
+  try {
+    const g = await fleetDb.updateGroup(ctx.db, id, patch);
+    if (!g) return send(res, 404, { error: 'not found' });
+    send(res, 200, g);
+  } catch (e) {
+    send(res, 400, { error: e.message });
+  }
+}
+
+async function handleGetGroup({ req, res, ctx }) {
+  const id = pathMatch(req.url, '/fleet/groups');
+  const g = await fleetDb.getGroup(ctx.db, id);
   if (!g) return send(res, 404, { error: 'not found' });
+  g.hosts = await fleetDb.listHostsInGroup(ctx.db, id);
   send(res, 200, g);
 }
 
@@ -801,6 +834,7 @@ function dispatchHttp(req, res, ctx) {
 
   // Groups
   if (method === 'GET'    && path === '/fleet/groups') return handleListGroups({ req, res, ctx });
+  if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleGetGroup({ req, res, ctx });
   if (method === 'POST'   && path === '/fleet/groups') {
     return readBody(req).then(b => handleCreateGroup({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }

@@ -51,10 +51,10 @@ async function getGroupByName(c, name) {
   return rows[0] || null;
 }
 
-async function createGroup(c, { name, description, color }) {
+async function createGroup(c, { name, description, color, labels }) {
   const { rows } = await c.query(
-    `INSERT INTO fleet_groups (name, description, color) VALUES ($1, $2, $3) RETURNING *`,
-    [name, description || null, color || null]);
+    `INSERT INTO fleet_groups (name, description, color, labels) VALUES ($1, $2, $3, $4) RETURNING *`,
+    [name, description || null, color || null, labels || []]);
   return rows[0];
 }
 
@@ -63,11 +63,45 @@ async function updateGroup(c, id, patch) {
   if ('name' in patch)        { args.push(patch.name);        updates.push(`name = $${args.length}`); }
   if ('description' in patch) { args.push(patch.description); updates.push(`description = $${args.length}`); }
   if ('color' in patch)       { args.push(patch.color);       updates.push(`color = $${args.length}`); }
+  if ('labels' in patch)      {
+    if (!Array.isArray(patch.labels)) throw new Error('labels must be array');
+    args.push(patch.labels.map(String).filter(Boolean));
+    updates.push(`labels = $${args.length}`);
+  }
   if (!updates.length) return await getGroup(c, id);
   args.push(id);
   const { rows } = await c.query(
     `UPDATE fleet_groups SET ${updates.join(', ')} WHERE id = $${args.length} RETURNING *`, args);
   return rows[0] || null;
+}
+
+// Effective capabilities = host.capabilities ∪ ⋃ group.labels for each group host is in.
+// Returns { capabilities: [direct...], inherited: { groupName: [labels...] }, effective: [union] }.
+async function getEffectiveCapabilities(c, hostId) {
+  const host = await getHost(c, hostId);
+  if (!host) return null;
+  const { rows } = await c.query(`
+    SELECT g.name, g.labels FROM fleet_groups g
+    JOIN fleet_host_groups hg ON hg.group_id = g.id
+    WHERE hg.host_id = $1`, [hostId]);
+  const direct = host.capabilities || [];
+  const inherited = {};
+  const set = new Set(direct);
+  for (const r of rows) {
+    inherited[r.name] = r.labels || [];
+    for (const l of r.labels || []) set.add(l);
+  }
+  return { capabilities: direct, inherited, effective: Array.from(set).sort() };
+}
+
+// For dispatch: list hosts whose effective tags contain `tag`.
+async function listHostsByEffectiveTag(c, tag) {
+  const { rows } = await c.query(`
+    SELECT DISTINCT h.* FROM fleet_hosts h
+    LEFT JOIN fleet_host_groups hg ON hg.host_id = h.id
+    LEFT JOIN fleet_groups g ON g.id = hg.group_id
+    WHERE $1 = ANY(h.capabilities) OR $1 = ANY(g.labels)`, [tag]);
+  return rows;
 }
 
 async function deleteGroup(c, id) {
@@ -289,4 +323,5 @@ module.exports = {
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
   listGroups, getGroup, getGroupByName, createGroup, updateGroup, deleteGroup,
   addHostToGroup, removeHostFromGroup, listGroupsForHost, listHostsInGroup,
+  getEffectiveCapabilities, listHostsByEffectiveTag,
 };

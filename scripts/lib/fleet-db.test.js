@@ -225,3 +225,43 @@ test('purgeOldEvents deletes pty_* older than cutoff but keeps lifecycle', async
     assert.deepEqual(rows.map(r => r.kind), ['lifecycle', 'pty_out']);
   });
 });
+
+test('createGroup persists labels; updateGroup patches them', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const g = await fleetDb.createGroup(c, { name: 'g1', labels: ['backend', 'gpu'] });
+    assert.deepEqual(g.labels.sort(), ['backend', 'gpu']);
+    const u = await fleetDb.updateGroup(c, g.id, { labels: ['frontend'] });
+    assert.deepEqual(u.labels, ['frontend']);
+  });
+});
+
+test('getEffectiveCapabilities unions direct + group labels', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const h = await fleetDb.upsertHost(c, { name: 'h1', capabilities: ['docker'] });
+    const g1 = await fleetDb.createGroup(c, { name: 'backend', labels: ['nodejs', 'pg'] });
+    const g2 = await fleetDb.createGroup(c, { name: 'gpu', labels: ['cuda'] });
+    await fleetDb.addHostToGroup(c, h.id, g1.id);
+    await fleetDb.addHostToGroup(c, h.id, g2.id);
+    const r = await fleetDb.getEffectiveCapabilities(c, h.id);
+    assert.deepEqual(r.capabilities, ['docker']);
+    assert.deepEqual(r.effective.sort(), ['cuda', 'docker', 'nodejs', 'pg']);
+    assert.deepEqual(r.inherited.backend.sort(), ['nodejs', 'pg']);
+    assert.deepEqual(r.inherited.gpu, ['cuda']);
+  });
+});
+
+test('listHostsByEffectiveTag returns direct + via-group hosts', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const h1 = await fleetDb.upsertHost(c, { name: 'direct', capabilities: ['gpu'] });
+    const h2 = await fleetDb.upsertHost(c, { name: 'viagroup' });
+    await fleetDb.upsertHost(c, { name: 'unrelated' });
+    const g = await fleetDb.createGroup(c, { name: 'g', labels: ['gpu'] });
+    await fleetDb.addHostToGroup(c, h2.id, g.id);
+    const matches = await fleetDb.listHostsByEffectiveTag(c, 'gpu');
+    const names = matches.map(h => h.name).sort();
+    assert.deepEqual(names, ['direct', 'viagroup']);
+  });
+});
