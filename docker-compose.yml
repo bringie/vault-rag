@@ -73,8 +73,10 @@ services:
       - GIT_COMMITTER_NAME=vault-rag-api
       - GIT_COMMITTER_EMAIL=vault-rag-api@brain.local
       # Secrets vault (see docs/superpowers/specs/2026-05-14-secrets-vault-design.md)
+      # VAULT_REPO_PATH must point at the obsidian-vault git checkout
+      # (the same repo where vault.age + recipients live).
       - VAULT_AGE_KEY_PATH=/run/secrets/age.key
-      - VAULT_REPO_PATH=/vault-repo
+      - VAULT_REPO_PATH=/vault
       - VAULT_AGE_PATH=/vault/secrets/vault.age
       - VAULT_RECIPIENTS_PATH=/vault/secrets/recipients
     ports:
@@ -83,7 +85,6 @@ services:
       - /root/obsidian-vault:/vault:rw
       - /root/.ssh:/root/.ssh:ro
       - ./scripts:/scripts:ro
-      - /opt/vault-rag:/vault-repo:rw
       - /opt/vault-rag/.secrets/age.key:/run/secrets/age.key:ro
     networks:
       - vault-rag-net
