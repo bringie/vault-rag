@@ -356,6 +356,10 @@ body::after {
   position: fixed; inset: 0; z-index: 80; background: var(--bg);
   display: grid; grid-template-rows: auto auto 1fr auto;
 }
+#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer {
+  position: fixed; inset: 0; z-index: 80; background: var(--bg);
+  display: flex; flex-direction: column; overflow: auto;
+}
 .active-nav { color: var(--text) !important; border-color: var(--text-dim) !important; }
 .archive-head, .sd-head {
   display: flex; justify-content: space-between; align-items: center;
