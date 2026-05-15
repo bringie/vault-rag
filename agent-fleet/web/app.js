@@ -1047,6 +1047,7 @@
     $('nav-dashboard').onclick = () => navigate('/dashboard');
     $('nav-archive').onclick = () => navigate('/archive');
     $('nav-cost').onclick = () => navigate('/cost');
+    $('nav-groups').onclick = () => navigate('/groups');
     setOverlay(true, 'STANDBY', 'select a session');
     startPolling();
     applyRoute();
