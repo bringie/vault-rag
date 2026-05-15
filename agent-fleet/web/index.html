@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLEET // CONTROL</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&family=Major+Mono+Display&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/fleet/static/xterm.min.css">
+  <link rel="stylesheet" href="/fleet/static/app.css">
+</head>
+<body>
+
+  <!-- AUTH PANEL -->
+  <div id="auth" hidden>
+    <div class="auth-frame">
+      <div class="auth-corner tl"></div><div class="auth-corner tr"></div>
+      <div class="auth-corner bl"></div><div class="auth-corner br"></div>
+      <h1 class="display">AGENT<br/>FLEET</h1>
+      <div class="auth-meta">
+        <div><span class="lbl">SYSTEM</span><span class="val">CONTROL.PLANE</span></div>
+        <div><span class="lbl">STATUS</span><span class="val val-warn">UNAUTHENTICATED</span></div>
+        <div><span class="lbl">PROTO</span><span class="val">BEARER / v0.1</span></div>
+      </div>
+      <label class="auth-field">
+        <span class="lbl">ACCESS TOKEN</span>
+        <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="······································">
+      </label>
+      <button id="token-save" class="btn-primary">ENGAGE →</button>
+      <p class="auth-hint">// token stored locally · clear via "ABORT" in app header</p>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="display">AGENT::FLEET</span>
+        <span class="brand-sub">CONTROL.PLANE</span>
+      </div>
+      <div class="status-bar">
+        <div class="stat"><span class="lbl">HOSTS</span><span id="stat-hosts" class="val">—</span></div>
+        <div class="stat"><span class="lbl">ONLINE</span><span id="stat-online" class="val val-ok">—</span></div>
+        <div class="stat"><span class="lbl">ACTIVE</span><span id="stat-active" class="val val-warn">—</span></div>
+        <div class="stat"><span class="lbl">UPTIME</span><span id="stat-clock" class="val">T+00:00:00</span></div>
+      </div>
+      <div class="controls">
+        <button id="reload" title="refresh" class="btn-icon">⟳</button>
+        <button id="logout" class="btn-ghost">ABORT</button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <aside class="rail">
+        <section class="panel">
+          <div class="panel-head"><h3>FLEET / HOSTS</h3><span id="hosts-count" class="pill">0</span></div>
+          <ul id="hosts" class="list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h3>SESSIONS</h3><span id="sessions-count" class="pill">0</span></div>
+          <ul id="sessions" class="list list-sessions"></ul>
+        </section>
+
+        <section class="panel panel-spawn">
+          <div class="panel-head"><h3>SPAWN</h3></div>
+          <label><span class="lbl">HOST</span><select id="spawn-host"></select></label>
+          <label><span class="lbl">CWD</span><input id="spawn-cwd" value="/tmp" spellcheck="false"></label>
+          <label><span class="lbl">ARGS</span><input id="spawn-args" placeholder="--print 'hi'" spellcheck="false"></label>
+          <button id="spawn-btn" class="btn-primary">▶ EXECUTE</button>
+        </section>
+      </aside>
+
+      <section class="viewer">
+        <div class="viewer-head">
+          <div class="viewer-id">
+            <span class="lbl">SESSION</span>
+            <span id="v-id" class="callsign">—</span>
+          </div>
+          <div class="viewer-meta">
+            <span class="lbl">HOST</span><span id="v-host" class="val">—</span>
+            <span class="sep">·</span>
+            <span class="lbl">CWD</span><span id="v-cwd" class="val">—</span>
+            <span class="sep">·</span>
+            <span class="lbl">STATUS</span><span id="v-status" class="val">idle</span>
+          </div>
+          <div class="viewer-actions">
+            <button id="v-kill" class="btn-danger" disabled>■ TERMINATE</button>
+          </div>
+        </div>
+        <div class="term-frame">
+          <div class="term-corner tl"></div><div class="term-corner tr"></div>
+          <div class="term-corner bl"></div><div class="term-corner br"></div>
+          <div id="term"></div>
+          <div id="term-overlay" hidden>
+            <div class="ovl-body">
+              <span id="ovl-msg">NO SESSION SELECTED</span>
+              <span class="ovl-sub">// select a session from the rail or spawn one</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footbar">
+      <span class="footstat" id="footstat">— · — · —</span>
+      <span class="footdot"></span>
+      <span class="footver">FLEET v0.1.0 / proto=v0.1</span>
+    </footer>
+  </div>
+
+  <script src="/fleet/static/xterm.min.js"></script>
+  <script src="/fleet/static/xterm-fit.min.js"></script>
+  <script src="/fleet/static/app.js"></script>
+</body>
+</html>

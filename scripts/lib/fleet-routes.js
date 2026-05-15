@@ -3,6 +3,7 @@
 
 const { WebSocketServer } = require('ws');
 const fleetDb = require('./fleet-db');
+const fleetStatic = require('./fleet-static');
 const { RingBuffer } = require('./fleet-ring-buffer');
 const { EventBatcher } = require('./fleet-event-batcher');
 
@@ -168,6 +169,10 @@ function dispatchHttp(req, res, ctx) {
   const method = req.method;
   const path = req.url.split('?')[0];
 
+  // Static + index served before auth (page is public; APIs still gated)
+  if (method === 'GET' && (path === '/fleet/' || path === '/fleet' || path.startsWith('/fleet/static/'))) {
+    if (fleetStatic.serve(req, res)) return;
+  }
   // healthz before auth
   if (method === 'GET' && path === '/fleet/healthz') {
     return send(res, 200, { ok: true });
@@ -406,14 +411,25 @@ function tryDispatch(req, res, ctx) {
 function attachUpgrade(server, getCtx) {
   if (server._fleetUpgradeAttached) return;
   server._fleetUpgradeAttached = true;
-  const wss = new WebSocketServer({ noServer: true });
+  // Accept bearer.<token> subprotocol so browsers (no header API) can authenticate.
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: (protos) => {
+      for (const p of protos) if (p.startsWith('bearer.')) return p;
+      return false;
+    },
+  });
   server.on('upgrade', (req, sock, head) => {
     if (!req.url.startsWith('/fleet/ws') && !req.url.startsWith('/api/fleet/ws')) return;
-    // Normalise /api/ prefix
     if (req.url.startsWith('/api/')) req.url = req.url.slice(4);
     const u = new URL(req.url, 'http://x');
     const role = u.searchParams.get('role');
-    const auth = req.headers.authorization || '';
+    let auth = req.headers.authorization || '';
+    if (!auth) {
+      const proto = req.headers['sec-websocket-protocol'] || '';
+      const b = proto.split(',').map(s => s.trim()).find(s => s.startsWith('bearer.'));
+      if (b) auth = `Bearer ${b.slice('bearer.'.length)}`;
+    }
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = getCtx();
       if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
