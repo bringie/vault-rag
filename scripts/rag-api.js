@@ -9,12 +9,14 @@ const path   = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
 const lib = require('./lib/vault-lib');
+const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 const VAULT = process.env.VAULT_PATH || '/vault';
 const TOKEN = process.env.VAULT_RAG_API_TOKEN;
-const PORT  = 5679;
+const PORT  = parseInt(process.env.RAG_PORT || '5679', 10);
+const SKIP_PG = process.env.VAULT_SECRETS_SKIP_PG === '1';
 
 if (!TOKEN) {
   console.error('[rag-api] FATAL: VAULT_RAG_API_TOKEN not set');
@@ -102,6 +104,59 @@ function resolveWritePath(agent_id, relPath) {
   if (!agent_id) throw new Error('agent_id required for non-prefix paths');
   if (!AGENT_RE.test(agent_id)) throw new Error('bad agent_id');
   return `agents/${agent_id}/${rel}`;
+}
+
+let _secretsHandler = null;
+function getSecretsHandler() {
+  if (_secretsHandler) return _secretsHandler;
+  _secretsHandler = new SecretsHandler({
+    ageKeyPath:     process.env.VAULT_AGE_KEY_PATH,
+    recipientsPath: process.env.VAULT_RECIPIENTS_PATH || '/vault/secrets/recipients',
+    vaultAgePath:   process.env.VAULT_AGE_PATH || '/vault/secrets/vault.age',
+    repoPath:       process.env.VAULT_REPO_PATH || '/vault',
+  });
+  return _secretsHandler;
+}
+
+async function handleSecretGet(body) {
+  if (!body.name) throw new Error('name required');
+  try {
+    const value = await getSecretsHandler().get(body.name);
+    return { value };
+  } catch (e) {
+    if (e instanceof NotFound) { const err = new Error(e.message); err.code = 404; throw err; }
+    throw e;
+  }
+}
+
+async function handleSecretList() {
+  return { names: await getSecretsHandler().list() };
+}
+
+async function handleSecretSet(body) {
+  if (!body.name) throw new Error('name required');
+  if (body.value === undefined || body.value === null) throw new Error('value required');
+  return { committed_sha: await getSecretsHandler().set(body.name, body.value) };
+}
+
+async function handleSecretDelete(body) {
+  if (!body.name) throw new Error('name required');
+  try {
+    return { committed_sha: await getSecretsHandler().delete(body.name) };
+  } catch (e) {
+    if (e instanceof NotFound) { const err = new Error(e.message); err.code = 404; throw err; }
+    throw e;
+  }
+}
+
+async function handleSecretRotate(body) {
+  if (!body.name) throw new Error('name required');
+  const newValue = body.value === undefined ? null : body.value;
+  return { committed_sha: await getSecretsHandler().rotate(body.name, newValue) };
+}
+
+async function handleSecretVerify() {
+  return await getSecretsHandler().verify();
 }
 
 async function handleSearch(body) {
@@ -223,10 +278,16 @@ async function handlePut(body) {
 }
 
 const ROUTES = {
-  '/search':    handleSearch,
-  '/get':       handleGet,
-  '/backlinks': handleBacklinks,
-  '/put':       handlePut,
+  '/search':          handleSearch,
+  '/get':             handleGet,
+  '/backlinks':       handleBacklinks,
+  '/put':             handlePut,
+  '/secrets/get':     handleSecretGet,
+  '/secrets/list':    handleSecretList,
+  '/secrets/set':     handleSecretSet,
+  '/secrets/delete':  handleSecretDelete,
+  '/secrets/rotate':  handleSecretRotate,
+  '/secrets/verify':  handleSecretVerify,
 };
 
 const server = http.createServer(async (req, res) => {
@@ -241,14 +302,15 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, out);
   } catch (e) {
     console.error(`[rag-api] ${req.url}: ${e.message}`);
-    send(res, e.code === 409 ? 409 : 400, { error: e.message });
+    const code = e.code && Number.isInteger(e.code) ? e.code : 400;
+    send(res, code, { error: e.message });
   }
 });
 
 (async () => {
-  await pgConnect();
+  if (!SKIP_PG) await pgConnect();
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${PG.host}/${PG.database}, auth=Bearer)`);
+    console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${SKIP_PG ? 'skipped' : `${PG.host}/${PG.database}`}, auth=Bearer)`);
   });
 })().catch(e => {
   console.error(`[rag-api] FATAL: ${e.stack || e.message}`);
