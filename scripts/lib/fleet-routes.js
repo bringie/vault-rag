@@ -5,6 +5,8 @@ const { WebSocketServer } = require('ws');
 const fleetDb = require('./fleet-db');
 const fleetStatic = require('./fleet-static');
 const fleetCost = require('./fleet-cost');
+const wfDb = require('./fleet-workflow-db');
+const { createRunner, validateDefinition } = require('./fleet-workflow-runner');
 const { RingBuffer } = require('./fleet-ring-buffer');
 const { EventBatcher } = require('./fleet-event-batcher');
 
@@ -43,6 +45,7 @@ function makeBus() {
   const viewersBySession = new Map();       // session_id -> Set<ws>
   const hooksBySession = new Map();         // session_id -> Set<fn(frame)>
   const pendingFileReqs = new Map();        // req_id -> {resolve, reject, timer}
+  const workflowViewers = new Map();        // run_id -> Set<ws>
   return {
     registerDaemon(hostId, ws) {
       const prev = daemonsByHost.get(hostId);
@@ -125,6 +128,18 @@ function makeBus() {
       clearTimeout(p.timer);
       pendingFileReqs.delete(req_id);
       if (isError) p.reject(new Error(payload.error || 'unknown')); else p.resolve(payload);
+    },
+    addWorkflowViewer(runId, ws) {
+      let set = workflowViewers.get(runId);
+      if (!set) { set = new Set(); workflowViewers.set(runId, set); }
+      set.add(ws);
+      ws.on('close', () => { set.delete(ws); if (!set.size) workflowViewers.delete(runId); });
+    },
+    broadcastWorkflow(runId, frame) {
+      const set = workflowViewers.get(runId);
+      if (!set) return;
+      const payload = JSON.stringify(frame);
+      for (const v of set) { try { v.send(payload); } catch {} }
     },
   };
 }
@@ -581,6 +596,139 @@ async function handleTranscriptTxt(req, res, ctx) {
   res.end(stripAnsi(raw));
 }
 
+// --- Workflow handlers ---
+
+async function handleListWorkflows({ res, ctx }) {
+  const rows = await wfDb.listWorkflows(ctx.db);
+  send(res, 200, rows);
+}
+
+async function handleGetWorkflow({ req, res, ctx }) {
+  const id = req.url.split('?')[0].split('/')[3];
+  const w = await wfDb.getWorkflow(ctx.db, id);
+  if (!w) return send(res, 404, { error: 'not found' });
+  send(res, 200, w);
+}
+
+async function handleCreateWorkflow({ res, body, ctx }) {
+  if (!body || !body.name || !body.definition) {
+    return send(res, 422, { error: 'name + definition required' });
+  }
+  try { validateDefinition(body.definition); }
+  catch (e) { return send(res, 422, { error: e.message }); }
+  try {
+    const w = await wfDb.createWorkflow(ctx.db, body);
+    send(res, 201, w);
+  } catch (e) {
+    if (/duplicate key/.test(e.message)) return send(res, 409, { error: 'name exists' });
+    throw e;
+  }
+}
+
+async function handlePatchWorkflow({ req, res, body, ctx }) {
+  const id = req.url.split('?')[0].split('/')[3];
+  if (body && body.definition) {
+    try { validateDefinition(body.definition); }
+    catch (e) { return send(res, 422, { error: e.message }); }
+  }
+  const w = await wfDb.updateWorkflow(ctx.db, id, body || {});
+  if (!w) return send(res, 404, { error: 'not found' });
+  send(res, 200, w);
+}
+
+async function handleDeleteWorkflow({ req, res, ctx }) {
+  const id = req.url.split('?')[0].split('/')[3];
+  await wfDb.deleteWorkflow(ctx.db, id);
+  res.writeHead(204); res.end();
+}
+
+async function handleRunWorkflow({ req, res, body, ctx }) {
+  const id = req.url.split('?')[0].split('/')[3];
+  const w = await wfDb.getWorkflow(ctx.db, id);
+  if (!w) return send(res, 404, { error: 'workflow not found' });
+  const run = await wfDb.createRun(ctx.db, {
+    workflowId: w.id,
+    snapshot: w.definition,
+    state: { inputs: (body && body.inputs) || {} },
+  });
+  if (ctx.workflowRunner) ctx.workflowRunner.start(run.id);
+  send(res, 201, { run_id: run.id });
+}
+
+async function handleListRuns({ req, res, ctx }) {
+  const u = new URL(req.url, 'http://x');
+  const rows = await wfDb.listRuns(ctx.db, {
+    workflowId: u.searchParams.get('workflow_id') || undefined,
+    status: u.searchParams.get('status') || undefined,
+    limit: parseInt(u.searchParams.get('limit') || '100', 10),
+  });
+  send(res, 200, rows);
+}
+
+async function handleGetRun({ req, res, ctx }) {
+  const id = req.url.split('?')[0].split('/')[3];
+  const r = await wfDb.getRun(ctx.db, id);
+  if (!r) return send(res, 404, { error: 'not found' });
+  send(res, 200, r);
+}
+
+async function handleCancelRun({ req, res, ctx }) {
+  const id = req.url.split('?')[0].split('/')[3];
+  if (ctx.workflowRunner) ctx.workflowRunner.cancel(id);
+  send(res, 200, { ok: true });
+}
+
+// Spawn a claude session and wait for completion, returning {output, exit_code, session_id}.
+// Used by workflow runner as deps.spawnClaude.
+async function spawnClaudeForWorkflow(ctx, node, prompt, runId) {
+  const t = node.target || {};
+  const all = await fleetDb.listHosts(ctx.db);
+  let candidates = all.filter(h => h.status === 'online');
+  if (t.host_id)   candidates = candidates.filter(h => h.id === t.host_id);
+  if (t.host_name) candidates = candidates.filter(h => h.name === t.host_name || h.display_name === t.host_name);
+  if (t.tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(t.tag));
+  if (t.capability) candidates = candidates.filter(h => (h.capabilities || []).includes(t.capability));
+  if (t.group) {
+    const g = await fleetDb.getGroupByName(ctx.db, t.group);
+    if (!g) throw new Error(`group not found: ${t.group}`);
+    const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
+    const memberIds = new Set(members.map(h => h.id));
+    candidates = candidates.filter(h => memberIds.has(h.id));
+  }
+  if (!candidates.length) throw new Error('no online host matches target');
+  const host = candidates[0];
+
+  const args = node.headless === false
+    ? (node.args || [])
+    : ['-p', prompt, ...(node.args || [])];
+  const s = await fleetDb.createSession(ctx.db, {
+    hostId: host.id, cwd: node.cwd || '~',
+    args, env: node.env || {},
+    createdBy: 'workflow',
+    label: `wf-run-${runId.slice(0, 8)}/${node.id}`,
+    metadata: { workflow_run_id: runId, workflow_node_id: node.id },
+  });
+  ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env });
+
+  const startedAt = Date.now();
+  const timeoutMs = (node.timeout_s || 600) * 1000;
+  while (true) {
+    if (Date.now() - startedAt > timeoutMs) {
+      ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
+      return { output: '[timeout]', exit_code: 124, session_id: s.id };
+    }
+    await new Promise(r => setTimeout(r, 500));
+    const cur = await fleetDb.getSession(ctx.db, s.id);
+    if (!cur) return { output: '', exit_code: -1, session_id: s.id };
+    if (['exited','killed','orphaned'].includes(cur.status)) {
+      const events = await fleetDb.readTranscript(ctx.db, s.id, { kind: 'pty_out', limit: 10000 });
+      const merged = Buffer.concat(events.map(e => e.payload || Buffer.alloc(0)));
+      const output = merged.toString('utf8').slice(0, 65536);
+      return { output, exit_code: cur.exit_code, session_id: s.id };
+    }
+  }
+}
+
 function dispatchHttp(req, res, ctx) {
   const method = req.method;
   const path = req.url.split('?')[0];
@@ -663,6 +811,25 @@ function dispatchHttp(req, res, ctx) {
     return handleSessionCost({ req, res, ctx });
   }
   if (method === 'GET' && path === '/fleet/cost/summary') return handleCostSummary({ req, res, ctx });
+
+  // Workflows
+  if (method === 'GET'    && path === '/fleet/workflows') return handleListWorkflows({ res, ctx });
+  if (method === 'POST'   && path === '/fleet/workflows') {
+    return readBody(req).then(b => handleCreateWorkflow({ res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'POST'   && new RegExp(`^/fleet/workflows/${SID_RE}/run$`, 'i').test(path)) {
+    return readBody(req).then(b => handleRunWorkflow({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'GET'    && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleGetWorkflow({ req, res, ctx });
+  if (method === 'PATCH'  && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) {
+    return readBody(req).then(b => handlePatchWorkflow({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'DELETE' && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleDeleteWorkflow({ req, res, ctx });
+
+  // Workflow runs
+  if (method === 'GET'    && path === '/fleet/workflow-runs') return handleListRuns({ req, res, ctx });
+  if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/cancel$`, 'i').test(path)) return handleCancelRun({ req, res, ctx });
+  if (method === 'GET'    && new RegExp(`^/fleet/workflow-runs/${SID_RE}$`, 'i').test(path)) return handleGetRun({ req, res, ctx });
 
   send(res, 404, { error: 'not found' });
 }
@@ -856,6 +1023,14 @@ function attach(server, ctx) {
       write: async (batch) => { if (merged.db) await fleetDb.appendEvents(merged.db, batch); },
     });
   }
+  if (!merged.workflowRunner && merged.db) {
+    merged.workflowRunner = createRunner({
+      db: merged.db,
+      spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(merged, node, prompt, runId),
+      broadcast: (runId, frame) => merged.bus.broadcastWorkflow(runId, frame),
+    });
+    wfDb.orphanRunningRuns(merged.db).catch(e => console.error('[fleet] orphan workflow runs:', e.message));
+  }
   server._fleetCtx = merged;
 
   const wss = new WebSocketServer({ noServer: true });
@@ -943,6 +1118,13 @@ function makeContext({ token, db, version }) {
     flushSize: 50, flushIntervalMs: 200,
     write: async (batch) => { if (ctx.db) await fleetDb.appendEvents(ctx.db, batch); },
   });
+  if (db) {
+    ctx.workflowRunner = createRunner({
+      db, spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(ctx, node, prompt, runId),
+      broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
+    });
+    wfDb.orphanRunningRuns(db).catch(e => console.error('[fleet] orphan workflow runs:', e.message));
+  }
   return ctx;
 }
 

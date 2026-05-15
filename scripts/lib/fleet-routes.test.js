@@ -347,3 +347,66 @@ test('viewer input forwards to daemon ws', async () => {
   dws.close(); vws.close();
   await close();
 });
+
+// --- Workflows ---
+
+async function startWithWorkflows() {
+  const pg = new Client(PG);
+  await pg.connect();
+  await pg.query('TRUNCATE fleet_workflow_runs, fleet_workflows RESTART IDENTITY CASCADE');
+  await pg.query('TRUNCATE fleet_hosts, fleet_sessions, fleet_events RESTART IDENTITY CASCADE');
+  const server = await startTestServer({ token: 'T', db: pg });
+  return { server, pg, close: async () => { server.close(); await pg.end(); } };
+}
+
+const TINY_DEF = {
+  start: 'n1',
+  nodes: [{ id: 'n1', type: 'delay', seconds: 0, position: { x: 0, y: 0 } }],
+  edges: [],
+};
+
+test('POST /fleet/workflows creates workflow', async () => {
+  const { server, close } = await startWithWorkflows();
+  const r = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'T', body: { name: 'wf-test', definition: TINY_DEF },
+  });
+  assert.equal(r.status, 201);
+  assert.ok(r.body.id);
+  await close();
+});
+
+test('GET /fleet/workflows lists workflows', async () => {
+  const { server, close } = await startWithWorkflows();
+  await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'T', body: { name: 'wf-list', definition: TINY_DEF },
+  });
+  const r = await reqJson(server, 'GET', '/fleet/workflows', { token: 'T' });
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.body));
+  assert.ok(r.body.find(w => w.name === 'wf-list'));
+  await close();
+});
+
+test('POST /fleet/workflows rejects invalid definition', async () => {
+  const { server, close } = await startWithWorkflows();
+  const r = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'T', body: { name: 'bad', definition: { start: 'ghost', nodes: [{ id: 'a', type: 'delay' }], edges: [] } },
+  });
+  assert.equal(r.status, 422);
+  await close();
+});
+
+test('POST /fleet/workflows/:id/run starts a run', async () => {
+  const { server, close } = await startWithWorkflows();
+  const c = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'T', body: { name: 'wf-run', definition: TINY_DEF },
+  });
+  const r = await reqJson(server, 'POST', `/fleet/workflows/${c.body.id}/run`, {
+    token: 'T', body: {},
+  });
+  assert.equal(r.status, 201);
+  assert.ok(r.body.run_id);
+  // Give runner a moment so we don't leak open delays
+  await new Promise(r => setTimeout(r, 100));
+  await close();
+});
