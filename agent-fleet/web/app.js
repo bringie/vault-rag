@@ -124,9 +124,11 @@
     });
 
     const sessUl = $('sessions');
-    sessUl.innerHTML = state.sessions.length === 0
-      ? `<li class="empty"><span class="dot off"></span><span class="sess-id" style="color:var(--text-faint)">no sessions</span><span></span><span></span></li>`
-      : state.sessions.slice(0, 40).map(s => {
+    const showClosed = $('show-closed')?.checked;
+    const sessVisible = state.sessions.filter(s => showClosed || (s.status !== 'exited' && s.status !== 'killed'));
+    sessUl.innerHTML = sessVisible.length === 0
+      ? `<li class="empty"><span class="dot off"></span><span class="sess-id" style="color:var(--text-faint)">no ${showClosed?'':'active '}sessions</span><span></span><span></span></li>`
+      : sessVisible.slice(0, 40).map(s => {
           const host = state.hosts.find(h => h.id === s.host_id);
           const active = s.id === state.selected ? ' class="active"' : '';
           return `<li data-session="${s.id}"${active}>
@@ -218,7 +220,17 @@
     const refreshSessCost = async () => {
       try {
         const c = await api('GET', `/sessions/${id}/cost`);
-        $('v-cost').textContent = `$${(c.usd || 0).toFixed(4)} · ${c.msgs} msgs`;
+        const usd = (c.usd || 0).toFixed(4);
+        const tag = c.attribution === 'approximate' ? ' ~' : '';
+        let tip = `attribution: ${c.attribution || 'unknown'}`;
+        if (c.by_model) {
+          for (const [m, v] of Object.entries(c.by_model)) {
+            tip += `\n${m}: $${v.usd.toFixed(4)} (${v.msgs} msgs, in=${v.input_tokens}, out=${v.output_tokens}, cache_w=${v.cache_creation_5m}, cache_r=${v.cache_read})`;
+          }
+        }
+        const el = $('v-cost');
+        el.textContent = `$${usd}${tag} · ${c.msgs} msgs`;
+        el.title = tip;
       } catch { $('v-cost').textContent = '—'; }
     };
     refreshSessCost();
@@ -390,6 +402,15 @@
     $('spawn-args').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') spawn();
     });
+    $('show-closed').addEventListener('change', render);
+    $('cleanup-btn').onclick = async () => {
+      if (!confirm('delete all exited/killed sessions older than 1h? this is permanent.')) return;
+      try {
+        const r = await api('POST', '/sessions/cleanup', { older_than: '1 hour' });
+        await refresh();
+        alert(`deleted ${r.deleted} session(s)`);
+      } catch (e) { alert('cleanup failed: ' + e.message); }
+    };
   }
 
   // ============ File editor ============

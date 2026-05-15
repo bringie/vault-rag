@@ -172,6 +172,9 @@ body::after {
   background: var(--panel-2); color: var(--text-dim);
   border: 1px solid var(--line); font-size: .72em; letter-spacing: .1em;
 }
+.toggle-row { display: inline-flex; align-items: center; gap: .25em; cursor: pointer; }
+.toggle-row input { margin: 0; accent-color: var(--accent); }
+.toggle-row .lbl { font-size: .65em; }
 
 .list { list-style: none; padding: 0; margin: 0; }
 .list li {

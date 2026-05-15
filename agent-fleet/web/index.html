@@ -60,7 +60,17 @@
         </section>
 
         <section class="panel">
-          <div class="panel-head"><h3>SESSIONS</h3><span id="sessions-count" class="pill">0</span></div>
+          <div class="panel-head">
+            <h3>SESSIONS</h3>
+            <span style="display:flex; gap:.3em; align-items:center">
+              <label class="toggle-row" title="show exited/killed sessions">
+                <input type="checkbox" id="show-closed">
+                <span class="lbl">closed</span>
+              </label>
+              <button id="cleanup-btn" class="btn-ghost" style="font-size:.65em; padding:.15em .55em" title="delete closed sessions older than 1h">⌫</button>
+              <span id="sessions-count" class="pill">0</span>
+            </span>
+          </div>
           <ul id="sessions" class="list list-sessions"></ul>
         </section>
 

@@ -204,6 +204,13 @@ async function handlePostKill({ req, res, body, ctx }) {
   res.writeHead(204); res.end();
 }
 
+async function handleCleanupSessions({ req, res, body, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const olderThan = (body && body.older_than) || url.searchParams.get('older_than') || '1 hour';
+  const n = await fleetDb.deleteClosedSessions(ctx.db, olderThan);
+  send(res, 200, { deleted: n, older_than: olderThan });
+}
+
 async function handleHostFileGet({ req, res, ctx }) {
   const url = new URL(req.url, 'http://x');
   const m = url.pathname.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
@@ -247,7 +254,7 @@ async function handleSessionCost({ req, res, ctx }) {
   if (!s) return send(res, 404, { error: 'session not found' });
   const host = await fleetDb.getHost(ctx.db, s.host_id);
   if (!host) return send(res, 404, { error: 'host not found' });
-  const cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, s.ended_at);
+  const cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, s.ended_at, s.id);
   send(res, 200, { session_id: s.id, host: host.name, ...cost });
 }
 
@@ -303,6 +310,9 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET'  && path === '/fleet/sessions') return handleListSessions({ req, res, ctx });
   if (method === 'POST' && path === '/fleet/sessions') {
     return readBody(req).then(b => handleCreateSession({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'POST' && path === '/fleet/sessions/cleanup') {
+    return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) return handleGetSession({ req, res, ctx });
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/input$`, 'i').test(path)) {

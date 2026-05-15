@@ -20,7 +20,17 @@ class PtyManager extends EventEmitter {
     let resolvedCwd = cwd;
     if (!resolvedCwd || resolvedCwd === '~') resolvedCwd = home;
     else if (resolvedCwd.startsWith('~/')) resolvedCwd = home + resolvedCwd.slice(1);
-    const proc = pty.spawn(this.claudeBin, args, {
+
+    // Inject --session-id <fleet sid> for exact tokmon cost attribution.
+    // Only when running claude AND caller didn't already pass --session-id.
+    const finalArgs = args.slice();
+    const looksLikeClaude = /claude(\.|$)/i.test(this.claudeBin);
+    const hasSessionFlag = finalArgs.some(a => a === '--session-id' || a.startsWith('--session-id='));
+    if (looksLikeClaude && !hasSessionFlag && /^[0-9a-f-]{36}$/i.test(sessionId)) {
+      finalArgs.unshift('--session-id', sessionId);
+    }
+
+    const proc = pty.spawn(this.claudeBin, finalArgs, {
       name: 'xterm-color', cols: 120, rows: 30, cwd: resolvedCwd,
       env: { ...process.env, ...env },
     });

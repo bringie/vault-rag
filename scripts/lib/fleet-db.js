@@ -91,6 +91,18 @@ async function orphanRunningSessions(c) {
   return rowCount;
 }
 
+// Delete sessions that have been in a terminal state for at least `olderThan`
+// (e.g. '1 hour'). CASCADE removes their fleet_events.
+async function deleteClosedSessions(c, olderThan = '1 hour') {
+  const { rowCount } = await c.query(
+    `DELETE FROM fleet_sessions
+     WHERE status IN ('exited','killed')
+       AND ended_at IS NOT NULL
+       AND ended_at < now() - $1::interval`,
+    [olderThan]);
+  return rowCount;
+}
+
 async function appendEvents(c, events) {
   if (!events.length) return 0;
   const cols = ['session_id', 'kind', 'seq', 'payload'];
@@ -133,6 +145,6 @@ async function purgeOldEvents(c, intervalStr) {
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost,
   createSession, getSession, listSessions,
-  markSessionRunning, markSessionExited, orphanRunningSessions,
+  markSessionRunning, markSessionExited, orphanRunningSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
 };

@@ -28,28 +28,21 @@ function rowCost(r) {
   );
 }
 
-// Sum cost for one session: rows where host_id == host.name AND ts ∈ [started_at, ended_at|now].
-async function sessionCost(tokmonPg, hostName, startedAt, endedAt) {
-  const end = endedAt || new Date();
+async function aggregateRows(tokmonPg, where, args) {
   const { rows } = await tokmonPg.query(
     `SELECT model, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
             SUM(cache_creation_5m) AS cache_creation_5m, SUM(cache_read) AS cache_read,
             COUNT(*) AS msgs
      FROM events
-     WHERE host_id = $1 AND ts >= $2 AND ts < $3
-     GROUP BY model`,
-    [hostName, startedAt, end],
-  );
-  let usd = 0;
-  let msgs = 0;
+     WHERE ${where}
+     GROUP BY model`, args);
+  let usd = 0, msgs = 0;
   const byModel = {};
   for (const r of rows) {
     const c = rowCost(r);
-    usd += c;
-    msgs += Number(r.msgs);
+    usd += c; msgs += Number(r.msgs);
     byModel[r.model] = {
-      usd: c,
-      msgs: Number(r.msgs),
+      usd: c, msgs: Number(r.msgs),
       input_tokens: Number(r.input_tokens),
       output_tokens: Number(r.output_tokens),
       cache_creation_5m: Number(r.cache_creation_5m),
@@ -57,6 +50,25 @@ async function sessionCost(tokmonPg, hostName, startedAt, endedAt) {
     };
   }
   return { usd, msgs, by_model: byModel };
+}
+
+// Cost for one fleet session.
+// 1. Exact match: tokmon.events.session_id == fleet_session.id (since daemon now
+//    spawns claude with --session-id <fleet sid>). Trust this when rows exist.
+// 2. Fallback heuristic for legacy sessions (no session-id injection): rows where
+//    host_id == host.name AND ts ∈ [started_at, ended_at|now]. Marked approximate.
+async function sessionCost(tokmonPg, hostName, startedAt, endedAt, fleetSessionId) {
+  // Exact attribution
+  if (fleetSessionId) {
+    const exact = await aggregateRows(tokmonPg, 'session_id = $1', [fleetSessionId]);
+    if (exact.msgs > 0) return { ...exact, attribution: 'exact' };
+  }
+  // Heuristic fallback: host + time window (over-attributes if other claude sessions
+  // ran on the same host in this window).
+  const end = endedAt || new Date();
+  const heur = await aggregateRows(tokmonPg, 'host_id = $1 AND ts >= $2 AND ts < $3',
+    [hostName, startedAt, end]);
+  return { ...heur, attribution: 'approximate' };
 }
 
 // Summary: cost per host over last N days.
