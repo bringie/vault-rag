@@ -11,6 +11,8 @@ const { Client } = require('pg');
 const lib = require('./lib/vault-lib');
 const vtRoutes = require('./lib/vt-routes');
 const gitSync = require('./lib/git-sync');
+const fleetRoutes = require('./lib/fleet-routes');
+const fleetDb = require('./lib/fleet-db');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
@@ -30,7 +32,7 @@ const PG = {
   database: process.env.VAULT_RAG_PG_DB   || 'vault_rag',
   user:     process.env.VAULT_RAG_PG_USER || 'postgres',
   password: process.env.VAULT_RAG_PG_PASS,
-  port:     5432,
+  port:     parseInt(process.env.VAULT_RAG_PG_PORT || '5432', 10),
 };
 
 const AGENT_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -306,9 +308,13 @@ const TASK_ROUTES = {
   '/task/dep_rm':  'dep_rm',
 };
 
+const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, db: null, version: '0.1.0' });
+
 const server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
+  // fleet routes (HTTP) — own dispatch handles auth + methods
+  if (fleetRoutes.tryDispatch(req, res, fleetCtx)) return;
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
   // VT task routes (vt-rest-mcp) — dispatched separately.
@@ -340,10 +346,33 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// WS upgrade for fleet
+fleetRoutes.attachUpgrade(server, () => fleetCtx);
+
 (async () => {
   if (!SKIP_PG) {
     try { await pgConnect(); }
     catch (e) { console.error(`[rag-api] pg connect deferred: ${e.message}`); pg = null; }
+  }
+  // Hand pg client to fleet, run orphan flip + schedule retention.
+  if (pg) {
+    fleetCtx.db = pg;
+    try {
+      const n = await fleetDb.orphanRunningSessions(pg);
+      if (n) console.log(`[rag-api] fleet: orphaned ${n} sessions on startup`);
+    } catch (e) {
+      console.error(`[rag-api] fleet orphan check failed: ${e.message}`);
+    }
+    const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    const PURGE_AGE = process.env.VAULT_RAG_FLEET_RETENTION || '30 days';
+    setInterval(async () => {
+      try {
+        const n = await fleetDb.purgeOldEvents(pg, PURGE_AGE);
+        if (n) console.log(`[rag-api] fleet: purged ${n} events older than ${PURGE_AGE}`);
+      } catch (e) {
+        console.error(`[rag-api] fleet purge failed: ${e.message}`);
+      }
+    }, PURGE_INTERVAL_MS).unref?.();
   }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${SKIP_PG ? 'skipped' : `${PG.host}/${PG.database}`}, auth=Bearer)`);

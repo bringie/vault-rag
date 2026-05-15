@@ -359,6 +359,7 @@ function attach(server, ctx) {
   server._fleetCtx = merged;
 
   const wss = new WebSocketServer({ noServer: true });
+  server._fleetWss = wss;
 
   server.on('request', (req, res) => {
     if (!req.url.startsWith('/fleet/')) return;
@@ -380,4 +381,58 @@ function attach(server, ctx) {
   });
 }
 
-module.exports = { attach, send, readBody, checkAuth };
+// tryDispatch: synchronous fast-path for rag-api callback integration.
+// Returns true if the request belongs to fleet and was dispatched (response will be sent
+// asynchronously by the handler). Returns false to let the caller proceed with its own
+// routing.
+function tryDispatch(req, res, ctx) {
+  if (!req.url || !req.url.startsWith('/fleet/')) return false;
+  // Guard: if db not yet ready, return 503 rather than crash on null.query
+  const path = req.url.split('?')[0];
+  const needsDb = path !== '/fleet/healthz';
+  if (needsDb && !ctx.db) {
+    send(res, 503, { error: 'fleet: database not ready' });
+    return true;
+  }
+  Promise.resolve()
+    .then(() => dispatchHttp(req, res, ctx))
+    .catch((e) => {
+      console.error(`[fleet-routes] ${req.url}: ${e.stack || e.message}`);
+      if (!res.headersSent) send(res, 500, { error: String(e.message || e) });
+    });
+  return true;
+}
+
+function attachUpgrade(server, getCtx) {
+  if (server._fleetUpgradeAttached) return;
+  server._fleetUpgradeAttached = true;
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, sock, head) => {
+    if (!req.url.startsWith('/fleet/ws') && !req.url.startsWith('/api/fleet/ws')) return;
+    // Normalise /api/ prefix
+    if (req.url.startsWith('/api/')) req.url = req.url.slice(4);
+    const u = new URL(req.url, 'http://x');
+    const role = u.searchParams.get('role');
+    const auth = req.headers.authorization || '';
+    wss.handleUpgrade(req, sock, head, (ws) => {
+      const ctx = getCtx();
+      if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
+      if (role !== 'daemon' && role !== 'viewer') return ws.close(4003, 'invalid role');
+      if (role === 'daemon') handleDaemonWs(ws, u.searchParams, ctx);
+      else handleViewerWs(ws, u.searchParams, ctx);
+    });
+  });
+}
+
+function makeContext({ token, db, version }) {
+  const ctx = { token, db, version };
+  ctx.bus = makeBus();
+  ctx.rings = new Map();
+  ctx.batcher = new EventBatcher({
+    flushSize: 50, flushIntervalMs: 200,
+    write: async (batch) => { if (ctx.db) await fleetDb.appendEvents(ctx.db, batch); },
+  });
+  return ctx;
+}
+
+module.exports = { attach, tryDispatch, attachUpgrade, makeContext, send, readBody, checkAuth };
