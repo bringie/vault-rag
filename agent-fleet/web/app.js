@@ -312,6 +312,23 @@
         state.ws.send(JSON.stringify({ type: 'input', data: d }));
       }
     });
+    // Intercept browser-stealing shortcuts (Ctrl+O = Open File, Ctrl+S = Save,
+    // Ctrl+R = Reload). Forward them to PTY as the corresponding ASCII control
+    // characters so claude's TUI (expand tool output, etc.) actually receives them.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return true;
+      const key = e.key.toLowerCase();
+      const map = { o: '\x0f', s: '\x13', r: '\x12', q: '\x11', p: '\x10' };
+      const code = map[key];
+      if (!code) return true;
+      e.preventDefault();
+      e.stopPropagation();
+      if (state.ws && state.ws.readyState === 1) {
+        state.ws.send(JSON.stringify({ type: 'input', data: code }));
+      }
+      return false;
+    });
 
     connectWs(id);
   }
