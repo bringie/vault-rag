@@ -1,0 +1,9 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: brain-pg
+    orgId: 1
+  - name: brain-metrics
+    orgId: 1
+  - name: tokens-pg
+    orgId: 1

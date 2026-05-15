@@ -56,7 +56,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM events_with_cost WHERE ts BETWEEN $__timeFrom() AND $__timeTo() AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM events_with_cost WHERE ts BETWEEN $__timeFrom() AND $__timeTo() AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ',')))"
       }]
     },
     {
@@ -122,7 +122,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT (COALESCE(SUM(cost_usd), 0) / 7.0 * 30.0) AS projected_monthly FROM events_with_cost WHERE ts > now() - INTERVAL '7 days' AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+        "rawSql": "SELECT (COALESCE(SUM(cost_usd), 0) / 7.0 * 30.0) AS projected_monthly FROM events_with_cost WHERE ts > now() - INTERVAL '7 days' AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ',')))"
       }]
     },
     {
@@ -141,7 +141,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) / NULLIF(${daily_budget}::float, 0) AS pct FROM events_with_cost WHERE ts >= date_trunc('day', now()) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) / NULLIF(${daily_budget}::float, 0) AS pct FROM events_with_cost WHERE ts >= date_trunc('day', now()) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ',')))"
       }]
     },
     {
@@ -160,7 +160,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) / 15.0 AS burn FROM events_with_cost WHERE ts > now() - INTERVAL '15 minutes' AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote})"
+        "rawSql": "SELECT COALESCE(SUM(cost_usd), 0) / 15.0 AS burn FROM events_with_cost WHERE ts > now() - INTERVAL '15 minutes' AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ',')))"
       }]
     },
     {
@@ -174,7 +174,7 @@
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), model AS metric, SUM(cost_usd) AS value FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1, 2 ORDER BY 1"
+        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), model AS metric, SUM(cost_usd) AS value FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1, 2 ORDER BY 1"
       }]
     },
     {
@@ -188,7 +188,7 @@
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), 'input' AS metric, SUM(input_tokens) AS value FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'output', SUM(output_tokens) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_read', SUM(cache_read) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_create_5m', SUM(cache_creation_5m) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_create_1h', SUM(cache_creation_1h) FROM events WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 1"
+        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), 'input' AS metric, SUM(input_tokens) AS value FROM events WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'output', SUM(output_tokens) FROM events WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_read', SUM(cache_read) FROM events WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_create_5m', SUM(cache_creation_5m) FROM events WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(ts, '$__interval'), 'cache_create_1h', SUM(cache_creation_1h) FROM events WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 ORDER BY 1"
       }]
     },
     {
@@ -203,7 +203,7 @@
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), COALESCE(model, '(none)') AS metric, COUNT(*) AS value FROM events WHERE $__timeFilter(ts) AND project_path IN (${project:singlequote}) GROUP BY 1, 2 ORDER BY 1"
+        "rawSql": "SELECT $__timeGroupAlias(ts, '$__interval'), COALESCE(model, '(none)') AS metric, COUNT(*) AS value FROM events WHERE $__timeFilter(ts) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1, 2 ORDER BY 1"
       }]
     },
     {
@@ -220,7 +220,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT model, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 3 DESC"
+        "rawSql": "SELECT model, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 ORDER BY 3 DESC"
       }]
     },
     {
@@ -237,7 +237,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT project_path AS project, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) GROUP BY 1 ORDER BY 3 DESC LIMIT 30"
+        "rawSql": "SELECT project_path AS project, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) GROUP BY 1 ORDER BY 3 DESC LIMIT 30"
       }]
     },
     {
@@ -254,7 +254,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT COALESCE(active_skill, '(none)') AS skill, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 3 DESC LIMIT 30"
+        "rawSql": "SELECT COALESCE(active_skill, '(none)') AS skill, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 ORDER BY 3 DESC LIMIT 30"
       }]
     },
     {
@@ -272,7 +272,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id) SELECT tc.tool_name, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd, ROUND(AVG(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 6) AS avg_cost_per_call FROM tool_calls tc JOIN events_with_cost ec ON tc.event_id = ec.id JOIN ev_tool_count etc ON tc.event_id = etc.event_id WHERE $__timeFilter(tc.ts) AND ec.model IN (${model:singlequote}) AND ec.project_path IN (${project:singlequote}) GROUP BY tc.tool_name ORDER BY cost_usd DESC NULLS LAST LIMIT 50"
+        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id) SELECT tc.tool_name, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd, ROUND(AVG(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 6) AS avg_cost_per_call FROM tool_calls tc JOIN events_with_cost ec ON tc.event_id = ec.id JOIN ev_tool_count etc ON tc.event_id = etc.event_id WHERE $__timeFilter(tc.ts) AND ('${model:csv}' = '' OR ec.model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR ec.project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY tc.tool_name ORDER BY cost_usd DESC NULLS LAST LIMIT 50"
       }]
     },
     {
@@ -290,7 +290,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT session_id, project_path, MIN(ts) AS started, MAX(ts) AS last_ts, COUNT(*) AS events, SUM(input_tokens) AS tokens_in, SUM(output_tokens) AS tokens_out, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1, 2 ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
+        "rawSql": "SELECT session_id, project_path, MIN(ts) AS started, MAX(ts) AS last_ts, COUNT(*) AS events, SUM(input_tokens) AS tokens_in, SUM(output_tokens) AS tokens_out, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1, 2 ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
       }]
     },
     {
@@ -335,7 +335,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id), mcp_server AS (SELECT tc.event_id, CASE WHEN tc.tool_name LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN split_part(substring(tc.tool_name FROM 6), '__', 1) ELSE '(non-mcp)' END AS mcp_server FROM tool_calls tc WHERE $__timeFilter(tc.ts)) SELECT ms.mcp_server, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd FROM mcp_server ms JOIN events_with_cost ec ON ms.event_id = ec.id JOIN ev_tool_count etc ON ms.event_id = etc.event_id WHERE ec.model IN (${model:singlequote}) AND ec.project_path IN (${project:singlequote}) GROUP BY ms.mcp_server ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
+        "rawSql": "WITH ev_tool_count AS (SELECT event_id, COUNT(*) AS n_tools FROM tool_calls WHERE $__timeFilter(ts) AND event_id IS NOT NULL GROUP BY event_id), mcp_server AS (SELECT tc.event_id, CASE WHEN tc.tool_name LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN split_part(substring(tc.tool_name FROM 6), '__', 1) ELSE '(non-mcp)' END AS mcp_server FROM tool_calls tc WHERE $__timeFilter(tc.ts)) SELECT ms.mcp_server, COUNT(*) AS calls, ROUND(SUM(ec.cost_usd / NULLIF(etc.n_tools, 0))::numeric, 4) AS cost_usd FROM mcp_server ms JOIN events_with_cost ec ON ms.event_id = ec.id JOIN ev_tool_count etc ON ms.event_id = etc.event_id WHERE ('${model:csv}' = '' OR ec.model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR ec.project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY ms.mcp_server ORDER BY cost_usd DESC NULLS LAST LIMIT 30"
       }]
     },
     {
@@ -354,7 +354,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p50, ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p95, ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p99, ROUND(MAX(cost_usd)::numeric, 4) AS max FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) AND cost_usd > 0"
+        "rawSql": "SELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p50, ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p95, ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY cost_usd)::numeric, 4) AS p99, ROUND(MAX(cost_usd)::numeric, 4) AS max FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) AND cost_usd > 0"
       }]
     },
     {
@@ -368,7 +368,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) AND cost_usd > 0 AND cost_usd < 1.0"
+        "rawSql": "SELECT cost_usd FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) AND cost_usd > 0 AND cost_usd < 1.0"
       }]
     },
     {
@@ -383,7 +383,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT LPAD(EXTRACT(hour FROM ts AT TIME ZONE 'UTC')::int::text, 2, '0') AS hour_utc, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd, ROUND(AVG(cost_usd)::numeric, 6) AS avg_cost_per_msg FROM events_with_cost WHERE $__timeFilter(ts) AND model IN (${model:singlequote}) AND project_path IN (${project:singlequote}) GROUP BY 1 ORDER BY 1"
+        "rawSql": "SELECT LPAD(EXTRACT(hour FROM ts AT TIME ZONE 'UTC')::int::text, 2, '0') AS hour_utc, COUNT(*) AS msgs, ROUND(SUM(cost_usd)::numeric, 4) AS cost_usd, ROUND(AVG(cost_usd)::numeric, 6) AS avg_cost_per_msg FROM events_with_cost WHERE $__timeFilter(ts) AND ('${model:csv}' = '' OR model = ANY(string_to_array('${model:csv}', ','))) AND ('${project:csv}' = '' OR project_path = ANY(string_to_array('${project:csv}', ','))) GROUP BY 1 ORDER BY 1"
       }]
     },
     {
