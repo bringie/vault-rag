@@ -8,7 +8,9 @@
     hosts: [],
     sessions: [],
     cost: null,           // { days, hosts: [{host_id, host, usd, msgs}] }
-    selected: null,
+    selected: null,       // session_id (when viewMode='session')
+    selectedHost: null,   // host_id (when viewMode='host')
+    viewMode: 'session',  // 'session' | 'host'
     ws: null,
     term: null,
     fit: null,
@@ -106,21 +108,18 @@
           const n = state.sessions.filter(s => s.host_id === h.id && s.status === 'running').length;
           const cost = costByHost[h.id];
           const costStr = (cost != null) ? `$${cost.toFixed(2)}` : '—';
-          return `<li data-host="${h.id}">
+          const label = h.display_name || h.name;
+          const active = (state.viewMode === 'host' && h.id === state.selectedHost) ? ' class="active"' : '';
+          return `<li data-host="${h.id}"${active}>
             <span class="dot ${dotClass(h.status, 'host')}"></span>
-            <span class="host-name">${esc(h.name)} <span class="host-count">· ${costStr}/7d</span></span>
+            <span class="host-name">${esc(label)} <span class="host-count">· ${costStr}/7d</span></span>
             <span class="host-actions">
-              <button data-edit-host="${h.id}" data-edit-path="CLAUDE.md" title="edit ~/.claude/CLAUDE.md">md</button>
-              <button data-edit-host="${h.id}" data-edit-path="settings.json" title="edit ~/.claude/settings.json">json</button>
               <span class="host-count">${n} sess</span>
             </span>
           </li>`;
         }).join('');
-    hostsUl.querySelectorAll('button[data-edit-host]').forEach(btn => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        openEditor(btn.dataset.editHost, btn.dataset.editPath);
-      };
+    hostsUl.querySelectorAll('li[data-host]').forEach(li => {
+      li.onclick = () => openHostDetail(li.dataset.host);
     });
 
     const sessUl = $('sessions');
@@ -130,11 +129,11 @@
       ? `<li class="empty"><span class="dot off"></span><span class="sess-id" style="color:var(--text-faint)">no ${showClosed?'':'active '}sessions</span><span></span><span></span></li>`
       : sessVisible.slice(0, 40).map(s => {
           const host = state.hosts.find(h => h.id === s.host_id);
-          const active = s.id === state.selected ? ' class="active"' : '';
+          const active = (state.viewMode === 'session' && s.id === state.selected) ? ' class="active"' : '';
           return `<li data-session="${s.id}"${active}>
             <span class="dot ${dotClass(s.status, 'session')}"></span>
             <span class="sess-id">${short(s.id)}</span>
-            <span class="sess-host">${esc(host?.name || '?')}</span>
+            <span class="sess-host">${esc(host?.display_name || host?.name || '?')}</span>
             <span class="sess-age">${ageStr(s.started_at)}</span>
           </li>`;
         }).join('');
@@ -149,7 +148,7 @@
     const cur = hostSel.value;
     hostSel.innerHTML = state.hosts
       .filter(h => h.status === 'online')
-      .map(h => `<option value="${h.id}">${esc(h.name)}</option>`).join('')
+      .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('')
       || `<option value="">no online hosts</option>`;
     if (cur && [...hostSel.options].some(o => o.value === cur)) hostSel.value = cur;
 
@@ -201,11 +200,19 @@
     }
   }
 
+  function setViewMode(mode) {
+    state.viewMode = mode;
+    document.querySelector('.viewer').hidden = (mode !== 'session');
+    document.querySelector('.host-detail').hidden = (mode !== 'host');
+  }
+
   function attachSession(id) {
     if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
     if (state.term) { try { state.term.dispose(); } catch {} state.term = null; }
     if (state.sessionCostTimer) { clearInterval(state.sessionCostTimer); state.sessionCostTimer = null; }
     state.selected = id;
+    state.selectedHost = null;
+    setViewMode('session');
     document.querySelector('.viewer').classList.remove('exited');
     render();
 
@@ -411,6 +418,106 @@
         alert(`deleted ${r.deleted} session(s)`);
       } catch (e) { alert('cleanup failed: ' + e.message); }
     };
+  }
+
+  // ============ Host detail ============
+  function openHostDetail(hostId) {
+    const h = state.hosts.find(x => x.id === hostId);
+    if (!h) return;
+    state.selectedHost = hostId;
+    state.selected = null;
+    setViewMode('host');
+    render();
+    renderHostDetail(h);
+  }
+
+  function renderHostDetail(h) {
+    $('hd-display').textContent = h.display_name || h.name;
+    $('hd-name').textContent = h.name;
+    $('hd-os').textContent = h.os || '—';
+    $('hd-arch').textContent = h.arch || '—';
+    $('hd-status').textContent = h.status;
+    $('hd-status').className = 'val ' + (h.status === 'online' ? 'val-ok' : 'val-danger');
+    $('hd-dver').textContent = h.daemon_version || '—';
+    $('hd-cver').textContent = h.claude_version || '—';
+    $('hd-seen').textContent = h.last_seen ? ageStr(h.last_seen) + ' ago' : '—';
+
+    // tags
+    const tagsEl = $('hd-tags');
+    const caps = h.capabilities || [];
+    tagsEl.innerHTML = caps.length === 0
+      ? `<span class="lbl" style="color:var(--text-faint)">no tags</span>`
+      : caps.map((c, i) => `<span class="chip">${esc(c)}<button data-rm-tag="${i}">×</button></span>`).join('');
+    tagsEl.querySelectorAll('button[data-rm-tag]').forEach(btn => {
+      btn.onclick = async () => {
+        const newCaps = caps.filter((_, i) => i !== Number(btn.dataset.rmTag));
+        await patchHost(h.id, { capabilities: newCaps });
+      };
+    });
+
+    // sessions for this host
+    const ul = $('hd-sessions');
+    const list = state.sessions.filter(s => s.host_id === h.id).slice(0, 20);
+    ul.innerHTML = list.length === 0
+      ? `<li class="empty"><span class="dot off"></span><span class="sess-id" style="color:var(--text-faint)">no sessions</span><span></span><span></span></li>`
+      : list.map(s => {
+          const icon = { running:'▶', exited:'◇', killed:'✕', orphaned:'?', pending:'·' }[s.status] || '·';
+          return `<li data-session="${s.id}">
+            <span class="dot ${dotClass(s.status, 'session')}"></span>
+            <span class="sess-id">${icon} ${short(s.id)}</span>
+            <span class="sess-host">${s.status}</span>
+            <span class="sess-age">${ageStr(s.started_at)}</span>
+          </li>`;
+        }).join('');
+    ul.querySelectorAll('li[data-session]').forEach(li => {
+      li.onclick = () => attachSession(li.dataset.session);
+    });
+
+    // wire actions
+    $('hd-md').onclick   = () => openEditor(h.id, 'CLAUDE.md');
+    $('hd-json').onclick = () => openEditor(h.id, 'settings.json');
+    $('hd-close-detail').onclick = () => {
+      state.selectedHost = null;
+      setViewMode('session');
+      render();
+    };
+    // editable display_name
+    $('hd-display').onblur = async () => {
+      const v = $('hd-display').textContent.trim();
+      if (v === (h.display_name || h.name)) return;
+      await patchHost(h.id, { display_name: v || null });
+    };
+    $('hd-display').onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); $('hd-display').blur(); }
+    };
+    // tag input
+    const inp = $('hd-tag-input');
+    inp.value = '';
+    inp.onkeydown = async (e) => {
+      if (e.key !== 'Enter') return;
+      const v = inp.value.trim();
+      if (!v) return;
+      const updated = Array.from(new Set([...(h.capabilities || []), v]));
+      await patchHost(h.id, { capabilities: updated });
+      inp.value = '';
+    };
+  }
+
+  async function patchHost(hostId, patch) {
+    try {
+      const r = await fetch('/api/fleet/hosts/' + hostId, {
+        method: 'PATCH',
+        headers: { 'authorization': 'Bearer ' + state.token, 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const updated = await r.json();
+      // replace in state
+      const idx = state.hosts.findIndex(x => x.id === hostId);
+      if (idx >= 0) state.hosts[idx] = updated;
+      render();
+      if (state.viewMode === 'host' && state.selectedHost === hostId) renderHostDetail(updated);
+    } catch (e) { alert('patch failed: ' + e.message); }
   }
 
   // ============ File editor ============

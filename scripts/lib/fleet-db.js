@@ -3,13 +3,20 @@
 // Callers pass an active pg.Client/pg.Pool — no connection management here.
 
 async function upsertHost(c, h) {
+  // capabilities: only overwrite if explicitly provided AND non-empty
+  // (daemon hello has empty array by default; we don't want it to clobber
+  // user-set tags via PATCH).
   const sql = `
     INSERT INTO fleet_hosts (name, os, arch, capabilities, daemon_version, claude_version, status, last_seen)
     VALUES ($1, $2, $3, $4, $5, $6, 'online', now())
     ON CONFLICT (name) DO UPDATE SET
       os = COALESCE(EXCLUDED.os, fleet_hosts.os),
       arch = COALESCE(EXCLUDED.arch, fleet_hosts.arch),
-      capabilities = COALESCE(EXCLUDED.capabilities, fleet_hosts.capabilities),
+      capabilities = CASE
+        WHEN EXCLUDED.capabilities IS NOT NULL AND array_length(EXCLUDED.capabilities, 1) > 0
+        THEN EXCLUDED.capabilities
+        ELSE fleet_hosts.capabilities
+      END,
       daemon_version = COALESCE(EXCLUDED.daemon_version, fleet_hosts.daemon_version),
       claude_version = COALESCE(EXCLUDED.claude_version, fleet_hosts.claude_version),
       status = 'online',
@@ -20,6 +27,26 @@ async function upsertHost(c, h) {
     h.daemonVersion || null, h.claudeVersion || null,
   ]);
   return rows[0];
+}
+
+async function updateHost(c, id, patch) {
+  // Patchable: display_name (string|null), capabilities (string[])
+  const updates = [];
+  const args = [];
+  if (Object.prototype.hasOwnProperty.call(patch, 'display_name')) {
+    args.push(patch.display_name);
+    updates.push(`display_name = $${args.length}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'capabilities')) {
+    args.push(patch.capabilities || []);
+    updates.push(`capabilities = $${args.length}`);
+  }
+  if (!updates.length) return await getHost(c, id);
+  args.push(id);
+  const { rows } = await c.query(
+    `UPDATE fleet_hosts SET ${updates.join(', ')} WHERE id = $${args.length} RETURNING *`,
+    args);
+  return rows[0] || null;
 }
 
 async function listHosts(c) {
@@ -143,7 +170,7 @@ async function purgeOldEvents(c, intervalStr) {
 }
 
 module.exports = {
-  upsertHost, listHosts, getHost, setHostOffline, deleteHost,
+  upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost,
   createSession, getSession, listSessions,
   markSessionRunning, markSessionExited, orphanRunningSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,

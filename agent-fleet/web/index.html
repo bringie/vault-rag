@@ -83,6 +83,47 @@
         </section>
       </aside>
 
+      <section class="host-detail" hidden>
+        <div class="host-detail-head">
+          <div>
+            <span class="lbl">HOST //</span>
+            <span id="hd-display" class="callsign" contenteditable="true" spellcheck="false">—</span>
+            <span class="lbl">·</span>
+            <span class="lbl">id</span>
+            <span id="hd-name" class="val">—</span>
+          </div>
+          <div>
+            <button id="hd-md"   class="btn-ghost">edit CLAUDE.md</button>
+            <button id="hd-json" class="btn-ghost">edit settings.json</button>
+            <button id="hd-close-detail" class="btn-ghost">× close</button>
+          </div>
+        </div>
+        <div class="host-detail-body">
+          <section class="hd-section">
+            <h4>META</h4>
+            <div class="hd-grid">
+              <div><span class="lbl">os</span><span id="hd-os" class="val">—</span></div>
+              <div><span class="lbl">arch</span><span id="hd-arch" class="val">—</span></div>
+              <div><span class="lbl">status</span><span id="hd-status" class="val">—</span></div>
+              <div><span class="lbl">daemon</span><span id="hd-dver" class="val">—</span></div>
+              <div><span class="lbl">claude</span><span id="hd-cver" class="val">—</span></div>
+              <div><span class="lbl">last_seen</span><span id="hd-seen" class="val">—</span></div>
+            </div>
+          </section>
+          <section class="hd-section">
+            <h4>TAGS / GROUPS</h4>
+            <div id="hd-tags" class="chip-row"></div>
+            <div class="chip-input">
+              <input id="hd-tag-input" placeholder="add tag (press enter)" spellcheck="false">
+            </div>
+          </section>
+          <section class="hd-section">
+            <h4>RECENT SESSIONS</h4>
+            <ul id="hd-sessions" class="list list-sessions"></ul>
+          </section>
+        </div>
+      </section>
+
       <section class="viewer">
         <div class="viewer-head">
           <div class="viewer-id">

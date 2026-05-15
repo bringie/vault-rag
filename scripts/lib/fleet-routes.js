@@ -130,6 +130,51 @@ async function handleDeleteHost({ req, res, ctx }) {
   res.writeHead(204); res.end();
 }
 
+async function handlePatchHost({ req, res, body, ctx }) {
+  const id = pathMatch(req.url, '/fleet/hosts');
+  if (!body) return send(res, 422, { error: 'body required' });
+  const patch = {};
+  if ('display_name' in body) patch.display_name = body.display_name;
+  if ('capabilities' in body) {
+    if (!Array.isArray(body.capabilities)) return send(res, 422, { error: 'capabilities must be array of strings' });
+    patch.capabilities = body.capabilities.map(String).filter(Boolean);
+  }
+  const updated = await fleetDb.updateHost(ctx.db, id, patch);
+  if (!updated) return send(res, 404, { error: 'host not found' });
+  send(res, 200, updated);
+}
+
+async function handleDispatch({ req, res, body, ctx }) {
+  if (!body) return send(res, 422, { error: 'body required' });
+  const { tag, host_name, host_id, cwd, args, env, label, metadata } = body;
+  if (!tag && !host_name && !host_id) {
+    return send(res, 422, { error: 'one of tag|host_name|host_id required' });
+  }
+  // Resolve candidate hosts
+  const all = await fleetDb.listHosts(ctx.db);
+  let candidates = all.filter(h => h.status === 'online');
+  if (host_id)   candidates = candidates.filter(h => h.id === host_id);
+  if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
+  if (tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (!candidates.length) return send(res, 404, { error: 'no online host matches the criteria' });
+  // Pick least-busy (running sessions ascending) as a small UX win.
+  const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
+  const busyByHost = {};
+  for (const s of sessions) busyByHost[s.host_id] = (busyByHost[s.host_id] || 0) + 1;
+  candidates.sort((a, b) => (busyByHost[a.id] || 0) - (busyByHost[b.id] || 0));
+  const host = candidates[0];
+  const s = await fleetDb.createSession(ctx.db, {
+    hostId: host.id, cwd: cwd || '~',
+    args: args || [], env: env || {},
+    createdBy: 'dispatch',
+    label: label || null, metadata: metadata || {},
+  });
+  if (ctx.bus) {
+    ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env });
+  }
+  send(res, 201, { session_id: s.id, host_id: host.id, host_name: host.name, display_name: host.display_name });
+}
+
 async function handleListSessions({ req, res, ctx }) {
   const url = new URL(req.url, 'http://x');
   const filter = {
@@ -301,6 +346,12 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET'    && path === '/fleet/hosts')   return handleGetHosts({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleGetHost({ req, res, ctx });
   if (method === 'DELETE' && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleDeleteHost({ req, res, ctx });
+  if (method === 'PATCH'  && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) {
+    return readBody(req).then(b => handlePatchHost({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'POST'   && path === '/fleet/dispatch') {
+    return readBody(req).then(b => handleDispatch({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) return handleHostFileGet({ req, res, ctx });
   if (method === 'PUT'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) {
     return readBody(req).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
