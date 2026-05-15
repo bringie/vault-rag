@@ -130,6 +130,62 @@ async function main() {
   assert.strictEqual(v.ok, true);
   assert.strictEqual(v.count, 2);
   console.log('delete/rotate/verify OK');
+
+  // Test 5: git ops + CAS retry
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sh-git-'));
+  const bare = `${root}/origin.git`;
+  execSync(`git init --bare -b master ${bare} -q`);
+  execSync(`age-keygen -o ${root}/age.key 2>/dev/null`);
+  const gitPub = execSync(
+    `grep '^# public key:' ${root}/age.key | cut -d: -f2 | tr -d ' '`,
+  )
+    .toString()
+    .trim();
+  fs.writeFileSync(`${root}/recipients`, `${gitPub}\n`);
+
+  function clone(name) {
+    const c = `${root}/${name}`;
+    execSync(`git clone ${bare} ${c} -q 2>/dev/null`);
+    execSync(
+      `cd ${c} && git config user.email t@t && git config user.name t`,
+    );
+    fs.mkdirSync(`${c}/obsidian-vault/secrets`, { recursive: true });
+    fs.copyFileSync(`${root}/recipients`, `${c}/obsidian-vault/secrets/recipients`);
+    return c;
+  }
+
+  const A = clone('a');
+  execSync(
+    `echo '{"_meta":{"schema":1,"version":1,"rotated_at":{}}}' | age -R ${A}/obsidian-vault/secrets/recipients -o ${A}/obsidian-vault/secrets/vault.age`,
+  );
+  execSync(
+    `cd ${A} && git add . && git commit -q -m init && git push -q origin HEAD:master`,
+  );
+
+  const B = clone('b');
+  execSync(`cd ${B} && git pull -q origin master`);
+
+  const ha = new SecretsHandler({
+    ageKeyPath: `${root}/age.key`,
+    recipientsPath: `${A}/obsidian-vault/secrets/recipients`,
+    vaultAgePath: `${A}/obsidian-vault/secrets/vault.age`,
+    repoPath: A,
+  });
+  const hb = new SecretsHandler({
+    ageKeyPath: `${root}/age.key`,
+    recipientsPath: `${B}/obsidian-vault/secrets/recipients`,
+    vaultAgePath: `${B}/obsidian-vault/secrets/vault.age`,
+    repoPath: B,
+  });
+
+  await ha.set('K_A', 'va');
+  await hb.set('K_B', 'vb');
+
+  execSync(`cd ${B} && git pull -q origin master`);
+  const finalBlob = await hb._decryptVaultAge();
+  assert.strictEqual(finalBlob.K_A, 'va', 'K_A missing');
+  assert.strictEqual(finalBlob.K_B, 'vb', 'K_B missing');
+  console.log('git CAS retry OK');
 }
 
 main().catch((e) => {

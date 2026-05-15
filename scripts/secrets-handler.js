@@ -199,6 +199,49 @@ class SecretsHandler {
     this._writeMutex = next;
     return prev.then(() => release);
   }
+
+  async _gitFetch() {
+    await execCmd('git', ['fetch', '--quiet', 'origin'], { cwd: this.repoPath });
+  }
+
+  async _gitPull() {
+    await execCmd('git', ['pull', '--rebase', '--quiet', 'origin', 'HEAD'], {
+      cwd: this.repoPath,
+    });
+  }
+
+  async _gitResetHard() {
+    await execCmd('git', ['fetch', '--quiet', 'origin'], { cwd: this.repoPath });
+    // Resolve the current branch and reset to origin/<branch>
+    const branch = (
+      await execCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: this.repoPath,
+      })
+    )
+      .toString()
+      .trim();
+    await execCmd('git', ['reset', '--hard', `origin/${branch}`], {
+      cwd: this.repoPath,
+    });
+  }
+
+  async _gitCommit(msg) {
+    await execCmd('git', ['add', this.vaultAgePath], { cwd: this.repoPath });
+    await execCmd('git', ['commit', '-m', msg, '--quiet'], { cwd: this.repoPath });
+  }
+
+  async _gitPush() {
+    await execCmd('git', ['push', '--quiet', 'origin', 'HEAD'], {
+      cwd: this.repoPath,
+    });
+  }
+
+  async _headShaForFile(relPath) {
+    const out = await execCmd('git', ['log', '-1', '--pretty=%H', '--', relPath], {
+      cwd: this.repoPath,
+    });
+    return out.toString().trim();
+  }
 }
 
 module.exports = { SecretsHandler, NotFound, ConflictRetriesExhausted };
