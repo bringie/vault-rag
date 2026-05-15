@@ -78,17 +78,25 @@ CREATE INDEX IF NOT EXISTS idx_fleet_model_prices_priority
   ON fleet_model_prices (priority DESC, valid_from DESC)
   WHERE deleted_at IS NULL;
 
+-- Idempotent seed: skip if any seed row already exists (re-runs are safe).
 INSERT INTO fleet_model_prices
   (match_pattern, priority, valid_from, input_per_mtok, output_per_mtok, cache_create_per_mtok, cache_read_per_mtok, note)
-VALUES
-  ('claude-opus-%',   200, '1970-01-01', 15.0000, 75.0000, 18.7500, 1.5000, 'seed: opus family'),
-  ('claude-sonnet-%', 200, '1970-01-01',  3.0000, 15.0000,  3.7500, 0.3000, 'seed: sonnet family'),
-  ('claude-haiku-%',  200, '1970-01-01',  1.0000,  5.0000,  1.2500, 0.1000, 'seed: haiku family'),
-  ('%',                 0, '1970-01-01',  0.0000,  0.0000,  0.0000, 0.0000, 'fallback (unpriced)')
-ON CONFLICT DO NOTHING;
+SELECT * FROM (VALUES
+  ('claude-opus-%',   200, '1970-01-01'::timestamptz, 15.0000, 75.0000, 18.7500, 1.5000, 'seed: opus family'),
+  ('claude-sonnet-%', 200, '1970-01-01'::timestamptz,  3.0000, 15.0000,  3.7500, 0.3000, 'seed: sonnet family'),
+  ('claude-haiku-%',  200, '1970-01-01'::timestamptz,  1.0000,  5.0000,  1.2500, 0.1000, 'seed: haiku family'),
+  ('%',                 0, '1970-01-01'::timestamptz,  0.0000,  0.0000,  0.0000, 0.0000, 'fallback (unpriced)')
+) AS v(match_pattern, priority, valid_from, input_per_mtok, output_per_mtok, cache_create_per_mtok, cache_read_per_mtok, note)
+WHERE NOT EXISTS (
+  SELECT 1 FROM fleet_model_prices
+  WHERE match_pattern = v.match_pattern
+    AND priority = v.priority
+    AND valid_from = v.valid_from
+    AND deleted_at IS NULL
+);
 
 -- Mark the fallback row as flagged so UI can highlight unpriced events.
-UPDATE fleet_model_prices SET flagged = true WHERE match_pattern = '%' AND priority = 0;
+UPDATE fleet_model_prices SET flagged = true WHERE match_pattern = '%' AND priority = 0 AND flagged = false;
 ```
 
 - [ ] **Step 2: Apply to dev postgres**
@@ -275,6 +283,7 @@ const ZERO_PRICE = Object.freeze({
 });
 
 let cache = { rows: [], loadedAt: 0 };
+let inFlightLoad = null;  // concurrency guard: dedupe parallel cold-cache loads
 
 function likeMatch(pattern, s) {
   // Postgres LIKE: % = any chars, _ = single char. Case-insensitive here.
@@ -290,23 +299,32 @@ function likeMatch(pattern, s) {
 }
 
 async function load(db) {
-  const { rows } = await db.query(`
-    SELECT id, match_pattern, priority, valid_from,
-           input_per_mtok, output_per_mtok,
-           cache_create_per_mtok, cache_read_per_mtok, flagged
-    FROM fleet_model_prices
-    WHERE deleted_at IS NULL
-    ORDER BY priority DESC, valid_from DESC`);
-  cache = { rows, loadedAt: Date.now() };
+  // Dedupe concurrent cold-cache loads — first call queries, others await same promise.
+  if (inFlightLoad) return inFlightLoad;
+  inFlightLoad = (async () => {
+    try {
+      const { rows } = await db.query(`
+        SELECT id, match_pattern, priority, valid_from,
+               input_per_mtok, output_per_mtok,
+               cache_create_per_mtok, cache_read_per_mtok, flagged
+        FROM fleet_model_prices
+        WHERE deleted_at IS NULL
+        ORDER BY priority DESC, valid_from DESC`);
+      cache = { rows, loadedAt: Date.now() };
+    } finally {
+      inFlightLoad = null;
+    }
+  })();
+  return inFlightLoad;
 }
 
 async function ensure(db) {
-  if (Date.now() - cache.loadedAt >= TTL_MS || !cache.rows.length) {
+  if (Date.now() - cache.loadedAt >= TTL_MS) {
     await load(db);
   }
 }
 
-function invalidate() { cache = { rows: [], loadedAt: 0 }; }
+function invalidate() { cache = { rows: [], loadedAt: 0 }; inFlightLoad = null; }
 
 async function priceFor(db, model, ts) {
   await ensure(db);
@@ -519,6 +537,8 @@ Notes:
 - All cost-summing functions now take `vaultPg` as second arg.
 - `aggregateRows` selects `MAX(ts) AS last_ts` and passes it to rowCost for temporal pricing.
 - `timeline` uses the bucketed `day` as the ts for pricing — daily granularity is fine for retroactive snapshots.
+
+**Temporal accuracy caveat (MVP limitation):** Because cost aggregation groups by (model[, host, day]) BEFORE pricing, the price applied per group is the price at `MAX(ts)` (or `day` for timeline). A session straddling a price-change boundary gets the post-change price for ALL its events of that model. v2 fix would be GROUP BY (model, resolved_price_id) via per-event price resolution. Affects only the day of a price change — acceptable for MVP. Spec §13.6 should read "approximate at bucket-MAX-ts granularity".
 
 - [ ] **Step 2: Update fleet-cost.test.js**
 
@@ -848,13 +868,54 @@ test('POST /fleet/prices/resolve returns matched row + ZERO_PRICE for unknown', 
   assert.equal(unknown.body.matched.flagged, true);
   await close();
 });
+
+test('POST /fleet/prices invalidates cache: subsequent resolve sees new price', async () => {
+  const { server, close } = await startWithPrices();
+  // Warm cache via resolve
+  const r1 = await reqJson(server, 'POST', '/fleet/prices/resolve', {
+    token: 'T', body: { model: 'claude-opus-4-7' },
+  });
+  assert.equal(r1.body.matched.input, 15);
+  // POST a higher-priority override
+  await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'claude-opus-4-7', priority: 500, input_per_mtok: 99, output_per_mtok: 99 },
+  });
+  // Resolve should see new price (cache invalidated by POST handler)
+  const r2 = await reqJson(server, 'POST', '/fleet/prices/resolve', {
+    token: 'T', body: { model: 'claude-opus-4-7' },
+  });
+  assert.equal(r2.body.matched.input, 99);
+  await close();
+});
+
+test('GET /fleet/prices?history=1 includes soft-deleted rows', async () => {
+  const { server, close } = await startWithPrices();
+  const created = await reqJson(server, 'POST', '/fleet/prices', {
+    token: 'T', body: { match_pattern: 'tmp-%', input_per_mtok: 5, output_per_mtok: 5 },
+  });
+  await reqJson(server, 'DELETE', `/fleet/prices/${created.body.id}`, { token: 'T' });
+
+  const active = await reqJson(server, 'GET', '/fleet/prices', { token: 'T' });
+  assert.ok(!active.body.find(p => p.id === created.body.id), 'soft-deleted hidden by default');
+
+  const all = await reqJson(server, 'GET', '/fleet/prices?history=1', { token: 'T' });
+  assert.ok(all.body.find(p => p.id === created.body.id), 'soft-deleted visible with history=1');
+  await close();
+});
+
+test('GET /fleet/prices rejects missing auth', async () => {
+  const { server, close } = await startWithPrices();
+  const r = await reqJson(server, 'GET', '/fleet/prices');  // no token
+  assert.equal(r.status, 401);
+  await close();
+});
 ```
 
 - [ ] **Step 4: Run routes tests**
 
 Run: `VAULT_RAG_PG_PASS=testpass node --test --test-name-pattern='prices|/fleet/prices' scripts/lib/fleet-routes.test.js`
 
-Expected: 5 new tests pass.
+Expected: 8 new tests pass.
 
 - [ ] **Step 5: Full regression**
 
@@ -1178,14 +1239,30 @@ ssh -p 977 root@brain.itiswednesdaymydud.es 'cd /opt/vault-rag && git pull --ff-
 
 Expected output: `CREATE TABLE`, `CREATE INDEX`, `INSERT 0 4`, `UPDATE 1`, `vault-rag-api` (restart).
 
-- [ ] **Step 3: Verify cost endpoints return identical pre/post numbers**
+- [ ] **Step 3: Verify cost endpoints return expected numbers**
 
 ```bash
 TOKEN=$(grep VAULT_RAG_API_TOKEN .env | cut -d= -f2)
 curl -s "https://brain.itiswednesdaymydud.es/fleet/cost/summary?days=7" -H "Authorization: Bearer $TOKEN" | jq '.usd, .msgs'
 ```
 
-Numbers should match what they were before deploy (sanity check). If significantly different — pricing rows seeded with wrong values; investigate.
+**Expected**: numbers IDENTICAL for events whose model matches `claude-opus-*`, `claude-sonnet-*`, or `claude-haiku-*` (today: all production events fall into these). If your tokmon has events with non-Claude models (gpt, gemini, local), those events now show $0 (matched by `%` fallback row, flagged) — this is intentional per spec §13.4. The old code mapped any unknown model to sonnet defaults — that bug is being fixed. Verify by:
+
+```bash
+# Count events grouped by whether their model matched a Claude family:
+docker exec vault-rag-postgres psql -U postgres -d tokmon -c "
+  SELECT
+    CASE
+      WHEN model LIKE 'claude-opus-%'   THEN 'opus'
+      WHEN model LIKE 'claude-sonnet-%' THEN 'sonnet'
+      WHEN model LIKE 'claude-haiku-%'  THEN 'haiku'
+      ELSE 'other (now \$0 flagged)' END AS class,
+    COUNT(*) AS msgs
+  FROM events WHERE ts > now() - interval '7 days'
+  GROUP BY class"
+```
+
+If "other" count is 0 — pre/post numbers identical. If > 0 — explain to operator that those rows are now $0 + flagged; if they want them priced like sonnet (legacy behavior), add a `claude-%` priority-50 row matching sonnet rates as a manual step.
 
 - [ ] **Step 4: Verify /fleet/prices endpoint works**
 
