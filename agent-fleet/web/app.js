@@ -73,6 +73,18 @@
     if (d < 86400) return `${Math.floor(d/3600)}h${Math.floor((d%3600)/60).toString().padStart(2,'0')}`;
     return `${Math.floor(d/86400)}d`;
   }
+  function humanSeconds(s) {
+    s = Math.max(0, Math.floor(Number(s) || 0));
+    const d = Math.floor(s / 86400); s %= 86400;
+    const h = Math.floor(s / 3600);  s %= 3600;
+    const m = Math.floor(s / 60);
+    const parts = [];
+    if (d) parts.push(d + 'd');
+    if (h) parts.push(h + 'h');
+    if (m && !d) parts.push(m + 'm');
+    if (!parts.length) parts.push((s % 60) + 's');
+    return parts.join(' ');
+  }
   function tFromBoot() {
     const d = Math.floor((Date.now() - state.bootedAt) / 1000);
     const h = Math.floor(d / 3600).toString().padStart(2, '0');
@@ -189,6 +201,7 @@
     const el = $('v-status');
     el.textContent = s || 'idle';
     el.className = 'val ' + (map[s] || '');
+    state.viewerStatusValue = s;
   }
   function setOverlay(visible, msg, sub) {
     const o = $('term-overlay');
@@ -348,7 +361,18 @@
         $('v-cwd').textContent = f.cwd || '—';
         setViewerStatus(f.status);
       } else if (f.type === 'backfill') {
+        // Reset xterm to clean state before replaying historical escape sequences.
+        // Without this, cursor positions accumulated over a long TUI session drift
+        // when the terminal is re-attached.
+        try { state.term.write('\x1bc'); state.term.reset?.(); } catch {}
         writeChunk(b64ToBytes(f.data));
+        // After replay, ask the live process for a fresh redraw (Ctrl+L).
+        // Most TUIs (including claude/Ink) handle it as repaint.
+        if (state.viewerStatusValue === 'running' && state.ws && state.ws.readyState === 1) {
+          setTimeout(() => {
+            try { state.ws.send(JSON.stringify({ type: 'input', data: '\x0c' })); } catch {}
+          }, 80);
+        }
       } else if (f.type === 'pty_data') {
         writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'session_exit') {
@@ -441,6 +465,16 @@
     $('hd-dver').textContent = h.daemon_version || '—';
     $('hd-cver').textContent = h.claude_version || '—';
     $('hd-seen').textContent = h.last_seen ? ageStr(h.last_seen) + ' ago' : '—';
+    const meta = h.metadata || {};
+    $('hd-node').textContent = meta.node_version || '—';
+    $('hd-cpu').textContent = meta.cpu_model || '—';
+    $('hd-cores').textContent = meta.cpu_cores || '—';
+    $('hd-ram').textContent = meta.ram_total_bytes
+      ? `${(meta.ram_total_bytes / 1024 ** 3).toFixed(1)} GiB` + (meta.ram_free_bytes ? ` (${(meta.ram_free_bytes / 1024 ** 3).toFixed(1)} free)` : '')
+      : '—';
+    $('hd-uptime').textContent = meta.uptime_seconds
+      ? humanSeconds(meta.uptime_seconds) : '—';
+    $('hd-hostname').textContent = meta.hostname || '—';
 
     // tags
     const tagsEl = $('hd-tags');

@@ -41,6 +41,7 @@ const SID_RE = '[0-9a-f-]{36}';
 function makeBus() {
   const daemonsByHost = new Map();          // host_id -> ws
   const viewersBySession = new Map();       // session_id -> Set<ws>
+  const hooksBySession = new Map();         // session_id -> Set<fn(frame)>
   const pendingFileReqs = new Map();        // req_id -> {resolve, reject, timer}
   return {
     registerDaemon(hostId, ws) {
@@ -58,11 +59,29 @@ function makeBus() {
     },
     broadcastViewers(sessionId, frame) {
       const set = viewersBySession.get(sessionId);
-      if (!set) return;
-      const payload = JSON.stringify(frame);
-      for (const v of set) {
-        try { v.send(payload); } catch {}
+      if (set) {
+        const payload = JSON.stringify(frame);
+        for (const v of set) {
+          try { v.send(payload); } catch {}
+        }
       }
+      const hooks = hooksBySession.get(sessionId);
+      if (hooks) {
+        for (const fn of hooks) {
+          try { fn(frame); } catch {}
+        }
+      }
+    },
+    subscribeViewerHook(sessionId, fn) {
+      let set = hooksBySession.get(sessionId);
+      if (!set) { set = new Set(); hooksBySession.set(sessionId, set); }
+      set.add(fn);
+    },
+    unsubscribeViewerHook(sessionId, fn) {
+      const set = hooksBySession.get(sessionId);
+      if (!set) return;
+      set.delete(fn);
+      if (!set.size) hooksBySession.delete(sessionId);
     },
     requestSpawn(hostId, payload) {
       const d = daemonsByHost.get(hostId);
@@ -142,6 +161,77 @@ async function handlePatchHost({ req, res, body, ctx }) {
   const updated = await fleetDb.updateHost(ctx.db, id, patch);
   if (!updated) return send(res, 404, { error: 'host not found' });
   send(res, 200, updated);
+}
+
+// Synchronous "ask claude on host X" — spawns claude --print, waits for exit,
+// returns transcript text + cost. Convenient for API consumers that just want
+// a prompt → answer roundtrip without managing websockets.
+async function handleExec({ req, res, body, ctx }) {
+  if (!body) return send(res, 422, { error: 'body required' });
+  const { tag, host_name, host_id, prompt, model, timeout_ms, cwd } = body;
+  if (!prompt || typeof prompt !== 'string') return send(res, 422, { error: 'prompt (string) required' });
+  if (!tag && !host_name && !host_id) {
+    return send(res, 422, { error: 'one of tag|host_name|host_id required' });
+  }
+  // Reuse dispatch routing logic
+  const all = await fleetDb.listHosts(ctx.db);
+  let candidates = all.filter(h => h.status === 'online');
+  if (host_id)   candidates = candidates.filter(h => h.id === host_id);
+  if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
+  if (tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (!candidates.length) return send(res, 404, { error: 'no online host matches' });
+  const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
+  const busyByHost = {};
+  for (const s of sessions) busyByHost[s.host_id] = (busyByHost[s.host_id] || 0) + 1;
+  candidates.sort((a, b) => (busyByHost[a.id] || 0) - (busyByHost[b.id] || 0));
+  const host = candidates[0];
+
+  const args = ['--print'];
+  if (model) args.push('--model', String(model));
+  args.push(prompt);
+  const s = await fleetDb.createSession(ctx.db, {
+    hostId: host.id, cwd: cwd || '~',
+    args, env: {},
+    createdBy: 'exec',
+    label: prompt.slice(0, 80),
+    metadata: { exec: true },
+  });
+  if (!ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: {} })) {
+    return send(res, 502, { error: 'daemon vanished mid-dispatch' });
+  }
+  // Subscribe to session_exit
+  const TIMEOUT = Math.min(Math.max(parseInt(timeout_ms || 120000, 10), 5000), 600000);
+  let finished = false;
+  const result = await new Promise(async (resolve) => {
+    const handler = (frame) => {
+      if (frame.type === 'session_exit') { finished = true; resolve({ exitCode: frame.exit_code }); }
+    };
+    ctx.bus.subscribeViewerHook(s.id, handler);
+    setTimeout(() => {
+      if (!finished) {
+        ctx.bus.unsubscribeViewerHook(s.id, handler);
+        ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
+        resolve({ exitCode: -1, timeout: true });
+      }
+    }, TIMEOUT).unref?.();
+  });
+  // Read transcript (batcher flush already triggered by session_exit)
+  const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out' });
+  const text = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8')
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+  let cost = null;
+  if (ctx.tokmonDb) {
+    try { cost = await fleetCost.sessionCost(ctx.tokmonDb, host.name, s.started_at, new Date(), s.id); }
+    catch {}
+  }
+  send(res, 200, {
+    session_id: s.id,
+    host_id: host.id, host_name: host.name, display_name: host.display_name,
+    exit_code: result.exitCode,
+    timeout: !!result.timeout,
+    output: text,
+    cost,
+  });
 }
 
 async function handleDispatch({ req, res, body, ctx }) {
@@ -352,6 +442,9 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'POST'   && path === '/fleet/dispatch') {
     return readBody(req).then(b => handleDispatch({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
+  if (method === 'POST'   && path === '/fleet/exec') {
+    return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) return handleHostFileGet({ req, res, ctx });
   if (method === 'PUT'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) {
     return readBody(req).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
@@ -406,7 +499,6 @@ async function handleDaemonWs(ws, params, ctx) {
     try {
       if (f.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
       if (f.type === 'hello') {
-        // Update host metadata
         await fleetDb.upsertHost(ctx.db, {
           name: hostName,
           os: f.os, arch: f.arch,
@@ -414,6 +506,9 @@ async function handleDaemonWs(ws, params, ctx) {
           daemonVersion: params.get('daemon_version'),
           claudeVersion: f.claude_version,
         });
+        if (f.host_info && typeof f.host_info === 'object') {
+          await fleetDb.setHostMetadata(ctx.db, host.id, f.host_info);
+        }
         return;
       }
       if (f.type === 'spawn_ok') {

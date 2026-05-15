@@ -3,8 +3,30 @@ const WebSocket = require('ws');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { execSync } = require('node:child_process');
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
+
+function detectClaudeVersion(bin) {
+  try {
+    const out = execSync(`${bin} --version`, { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+    return String(out).trim().split('\n')[0] || null;
+  } catch { return null; }
+}
+
+function collectHostInfo() {
+  const cpus = os.cpus();
+  return {
+    cpu_model: cpus[0]?.model || null,
+    cpu_cores: cpus.length || 0,
+    ram_total_bytes: os.totalmem(),
+    ram_free_bytes: os.freemem(),
+    node_version: process.version,
+    hostname: os.hostname(),
+    platform_release: os.release(),
+    uptime_seconds: Math.floor(os.uptime()),
+  };
+}
 
 // Allowed roots for hub-driven file r/w (CLAUDE.md edit feature).
 // Daemon NEVER reads/writes outside these prefixes regardless of what hub asks.
@@ -78,10 +100,14 @@ async function runDaemon(opts) {
         ws.once('close', () => reject(new Error('closed before open')));
       });
       attempt = 0;
+      const hostInfo = collectHostInfo();
+      const claudeVersion = detectClaudeVersion(opts.claudeBin);
       ws.send(JSON.stringify({
         type: 'hello', host_name: opts.hostName,
         os: process.platform, arch: process.arch,
         capabilities: opts.capabilities || [],
+        claude_version: claudeVersion,
+        host_info: hostInfo,
       }));
       const local = store.list();
       const recon = local.map(([id, info]) => {

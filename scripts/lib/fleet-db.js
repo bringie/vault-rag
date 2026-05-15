@@ -29,6 +29,12 @@ async function upsertHost(c, h) {
   return rows[0];
 }
 
+async function setHostMetadata(c, id, info) {
+  await c.query(
+    `UPDATE fleet_hosts SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+    [id, JSON.stringify(info)]);
+}
+
 async function updateHost(c, id, patch) {
   // Patchable: display_name (string|null), capabilities (string[])
   const updates = [];
@@ -170,7 +176,7 @@ async function purgeOldEvents(c, intervalStr) {
 }
 
 module.exports = {
-  upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost,
+  upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
   createSession, getSession, listSessions,
   markSessionRunning, markSessionExited, orphanRunningSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
