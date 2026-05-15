@@ -85,6 +85,7 @@ services:
       - /root/obsidian-vault:/vault:rw
       - /root/.ssh:/root/.ssh:ro
       - ./scripts:/scripts:ro
+      - ./agent-fleet:/agent-fleet:ro
       - /opt/vault-rag/.secrets/age.key:/run/secrets/age.key:ro
     networks:
       - vault-rag-net
