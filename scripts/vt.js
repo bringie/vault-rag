@@ -424,7 +424,17 @@ async function main() {
     return;
   }
   let cfg;
-  try { cfg = resolveConfig(); } catch (e) { die(e.message); }
+  if (cmd === 'secrets') {
+    // secrets subcommand only needs apiBase/apiToken — no vault directory.
+    cfg = {
+      apiBase: process.env.VT_API_BASE
+        || process.env.VAULT_RAG_API_URL
+        || (process.env.VAULT_RAG_DOMAIN ? `https://${process.env.VAULT_RAG_DOMAIN}` : null),
+      apiToken: process.env.VT_API_TOKEN || process.env.VAULT_RAG_API_TOKEN,
+    };
+  } else {
+    try { cfg = resolveConfig(); } catch (e) { die(e.message); }
+  }
   const args = parseArgs(argv.slice(1));
   try {
     await fn(cfg, args);
