@@ -732,6 +732,7 @@
       $('nav-archive').classList.toggle('active-nav', active === 'archive');
       $('nav-cost').classList.toggle('active-nav', active === 'cost');
       const wn = $('nav-workflows'); if (wn) wn.classList.toggle('active-nav', active === 'workflows');
+      const pn = $('nav-prices'); if (pn) pn.classList.toggle('active-nav', active === 'prices');
     };
     $('archive').hidden = true;
     $('sdetail').hidden = true;
@@ -740,6 +741,7 @@
     const wlv = $('workflowsview');    if (wlv) wlv.hidden = true;
     const wed = $('workfloweditor');   if (wed) wed.hidden = true;
     const wrv = $('workflowrunviewer'); if (wrv) wrv.hidden = true;
+    const pxv = $('pricesview'); if (pxv) pxv.hidden = true;
     if (r.name === 'archive') { setNav('archive'); openArchive(); $('archive').hidden = false; return; }
     if (r.name === 'sessions' && r.arg) { setNav('archive'); openSessionDetail(r.arg); $('sdetail').hidden = false; return; }
     if (r.name === 'cost') { setNav('cost'); openCostView(); $('costview').hidden = false; return; }
@@ -758,6 +760,11 @@
     if (r.name === 'workflow-runs' && r.arg) {
       setNav('workflows'); wrv.hidden = false;
       if (window.openWorkflowRunViewer) window.openWorkflowRunViewer(r.arg);
+      return;
+    }
+    if (r.name === 'prices') {
+      setNav('prices'); pxv.hidden = false;
+      if (window.openPricesView) window.openPricesView();
       return;
     }
     setNav('dashboard');
@@ -1182,6 +1189,7 @@
     $('nav-cost').onclick = () => navigate('/cost');
     $('nav-groups').onclick = () => navigate('/groups');
     const wfNav = $('nav-workflows'); if (wfNav) wfNav.onclick = () => navigate('/workflows');
+    const pNav = $('nav-prices'); if (pNav) pNav.onclick = () => navigate('/prices');
     const wfNew = $('wf-new'); if (wfNew) wfNew.onclick = () => navigate('/workflows/new');
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');

@@ -356,9 +356,21 @@ body::after {
   position: fixed; inset: 0; z-index: 80; background: var(--bg);
   display: grid; grid-template-rows: auto auto 1fr auto;
 }
-#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer {
+#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview {
   position: fixed; inset: 0; z-index: 80; background: var(--bg);
   display: flex; flex-direction: column; overflow: auto;
+}
+#price-modal {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 4em;
+}
+#price-modal[hidden] { display: none; }
+.gd-body input[type="number"], .gd-body input[type="text"] {
+  width: 100%; padding: .4em .55em; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); font-family: var(--font-mono); font-size: .9em;
+  margin-bottom: .3em;
 }
 .active-nav { color: var(--text) !important; border-color: var(--text-dim) !important; }
 .archive-head, .sd-head {

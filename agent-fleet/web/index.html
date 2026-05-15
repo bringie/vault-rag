@@ -52,6 +52,7 @@
         <button id="nav-cost"      class="btn-ghost">$ trends</button>
         <button id="nav-groups"    class="btn-ghost">⌘ groups</button>
         <button id="nav-workflows" class="btn-ghost">⎇ workflows</button>
+        <button id="nav-prices"    class="btn-ghost">$ prices</button>
         <button id="reload" title="refresh" class="btn-icon">⟳</button>
         <button id="logout" class="btn-ghost">ABORT</button>
       </div>
@@ -307,6 +308,34 @@
     </div>
   </div>
   <div id="group-detail-modal" hidden></div>
+  <div id="price-modal" hidden></div>
+
+  <!-- PRICES PAGE -->
+  <div id="pricesview" hidden>
+    <header class="archive-head">
+      <div>
+        <span class="display" style="font-size:1.1em">MODEL PRICES</span>
+        <span id="prices-count" class="lbl" style="margin-left:1em">— rules</span>
+      </div>
+      <div>
+        <label class="lbl" style="margin-right:.6em">
+          <input id="px-history" type="checkbox"> show history
+        </label>
+        <button id="px-new" class="btn-ghost">+ new pattern</button>
+        <button id="pricesview-close" class="btn-ghost">× back</button>
+      </div>
+    </header>
+    <div class="archive-table-wrap">
+      <table class="archive-table">
+        <thead><tr>
+          <th>pattern</th><th>priority</th><th>valid from</th>
+          <th>input $/Mtok</th><th>output $/Mtok</th>
+          <th>cache create</th><th>cache read</th><th>flag</th><th></th>
+        </tr></thead>
+        <tbody id="px-rows"></tbody>
+      </table>
+    </div>
+  </div>
 
   <!-- COST TIMELINE OVERLAY -->
   <div id="costview" hidden>
@@ -408,6 +437,7 @@
   <script src="/fleet/static/workflow-canvas.js"></script>
   <script src="/fleet/static/workflow-editor.js"></script>
   <script src="/fleet/static/workflow-run-viewer.js"></script>
+  <script src="/fleet/static/prices.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
 </html>
