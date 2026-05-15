@@ -1,0 +1,17 @@
+{
+  "name": "@bringie/agent-fleet-daemon",
+  "version": "0.1.0",
+  "description": "Per-host daemon for agent-fleet: spawns Claude Code sessions on demand, streams PTY I/O to a central hub via WebSocket.",
+  "main": "bin/daemon.js",
+  "bin": { "agent-fleet-daemon": "bin/daemon.js" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node bin/daemon.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
