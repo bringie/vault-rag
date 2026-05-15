@@ -297,13 +297,34 @@
       }
     } catch (e) { console.warn('canvas addon failed, falling back to DOM:', e); }
     state.term = term; state.fit = fit;
-    setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 60);
+    // Defer fit until the container has real dimensions (layout flush after
+    // viewer became visible). Otherwise FitAddon falls back to cols=1, which
+    // resizes the PTY → claude renders ultra-narrow. Retry until container
+    // is at least 40 cols wide or we give up.
+    function attemptFit(retries = 12) {
+      const el = $('term');
+      if (!el || el.clientWidth < 50 || el.clientHeight < 40) {
+        if (retries > 0) return requestAnimationFrame(() => attemptFit(retries - 1));
+        return;
+      }
+      try {
+        fit.fit();
+        if (term.cols >= 40) { sendResize(); return; }
+      } catch {}
+      if (retries > 0) requestAnimationFrame(() => attemptFit(retries - 1));
+    }
+    requestAnimationFrame(() => attemptFit());
 
     // Debounce resize observer; rapid fires were causing layout thrash.
     let resizeT = null;
     const ro = new ResizeObserver(() => {
       clearTimeout(resizeT);
-      resizeT = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 120);
+      resizeT = setTimeout(() => {
+        try {
+          fit.fit();
+          if (term.cols >= 40) sendResize();
+        } catch {}
+      }, 120);
     });
     ro.observe($('term'));
 
@@ -334,7 +355,10 @@
   }
   function sendResize() {
     if (!state.term || !state.ws || state.ws.readyState !== 1) return;
-    const cols = state.term.cols, rows = state.term.rows;
+    // Guard against undersized fit results (eg container was 0px during attach).
+    // Refuse to send a PTY size that would make claude wrap to one char per line.
+    const cols = Math.max(state.term.cols || 0, 80);
+    const rows = Math.max(state.term.rows || 0, 24);
     state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   }
 
