@@ -603,36 +603,30 @@ async function handleViewerWs(ws, params, ctx) {
   ws.send(JSON.stringify({
     type: 'hello', session_id: s.id, host_id: s.host_id, status: s.status, cwd: s.cwd,
   }));
-  // Backfill policy:
-  //   - exited/killed: replay full transcript (no live process to redraw).
-  //   - running:       skip — replay of cursor-positioning escape sequences
-  //                    captured at PTY's original cols/rows would corrupt
-  //                    the viewer's xterm (which may be a different size).
-  //                    Client will send Ctrl+L which makes claude/Ink redraw
-  //                    at the live xterm size cleanly.
-  const isLive = s.status === 'running' || s.status === 'pending';
-  if (!isLive) {
-    const rb = ctx.rings.get(s.id);
-    if (rb && rb.size() > 0) {
-      const frames = rb.snapshot();
-      const merged = Buffer.concat(frames.map(f => f.data));
+  // Always send backfill so the viewer has something to render. For running
+  // sessions the content may be mis-positioned (it was captured at the PTY's
+  // historical cols/rows), but the client will force claude to redraw at the
+  // viewer's actual size via a dual SIGWINCH right after.
+  const rb = ctx.rings.get(s.id);
+  if (rb && rb.size() > 0) {
+    const frames = rb.snapshot();
+    const merged = Buffer.concat(frames.map(f => f.data));
+    ws.send(JSON.stringify({
+      type: 'backfill',
+      from_seq: frames[0].seq,
+      to_seq: frames[frames.length - 1].seq,
+      data: merged.toString('base64'),
+    }));
+  } else {
+    const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out', limit: 1024 });
+    if (rows.length) {
+      const merged = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0)));
       ws.send(JSON.stringify({
         type: 'backfill',
-        from_seq: frames[0].seq,
-        to_seq: frames[frames.length - 1].seq,
+        from_seq: Number(rows[0].seq),
+        to_seq: Number(rows[rows.length - 1].seq),
         data: merged.toString('base64'),
       }));
-    } else {
-      const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out', limit: 1024 });
-      if (rows.length) {
-        const merged = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0)));
-        ws.send(JSON.stringify({
-          type: 'backfill',
-          from_seq: Number(rows[0].seq),
-          to_seq: Number(rows[rows.length - 1].seq),
-          data: merged.toString('base64'),
-        }));
-      }
     }
   }
   ctx.bus.addViewer(s.id, ws);

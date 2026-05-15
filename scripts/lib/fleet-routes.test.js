@@ -278,7 +278,7 @@ test('reconciliation flips dead session to exited', async () => {
 
 // --- Task 12: viewer WS ---
 
-test('viewer attached to a running session gets hello + live frames (no backfill replay)', async () => {
+test('viewer receives backfill from ring buffer + live frames', async () => {
   const { server, pg, close } = await startWithDb();
   const port = server.address().port;
   const dws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=daemon&host_name=v1`,
@@ -292,10 +292,10 @@ test('viewer attached to a running session gets hello + live frames (no backfill
     { headers: { authorization: 'Bearer T' } });
   const msgs = [];
   vws.on('message', (b) => msgs.push(JSON.parse(b.toString())));
-  await new Promise(r => setTimeout(r, 150));
-  // running session: hello only, no backfill (would corrupt re-attach rendering)
+  await new Promise(r => setTimeout(r, 200));
   assert.equal(msgs[0].type, 'hello');
-  assert.ok(!msgs.find(m => m.type === 'backfill'), 'should NOT receive backfill on running session');
+  assert.equal(msgs[1].type, 'backfill');
+  assert.equal(Buffer.from(msgs[1].data, 'base64').toString(), 'first');
   dws.send(JSON.stringify({ type: 'pty_data', session_id: sid, seq: 1, data: Buffer.from('live').toString('base64') }));
   await new Promise(r => setTimeout(r, 100));
   const live = msgs.find(m => m.type === 'pty_data' && m.seq === 1);

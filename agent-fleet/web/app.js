@@ -401,22 +401,29 @@
         $('v-host').textContent = host?.display_name || host?.name || short(f.host_id);
         $('v-cwd').textContent = f.cwd || '—';
         setViewerStatus(f.status);
-        // For live sessions the server skips backfill. Reset xterm and trigger
-        // a redraw from claude so the screen reflects the current PTY state at
-        // the viewer's dimensions (avoids cursor-pos drift from replayed history).
-        if (f.status === 'running' || f.status === 'pending') {
-          try { state.term.reset?.(); } catch {}
-          setTimeout(() => {
-            try {
-              sendResize();
-              state.ws.send(JSON.stringify({ type: 'input', data: '\x0c' }));
-            } catch {}
-          }, 150);
-        }
       } else if (f.type === 'backfill') {
-        // Only fires for exited sessions now (server-side policy).
         try { state.term.reset?.(); } catch {}
         writeChunk(b64ToBytes(f.data));
+        // Force claude (Ink) to redraw at the viewer's actual dimensions by
+        // sending two resize events: cols+1, then cols. SIGWINCH twice
+        // typically causes Ink to do a full screen re-render, which paints
+        // over any mis-positioned content from the historical backfill.
+        if (state.viewerStatusValue === 'running' || state.viewerStatusValue === 'pending') {
+          setTimeout(() => {
+            try {
+              if (!state.term || !state.ws || state.ws.readyState !== 1) return;
+              const cols = Math.max(state.term.cols || 80, 80);
+              const rows = Math.max(state.term.rows || 24, 24);
+              state.ws.send(JSON.stringify({ type: 'resize', cols: cols + 1, rows }));
+              setTimeout(() => {
+                try {
+                  state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+                  state.ws.send(JSON.stringify({ type: 'input', data: '\x0c' }));
+                } catch {}
+              }, 80);
+            } catch {}
+          }, 100);
+        }
       } else if (f.type === 'pty_data') {
         writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'session_exit') {
