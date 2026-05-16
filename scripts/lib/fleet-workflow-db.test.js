@@ -115,3 +115,57 @@ test('orphanRunningRuns flips running→failed at boot', async () => {
     assert.match(JSON.stringify(r2.state), /hub restart/);
   });
 });
+
+// vt-0128: re-entering a wait_for_approval node used to keep the previous
+// `decision` row in place — next poll would auto-resolve without operator
+// action. createPendingApproval now resets decision fields on conflict.
+test('vt-0128: createPendingApproval clears stale decision on re-entry', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const w = await wfDb.createWorkflow(c, { name: 'wf-approval', definition: SAMPLE_DEF });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: SAMPLE_DEF });
+    // First wait_for_approval invocation
+    await wfDb.createPendingApproval(c, { runId: r.id, nodeId: 'approve_step', reason: 'first' });
+    // Operator approves
+    const decided = await wfDb.recordApprovalDecision(c, r.id, 'approve_step', { decision: 'approve', decided_by: 'op' });
+    assert.strictEqual(decided.decision, 'approve');
+    // wait_for_approval re-enters (retry / sub_workflow / replay) — must NOT
+    // see the stale decision.
+    await wfDb.createPendingApproval(c, { runId: r.id, nodeId: 'approve_step', reason: 'second' });
+    const refreshed = await wfDb.getPendingApproval(c, r.id, 'approve_step');
+    assert.strictEqual(refreshed.decision, null, 'decision should be cleared on re-entry');
+    assert.strictEqual(refreshed.decided_at, null);
+    assert.strictEqual(refreshed.decided_by, null);
+    assert.strictEqual(refreshed.reason, 'second');
+  });
+});
+
+test('vt-0128: createPendingEvent clears stale fired_at on re-entry', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const w = await wfDb.createWorkflow(c, { name: 'wf-event', definition: SAMPLE_DEF });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: SAMPLE_DEF });
+    await wfDb.createPendingEvent(c, { runId: r.id, nodeId: 'wait_event', eventName: 'ev1' });
+    await wfDb.fireEvent(c, 'ev1', { foo: 'bar' });
+    const fired = await wfDb.getPendingEvent(c, r.id, 'wait_event');
+    assert.ok(fired.fired_at);
+    // Re-enter wait_for_event for the same node
+    await wfDb.createPendingEvent(c, { runId: r.id, nodeId: 'wait_event', eventName: 'ev2' });
+    const refreshed = await wfDb.getPendingEvent(c, r.id, 'wait_event');
+    assert.strictEqual(refreshed.fired_at, null);
+    assert.strictEqual(refreshed.payload, null);
+    assert.strictEqual(refreshed.event_name, 'ev2');
+  });
+});
+
+test('vt-0128: recordApprovalDecision returns null when no pending row exists', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const w = await wfDb.createWorkflow(c, { name: 'wf-ad', definition: SAMPLE_DEF });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: SAMPLE_DEF });
+    // No createPendingApproval — caller can't fabricate decisions for nodes
+    // the workflow never waited on. handleApprovalDecision turns this into 409.
+    const decided = await wfDb.recordApprovalDecision(c, r.id, 'arbitrary_node_id', { decision: 'approve' });
+    assert.strictEqual(decided, null);
+  });
+});

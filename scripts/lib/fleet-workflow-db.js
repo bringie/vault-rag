@@ -126,10 +126,21 @@ async function setWorkflowTrigger(c, id, trigger) {
 }
 
 async function createPendingApproval(c, { runId, nodeId, reason }) {
+  // vt-0128: ON CONFLICT used to only refresh `reason`, leaving any prior
+  // `decision`/`decided_at`/`decided_by`/`note` in place. If a wait_for_approval
+  // node re-enters (replay, retry, sub-workflow re-dispatch) the next poll
+  // tick would see the stale decision and auto-approve without operator
+  // action. Reset the decision fields whenever a new pending row is created.
   const { rows } = await c.query(
     `INSERT INTO fleet_workflow_pending_approvals (run_id, node_id, reason)
      VALUES ($1, $2, $3)
-     ON CONFLICT (run_id, node_id) DO UPDATE SET reason = EXCLUDED.reason
+     ON CONFLICT (run_id, node_id) DO UPDATE SET
+       reason     = EXCLUDED.reason,
+       decision   = NULL,
+       decided_at = NULL,
+       decided_by = NULL,
+       note       = NULL,
+       requested_at = now()
      RETURNING *`,
     [runId, nodeId, reason || null]);
   return rows[0];
@@ -167,10 +178,17 @@ async function recordApprovalDecision(c, runId, nodeId, { decision, decided_by, 
 }
 
 async function createPendingEvent(c, { runId, nodeId, eventName }) {
+  // vt-0128: same stale-decision race as createPendingApproval. Reset
+  // fired_at + payload when a wait_for_event node re-enters; otherwise
+  // a prior `fired_at` would auto-satisfy the new wait.
   const { rows } = await c.query(
     `INSERT INTO fleet_workflow_pending_events (run_id, node_id, event_name)
      VALUES ($1, $2, $3)
-     ON CONFLICT (run_id, node_id) DO UPDATE SET event_name = EXCLUDED.event_name
+     ON CONFLICT (run_id, node_id) DO UPDATE SET
+       event_name   = EXCLUDED.event_name,
+       fired_at     = NULL,
+       payload      = NULL,
+       requested_at = now()
      RETURNING *`,
     [runId, nodeId, eventName]);
   return rows[0];
