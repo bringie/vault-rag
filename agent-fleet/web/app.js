@@ -1138,12 +1138,41 @@
       $('sd-args').textContent = JSON.stringify(s.args || [], null, 2);
       $('sd-notes').value = s.notes || '';
     } catch (e) { $('sd-id').textContent = 'error'; $('sd-transcript').textContent = e.message; return; }
-    // transcript
+    // transcript — xterm replay (vt-0117) + plain fallback.
     try {
-      const r = await fetch('/api/fleet/sessions/' + sid + '/transcript.txt', {
+      // Init read-only xterm in #sd-transcript-term.
+      const mount = $('sd-transcript-term');
+      mount.innerHTML = '';
+      if (state.sdTerm) { try { state.sdTerm.dispose(); } catch {} state.sdTerm = null; }
+      const term = new Terminal({
+        cursorBlink: false,
+        disableStdin: true,
+        fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+        fontSize: 12,
+        lineHeight: 1.25,
+        scrollback: 10000,
+        allowProposedApi: true,
+        theme: { background: '#0a0a0c', foreground: '#e8e6e1', cursor: 'transparent' },
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(mount);
+      try { if (window.CanvasAddon && CanvasAddon.CanvasAddon) term.loadAddon(new CanvasAddon.CanvasAddon()); } catch {}
+      try { if (window.Unicode11Addon && Unicode11Addon.Unicode11Addon) { term.loadAddon(new Unicode11Addon.Unicode11Addon()); term.unicode.activeVersion = '11'; } } catch {}
+      requestAnimationFrame(() => { try { fit.fit(); } catch {} });
+      state.sdTerm = term;
+      // Fetch raw bytes and replay through term.write.
+      const rb = await fetch('/api/fleet/sessions/' + sid + '/transcript.bin', {
         headers: { authorization: 'Bearer ' + state.token },
       });
-      const t = await r.text();
+      if (!rb.ok) throw new Error('HTTP ' + rb.status);
+      const ab = await rb.arrayBuffer();
+      term.write(new Uint8Array(ab));
+      // Plain fallback (collapsed by default) for grep/copy use cases.
+      const rt = await fetch('/api/fleet/sessions/' + sid + '/transcript.txt', {
+        headers: { authorization: 'Bearer ' + state.token },
+      });
+      const t = await rt.text();
       $('sd-transcript').textContent = t || '(empty)';
     } catch (e) { $('sd-transcript').textContent = 'load failed: ' + e.message; }
     // timeline

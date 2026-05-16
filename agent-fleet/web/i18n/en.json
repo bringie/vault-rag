@@ -181,6 +181,7 @@
   "session.save_notes": "save notes",
   "session.btn.attach": "▶ attach",
   "session.btn.rerun": "↻ rerun",
+  "session.transcript_plain": "show plain-text fallback",
   "session.tab.transcript": "transcript",
   "session.tab.timeline": "timeline",
   "groups.col.name": "name",

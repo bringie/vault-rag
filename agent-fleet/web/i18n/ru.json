@@ -181,6 +181,7 @@
   "session.save_notes": "сохранить заметки",
   "session.btn.attach": "▶ подключить",
   "session.btn.rerun": "↻ перезапустить",
+  "session.transcript_plain": "показать текст-fallback",
   "session.tab.transcript": "транскрипт",
   "session.tab.timeline": "таймлайн",
   "groups.col.name": "имя",

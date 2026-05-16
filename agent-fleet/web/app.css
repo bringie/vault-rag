@@ -465,6 +465,13 @@ body::after {
 .archive-table tr.row-clickable { cursor: pointer; }
 .archive-table tr.row-clickable:hover td { background: rgba(255,255,255,0.06); }
 
+.sd-transcript-term {
+  width: 100%; min-height: 320px; height: 50vh;
+  background: #0a0a0c; border: 1px solid var(--line);
+  padding: 6px; box-sizing: border-box;
+}
+.sd-transcript-term .xterm-viewport, .sd-transcript-term .xterm-screen { background: transparent !important; }
+
 .stack-dot {
   width: 1.6em; height: 1.6em; padding: 0; line-height: 1;
   font-size: 1.1em; cursor: pointer;

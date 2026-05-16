@@ -181,6 +181,7 @@
   "session.save_notes": "guardar notas",
   "session.btn.attach": "▶ conectar",
   "session.btn.rerun": "↻ relanzar",
+  "session.transcript_plain": "mostrar texto plano",
   "session.tab.transcript": "transcripción",
   "session.tab.timeline": "timeline",
   "groups.col.name": "nombre",

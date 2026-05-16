@@ -364,7 +364,11 @@
           <button class="sd-tab" data-tab="timeline" data-i18n="session.tab.timeline">timeline</button>
         </div>
         <div id="sd-tab-transcript" class="sd-pane active">
-          <pre id="sd-transcript" class="sd-transcript" data-i18n="common.loading">loading…</pre>
+          <div id="sd-transcript-term" class="sd-transcript-term"></div>
+          <details style="margin-top:.4em">
+            <summary class="lbl" style="cursor:pointer" data-i18n="session.transcript_plain">show plain-text fallback</summary>
+            <pre id="sd-transcript" class="sd-transcript" data-i18n="common.loading">loading…</pre>
+          </details>
         </div>
         <div id="sd-tab-timeline" class="sd-pane">
           <ul id="sd-timeline" class="sd-timeline"></ul>

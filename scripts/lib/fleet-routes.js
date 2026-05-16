@@ -736,6 +736,18 @@ async function handleTranscriptTxt(req, res, ctx) {
   res.end(stripAnsi(raw));
 }
 
+// vt-0117: raw transcript bytes — for xterm replay in the archive viewer.
+// No stripping; full ANSI/escape stream so TUIs render correctly.
+async function handleTranscriptBin(req, res, ctx) {
+  const url = new URL(req.url, 'http://x');
+  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/transcript\\.bin$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  const rows = await fleetDb.readTranscript(ctx.db, m[1], { sinceSeq: 0, kind: 'pty_out' });
+  const buf = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0)));
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': buf.length });
+  res.end(buf);
+}
+
 // --- Pricing handlers ---
 
 async function handleListPrices({ req, res, ctx }) {
@@ -1157,6 +1169,9 @@ function dispatchHttp(req, res, ctx) {
   }
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/transcript\\.txt$`, 'i').test(path)) {
     return handleTranscriptTxt(req, res, ctx);
+  }
+  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/transcript\\.bin$`, 'i').test(path)) {
+    return handleTranscriptBin(req, res, ctx);
   }
 
   // Cost
