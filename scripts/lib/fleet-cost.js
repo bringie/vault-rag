@@ -227,24 +227,36 @@ async function sessionCostBatch(tokmonPg, vaultPg, sessionIds) {
 // vt-0114: aggregate one day of tokmon events into fleet_cost_daily_rollup.
 // Idempotent — ON CONFLICT DO UPDATE replaces the row so re-running an
 // aggregation pass (e.g. after a backfill) overwrites cleanly.
+//
+// vt-0127: events are bucketed by hour before pricing. The old MAX(ts)-priced
+// rollup used the *end-of-day* price for the whole day, so a mid-day price
+// change mispriced morning usage and persisted that error indefinitely (the
+// rollup outlives tokmon retention). Hourly bucketing bounds worst-case error
+// to one hour. Bucket size is a deliberate trade-off — 24× more rows per day
+// for ~rare price changes is fine; per-event pricing would explode result sets.
 async function aggregateDayRollup(tokmonPg, vaultPg, day /* 'YYYY-MM-DD' */) {
   const { rows } = await tokmonPg.query(
-    `SELECT model, host_id,
+    `SELECT date_trunc('hour', ts) AS hour,
+            model, host_id,
             COUNT(*)::int                    AS msgs,
             SUM(input_tokens)::bigint        AS input_tokens,
             SUM(output_tokens)::bigint       AS output_tokens,
             SUM(cache_creation_5m)::bigint   AS cache_creation_5m,
-            SUM(cache_read)::bigint          AS cache_read,
-            MAX(ts)                          AS last_ts
+            SUM(cache_read)::bigint          AS cache_read
      FROM events
      WHERE ts >= $1::date AND ts < ($1::date + interval '1 day')
-     GROUP BY model, host_id`,
+     GROUP BY hour, model, host_id`,
     [day]);
   if (!rows.length) return { day, rows: 0 };
   // Aggregate by dim ('model' | 'host') so the rollup answers both pivots.
+  // Each hour resolves its own price; tally accumulates priced usd + token
+  // counts into the (model)/(host) buckets for the whole day.
   const byModel = new Map(), byHost = new Map();
   for (const r of rows) {
-    const usd = await rowCost(r, r.last_ts, vaultPg);
+    // Use the start of the hour bucket as the price-resolution timestamp.
+    // If a price changes mid-hour, that hour is priced at the start-of-hour
+    // rate — bounded 1h error, not 24h.
+    const usd = await rowCost(r, r.hour, vaultPg);
     const tally = (m, key) => {
       if (!m.has(key)) m.set(key, { usd: 0, msgs: 0, input_tokens: 0n, output_tokens: 0n, cache_creation_5m: 0n, cache_read: 0n });
       const t = m.get(key);

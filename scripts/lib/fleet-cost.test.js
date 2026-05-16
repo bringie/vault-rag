@@ -81,6 +81,40 @@ test('hostSummary aggregates per-host costs over N days', async () => {
   });
 });
 
+// vt-0127: aggregateDayRollup used to resolve price at MAX(ts) → mid-day price
+// change mispriced the entire day. Now hourly bucketing bounds error to one hour.
+test('vt-0127: aggregateDayRollup prices each hour at its own rate', async () => {
+  await withBoth(async (tok, vault) => {
+    await resetEvents(tok);
+    await vault.query('TRUNCATE fleet_model_prices RESTART IDENTITY');
+    await vault.query(`
+      TRUNCATE fleet_cost_daily_rollup`);
+    // Price doubles at 12:00 UTC.
+    await vault.query(`
+      INSERT INTO fleet_model_prices (match_pattern, priority, valid_from, input_per_mtok, output_per_mtok, cache_create_per_mtok, cache_read_per_mtok, flagged)
+      VALUES
+        ('claude-sonnet-%', 200, '1970-01-01',          3, 15, 3.75, 0.30, false),
+        ('claude-sonnet-%', 200, '2026-05-14T12:00:00Z', 6, 30, 7.50, 0.60, false),
+        ('%',                 0, '1970-01-01',          0, 0,  0,    0,    true)`);
+    prices.invalidate();
+
+    const day = '2026-05-14';
+    // 1M input tokens at 06:00 (old price: $3 = 3) and 1M at 18:00 (new: $6 = 6).
+    // Expected: 3 + 6 = $9. Old code (MAX(ts) → 18:00 price): 6 + 6 = $12.
+    await seed(tok, 'h1', new Date('2026-05-14T06:00:00Z'), 'claude-sonnet-4-6', 1_000_000, 0);
+    await seed(tok, 'h1', new Date('2026-05-14T18:00:00Z'), 'claude-sonnet-4-6', 1_000_000, 0);
+
+    const r = await fleetCost.aggregateDayRollup(tok, vault, day);
+    assert.ok(r.rows > 0);
+    const { rows } = await vault.query(
+      `SELECT usd FROM fleet_cost_daily_rollup WHERE day = $1 AND dim = 'model' AND value = 'claude-sonnet-4-6'`,
+      [day]);
+    assert.equal(rows.length, 1);
+    assert.ok(Math.abs(Number(rows[0].usd) - 9) < 0.01,
+      `expected ~$9 with hourly pricing, got $${rows[0].usd} (MAX-ts bug would give ~$12)`);
+  });
+});
+
 test('unknown model uses fallback (zero cost, flagged)', async () => {
   await withBoth(async (tok, vault) => {
     await resetEvents(tok);
