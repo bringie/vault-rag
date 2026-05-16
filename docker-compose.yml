@@ -115,6 +115,9 @@ services:
       # via VAULT_RAG_SECRETS_URL. Falls back to in-process handler if unset.
       - VAULT_RAG_SECRETS_URL=http://vault-rag-secrets:5682
       - VAULT_RAG_SECRETS_TOKEN=${VAULT_RAG_SECRETS_TOKEN}
+      # vt-0140: tokmon ingest endpoint at /api/tokmon/ingest reuses the
+      # same VAULT_RAG_TOKMON_INGEST_TOKEN the legacy :5681 server used.
+      - VAULT_RAG_TOKMON_INGEST_TOKEN=${VAULT_RAG_TOKMON_INGEST_TOKEN}
     ports:
       - "127.0.0.1:5679:5679"
     tmpfs:
@@ -376,6 +379,15 @@ services:
 
 
   vault-rag-tokmon-ingest:
+    # vt-0140: deprecated standalone service. rag-api now exposes
+    #   POST /api/tokmon/ingest
+    # at port 5679 with the same auth (X-Tokmon-Token / Bearer
+    # VAULT_RAG_TOKMON_INGEST_TOKEN). Daemon hosts use the new
+    # tokmon-watcher (AGENT_FLEET_TOKMON_ENABLED=1) instead of an
+    # external shipper. External shippers still bound to :5681 can be
+    # re-enabled for one release window via:
+    #   docker compose --profile tokmon-legacy up -d vault-rag-tokmon-ingest
+    profiles: ["tokmon-legacy"]
     image: vault-rag-tools:latest
     container_name: vault-rag-tokmon-ingest
     logging: *default-logging

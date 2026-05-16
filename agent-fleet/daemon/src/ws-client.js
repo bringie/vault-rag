@@ -166,6 +166,29 @@ async function runDaemon(opts) {
     store.delete(sessionId);
   });
 
+  // vt-0140: jsonl watcher starts ONCE per daemon process (survives WS
+  // reconnects, which can happen many times per day). Opt-in: only when
+  // AGENT_FLEET_TOKMON_ENABLED=1 + token is set + the hub URL parses cleanly.
+  let tokmonWatcher = null;
+  if (process.env.AGENT_FLEET_TOKMON_ENABLED === '1') {
+    try {
+      const { TokmonWatcher } = require('./tokmon-watcher');
+      // Hub URL is the WS endpoint (wss://.../api/fleet/ws). Strip the path
+      // + flip scheme back to http(s) for the REST POST target.
+      const hubUrl = new URL(opts.hub);
+      hubUrl.protocol = hubUrl.protocol === 'wss:' ? 'https:' : 'http:';
+      hubUrl.pathname = '';
+      hubUrl.search = '';
+      const tokmonToken = process.env.AGENT_FLEET_TOKMON_TOKEN || opts.token;
+      tokmonWatcher = new TokmonWatcher({ hubUrl: hubUrl.toString().replace(/\/$/, ''), token: tokmonToken });
+      tokmonWatcher.start().catch(e => console.error('[daemon] tokmon-watcher start:', e.message));
+      console.log(`[daemon] tokmon-watcher armed → ${hubUrl.toString().replace(/\/$/, '')}/api/tokmon/ingest`);
+    } catch (e) {
+      console.error('[daemon] tokmon-watcher init failed:', e.message);
+    }
+  }
+  opts.abortSignal?.addEventListener('abort', () => { try { tokmonWatcher?.stop(); } catch {} });
+
   while (!opts.abortSignal?.aborted) {
     try {
       const url = new URL(opts.hub);

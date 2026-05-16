@@ -15,6 +15,10 @@ const fleetRoutes = require('./lib/fleet-routes');
 const fleetDb = require('./lib/fleet-db');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
 const { SecretsClient } = require('./lib/secrets-client.js');
+const tokmonRoutes = require('./lib/tokmon-routes');
+const { tokenEqual: sharedTokenEqual } = require('./lib/shared-auth');
+
+const TOKMON_INGEST_TOKEN = process.env.VAULT_RAG_TOKMON_INGEST_TOKEN || null;
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -190,6 +194,32 @@ async function auditSecret(req, op, name, outcome) {
 function mapOutcome(e) {
   if (e instanceof NotFound || e.statusCode === 404 || e.code === 404) return 'denied';
   return 'error';
+}
+
+// vt-0140: ingest path moved from the standalone tokmon-ingest container.
+// Auth is the separate VAULT_RAG_TOKMON_INGEST_TOKEN — shippers don't hold
+// the viewer or admin bearer.
+async function handleTokmonIngest(req, res) {
+  const auth = req.headers['x-tokmon-token']
+    || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!TOKMON_INGEST_TOKEN || !sharedTokenEqual(auth, TOKMON_INGEST_TOKEN)) {
+    return send(res, 401, { error: 'unauthorized' });
+  }
+  if (!fleetCtx.tokmonDb) {
+    return send(res, 503, { error: 'tokmon db not configured' });
+  }
+  const body = await readBody(req);
+  if (!body || !Array.isArray(body.events)) {
+    return send(res, 422, { error: 'events[] required' });
+  }
+  if (body.events.length > 5000) {
+    return send(res, 413, { error: 'batch too large (max 5000)' });
+  }
+  const filtered = body.events.filter(e => tokmonRoutes.isPlausibleTs(e.ts));
+  const dropped = body.events.length - filtered.length;
+  const result = await tokmonRoutes.ingestBulk(fleetCtx.tokmonDb, filtered);
+  if (dropped) result.dropped_implausible_ts = dropped;
+  send(res, 200, { ok: true, ...result });
 }
 
 async function handleSecretGet(body, req) {
@@ -453,6 +483,17 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
   // fleet routes (HTTP) — own dispatch handles auth + methods
   if (fleetRoutes.tryDispatch(req, res, fleetCtx)) return;
+  // vt-0140: tokmon shipper ingest — uses its OWN token (X-Tokmon-Token header
+  // or Bearer fallback), separate from the API/admin bearer. Lives before the
+  // generic POST-only filter so shippers can hit it without holding the
+  // viewer/admin bearer.
+  if (req.method === 'POST' && req.url === '/tokmon/ingest'
+      && process.env.VAULT_RAG_TOKMON_INGEST_ENABLED !== '0') {
+    return handleTokmonIngest(req, res).catch(e => {
+      console.error('[rag-api] /tokmon/ingest', e.stack || e.message);
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
   // VT task routes (vt-rest-mcp) — dispatched separately.
