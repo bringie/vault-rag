@@ -576,38 +576,69 @@ const { collectMetrics } = require('./metrics-collector');
 const { collectInventory, resetInventoryCache } = require('./inventory-collector');
 ```
 
-- [ ] **Step 2: Add intervals on each WS open**
+- [ ] **Step 2: Add intervals + cleanup inside the existing reconnect loop**
 
-Locate the `ws.on('open', ...)` (or where the hello frame is sent — `safeSend(ws, { type: 'hello', ... })`). After the hello-send, add:
+The daemon's `runDaemon` reconnect loop uses `await new Promise((resolve) => { ... })` with `ws.on('message')` + `ws.on('close')/error/abort` resolving the promise. There is **no** standalone `ws.on('open')` handler — open is awaited via `ws.once('open', resolve)` before reaching this inner block.
+
+Intervals must be placed **inside this inner Promise block alongside the existing `heartbeat` setInterval** (~line 120 of `agent-fleet/daemon/src/ws-client.js`). Cleanup goes alongside `clearInterval(heartbeat)` in the three resolve paths (close/error/abort).
+
+Also: before the inner Promise starts, immediately after the existing `ws.send(JSON.stringify({type:'hello', ...}))` and reconciliation block, send the initial inventory frame.
+
+a) Right after `if (recon.length) ws.send(JSON.stringify({ type: 'reconciliation', sessions: recon }));` and before `await new Promise((resolve) => {`, add:
 
 ```js
-// Reset inventory cache so each new connection re-sends fresh inventory.
 resetInventoryCache();
 safeSend(ws, { type: 'inventory', ...collectInventory() });
-
-const metricsTimer = setInterval(async () => {
-  try {
-    const m = await collectMetrics();
-    safeSend(ws, { type: 'metrics', ...m });
-  } catch {}
-}, 10_000);
-
-const invMtimeTimer = setInterval(() => {
-  // require fresh module ref to access updated mtime state
-  const { inventoryChanged, collectInventory: ci } = require('./inventory-collector');
-  if (inventoryChanged()) safeSend(ws, { type: 'inventory', ...ci() });
-}, 60_000);
-
-const invHeartbeatTimer = setInterval(() => {
-  safeSend(ws, { type: 'inventory', ...collectInventory() });
-}, 900_000);
-
-ws.on('close', () => {
-  clearInterval(metricsTimer);
-  clearInterval(invMtimeTimer);
-  clearInterval(invHeartbeatTimer);
-});
 ```
+
+b) Inside the `await new Promise((resolve) => { ... })` block, right after `const heartbeat = setInterval(() => safeSend(ws, { type: 'ping' }), 15_000); heartbeat.unref?.();`, add:
+
+```js
+        const metricsTimer = setInterval(async () => {
+          try {
+            const m = await collectMetrics();
+            safeSend(ws, { type: 'metrics', ...m });
+          } catch {}
+        }, 10_000);
+        metricsTimer.unref?.();
+        const invMtimeTimer = setInterval(() => {
+          if (inventoryChanged()) safeSend(ws, { type: 'inventory', ...collectInventory() });
+        }, 60_000);
+        invMtimeTimer.unref?.();
+        const invHeartbeatTimer = setInterval(() => {
+          safeSend(ws, { type: 'inventory', ...collectInventory() });
+        }, 900_000);
+        invHeartbeatTimer.unref?.();
+```
+
+c) Update each of the three `clearInterval(heartbeat)` calls (in `ws.on('close')`, `ws.on('error')`, and the abort listener) to also clear the new timers:
+
+```js
+        ws.on('close', () => {
+          clearInterval(heartbeat);
+          clearInterval(metricsTimer);
+          clearInterval(invMtimeTimer);
+          clearInterval(invHeartbeatTimer);
+          resolve();
+        });
+        ws.on('error', () => {
+          clearInterval(heartbeat);
+          clearInterval(metricsTimer);
+          clearInterval(invMtimeTimer);
+          clearInterval(invHeartbeatTimer);
+          resolve();
+        });
+        opts.abortSignal?.addEventListener('abort', () => {
+          clearInterval(heartbeat);
+          clearInterval(metricsTimer);
+          clearInterval(invMtimeTimer);
+          clearInterval(invHeartbeatTimer);
+          try { ws.close(); } catch {}
+          resolve();
+        });
+```
+
+This pattern matches the existing heartbeat lifecycle exactly, so timers reset cleanly on each reconnect.
 
 - [ ] **Step 3: Syntax check + run daemon tests**
 
@@ -876,7 +907,7 @@ else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, u.searchParams, 
 else                                  handleViewerWs(ws, u.searchParams, ctx);
 ```
 
-Apply the same change in `attachUpgrade()` (~line 930).
+Apply the same change in `attachUpgrade()` (~line 1247 — bearer-subprotocol upgrade handler).
 
 - [ ] **Step 5: Add REST handlers**
 
@@ -1048,9 +1079,11 @@ module.exports = { runRetention, startRetention };
 
 - [ ] **Step 2: Wire into rag-api boot**
 
-Find in `scripts/rag-api.js` the block where `fleetCtx.db = pg` is assigned (~line 372). After the existing `orphanRunningSessions` call, add:
+Find in `scripts/rag-api.js` the block where `fleetCtx.db = pg` is assigned (~line 372). After the existing `orphanRunningSessions` call (still inside `if (pg) { ... }`), add:
 
 ```js
+// Retention runs only after pg is bound. If pg failed to connect at boot,
+// retention never starts — rag-api must restart once pg is reachable.
 const { startRetention } = require('./lib/fleet-retention');
 startRetention(pg);
 console.log('[rag-api] fleet metrics retention started');
@@ -1166,6 +1199,8 @@ Create `agent-fleet/web/host-metrics.js`:
   }
 
   async function startHostMetrics(hostId) {
+    // Same host re-render — keep existing WS + buffers, avoid REST refetch churn
+    if (activeHost === hostId && activeWs && activeWs.readyState <= 1) return;
     stopHostMetrics();
     activeHost = hostId;
     cpuBuf.length = 0; ramBuf.length = 0;
@@ -1188,9 +1223,9 @@ Create `agent-fleet/web/host-metrics.js`:
       renderTabs(inv);
     } catch {}
 
-    // Live WS
+    // Live WS — use /api/fleet/ws to match existing terminal viewer pattern (bearer subprotocol path).
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}/fleet/ws?role=metrics_viewer&host_id=${hostId}`;
+    const url = `${proto}//${location.host}/api/fleet/ws?role=metrics_viewer&host_id=${hostId}`;
     activeWs = new WebSocket(url, [`bearer.${token()}`]);
     activeWs.onmessage = (ev) => {
       let f;
