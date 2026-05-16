@@ -4,6 +4,8 @@
   "backends": [
     { "name": "opencode", "module": "./opencode.js", "bin": "/usr/local/bin/opencode" },
     { "name": "codex",    "module": "./codex.js",    "bin": "/usr/local/bin/codex" },
-    { "name": "hermes",   "module": "./hermes.js" }
+    { "name": "hermes",   "module": "./hermes.js" },
+    { "name": "openclaw", "module": "./openclaw.js" },
+    { "name": "nanoclaw", "module": "./nanoclaw.js" }
   ]
 }

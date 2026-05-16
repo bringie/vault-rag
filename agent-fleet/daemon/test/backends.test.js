@@ -131,3 +131,32 @@ test('hermes: model→$MODEL env, system+prompt framed in stdin', () => {
   assert.strictEqual(r.env.MODEL, 'hermes-3-llama-3.1-8b');
   assert.match(r.stdin, /<<SYSTEM>>\nrules\n<<USER>>\ndo thing/);
 });
+
+// --- vt-0104/0105: openclaw + nanoclaw ---
+
+const openclaw = require('../src/backends/openclaw');
+const nanoclaw = require('../src/backends/nanoclaw');
+
+test('openclaw: first args entry → OPENCLAW_SKILL env, rest argv', () => {
+  const r = openclaw.buildSpawnArgs({
+    args: ['browser', '--tab', 'gh'],
+    prompt: 'open repo',
+    model: 'claude-opus-4-7',
+  });
+  assert.strictEqual(r.env.OPENCLAW_SKILL, 'browser');
+  assert.strictEqual(r.env.OPENCLAW_MODEL, 'claude-opus-4-7');
+  assert.deepStrictEqual(r.argv, ['--tab', 'gh']);
+  assert.strictEqual(r.stdin, 'open repo');
+});
+
+test('openclaw: default skill = chat when args is empty', () => {
+  const r = openclaw.buildSpawnArgs({ prompt: 'hi' });
+  assert.strictEqual(r.env.OPENCLAW_SKILL, 'chat');
+});
+
+test('nanoclaw: spawn returns shim that fails with exit 22', () => {
+  const r = nanoclaw.buildSpawnArgs({ prompt: 'hi' });
+  // Sidecar mode: argv is a /bin/sh -c that prints + exits 22.
+  assert.strictEqual(r.argv[0], '-c');
+  assert.match(r.argv[1], /sidecar.*not supported/i);
+});

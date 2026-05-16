@@ -15,6 +15,7 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.woff2': 'font/woff2',
   '.sh':   'text/x-shellscript; charset=utf-8',
+  '.ps1':  'application/x-powershell; charset=utf-8',
   '.tar':  'application/x-tar',
   '.gz':   'application/gzip',
   '.deb':  'application/vnd.debian.binary-package',
@@ -26,8 +27,9 @@ const MIME = {
 // expose anything else from dist/.
 const DOWNLOAD_NAME_RE = /^(agent-fleet-daemon(\.tar\.gz|_\d+\.\d+\.\d+_amd64\.deb|-\d+\.\d+\.\d+-\d+\.noarch\.rpm))$/;
 const SCRIPT_REDIRECT = {
-  '/fleet/install.sh':       'linux-install.sh',
-  '/fleet/install-macos.sh': 'macos-install.sh',
+  '/fleet/install.sh':         'linux-install.sh',
+  '/fleet/install-macos.sh':   'macos-install.sh',
+  '/fleet/install-windows.ps1': 'windows-install.ps1',
 };
 
 function serveDownload(req, res) {
@@ -46,6 +48,8 @@ function serveDownload(req, res) {
     abs = path.resolve(__dirname, '..', '..', 'agent-fleet', 'daemon', 'packaging', 'linux', 'install.sh');
   } else if (rel === 'macos-install.sh') {
     abs = path.resolve(__dirname, '..', '..', 'agent-fleet', 'daemon', 'packaging', 'macos', 'install.sh');
+  } else if (rel === 'windows-install.ps1') {
+    abs = path.resolve(__dirname, '..', '..', 'agent-fleet', 'daemon', 'packaging', 'windows', 'install.ps1');
   } else {
     if (!DOWNLOAD_NAME_RE.test(rel)) {
       res.writeHead(404); res.end('not allowed'); return true;

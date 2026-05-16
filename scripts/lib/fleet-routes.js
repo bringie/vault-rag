@@ -1011,7 +1011,11 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path.startsWith('/fleet/download/')) {
     if (fleetStatic.serveDownload(req, res)) return;
   }
-  if (method === 'GET' && (path === '/fleet/install.sh' || path === '/fleet/install-macos.sh')) {
+  if (method === 'GET' && (
+      path === '/fleet/install.sh' ||
+      path === '/fleet/install-macos.sh' ||
+      path === '/fleet/install-windows.ps1'
+  )) {
     if (fleetStatic.serveDownload(req, res)) return;
   }
   // healthz before auth
