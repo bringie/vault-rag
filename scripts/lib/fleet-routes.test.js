@@ -564,3 +564,59 @@ test('GET /fleet/prices rejects missing auth', async () => {
   assert.equal(r.status, 401);
   await close();
 });
+
+// --- Host metrics + inventory ---
+
+test('GET /fleet/hosts/:id/metrics returns time-series rows', async () => {
+  const { server, pg, close } = await startWithDb();
+  await pg.query(`TRUNCATE fleet_host_metrics`);
+  const h = await pg.query(`INSERT INTO fleet_hosts (name) VALUES ('htm') RETURNING id`);
+  const hostId = h.rows[0].id;
+  await pg.query(`INSERT INTO fleet_host_metrics (host_id, ts, cpu_pct, ram_used_bytes, ram_total_bytes)
+                  VALUES ($1, now(), 25, 1024, 4096)`, [hostId]);
+  const r = await reqJson(server, 'GET', `/fleet/hosts/${hostId}/metrics?since=1h`, { token: 'T' });
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.body));
+  assert.strictEqual(r.body.length, 1);
+  assert.strictEqual(r.body[0].cpu_pct, 25);
+  await close();
+});
+
+test('GET /fleet/hosts/:id/metrics rejects invalid since param', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h = await pg.query(`INSERT INTO fleet_hosts (name) VALUES ('htm2') RETURNING id`);
+  const r = await reqJson(server, 'GET', `/fleet/hosts/${h.rows[0].id}/metrics?since=999d`, { token: 'T' });
+  assert.equal(r.status, 422);
+  await close();
+});
+
+test('GET /fleet/hosts/:id/inventory returns empty object if not set', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h = await pg.query(`INSERT INTO fleet_hosts (name) VALUES ('hti') RETURNING id`);
+  const r = await reqJson(server, 'GET', `/fleet/hosts/${h.rows[0].id}/inventory`, { token: 'T' });
+  assert.equal(r.status, 200);
+  assert.deepStrictEqual(r.body, {});
+  await close();
+});
+
+test('WS role metrics_viewer streams initial snapshot from metadata', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h = await pg.query(`INSERT INTO fleet_hosts (name) VALUES ('mvs') RETURNING id`);
+  const hostId = h.rows[0].id;
+  await pg.query(
+    `UPDATE fleet_hosts SET metadata = jsonb_build_object('latest_metrics', $2::jsonb) WHERE id=$1`,
+    [hostId, JSON.stringify({ ts: new Date().toISOString(), cpu_pct: 17, ram_used_bytes: 100, ram_total_bytes: 4096 })],
+  );
+  const port = server.address().port;
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=metrics_viewer&host_id=${hostId}`,
+    { headers: { authorization: 'Bearer T' } });
+  const frame = await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), 1000);
+    ws.on('message', (b) => { clearTimeout(t); resolve(JSON.parse(b.toString())); });
+    ws.on('error', reject);
+  });
+  assert.strictEqual(frame.type, 'metrics');
+  assert.strictEqual(frame.cpu_pct, 17);
+  ws.close();
+  await close();
+});

@@ -47,6 +47,7 @@ function makeBus() {
   const hooksBySession = new Map();         // session_id -> Set<fn(frame)>
   const pendingFileReqs = new Map();        // req_id -> {resolve, reject, timer}
   const workflowViewers = new Map();        // run_id -> Set<ws>
+  const metricsViewersByHost = new Map();   // host_id -> Set<ws>
   return {
     registerDaemon(hostId, ws) {
       const prev = daemonsByHost.get(hostId);
@@ -138,6 +139,18 @@ function makeBus() {
     },
     broadcastWorkflow(runId, frame) {
       const set = workflowViewers.get(runId);
+      if (!set) return;
+      const payload = JSON.stringify(frame);
+      for (const v of set) { try { v.send(payload); } catch {} }
+    },
+    addMetricsViewer(hostId, ws) {
+      let set = metricsViewersByHost.get(hostId);
+      if (!set) { set = new Set(); metricsViewersByHost.set(hostId, set); }
+      set.add(ws);
+      ws.on('close', () => { set.delete(ws); if (!set.size) metricsViewersByHost.delete(hostId); });
+    },
+    broadcastHostMetrics(hostId, frame) {
+      const set = metricsViewersByHost.get(hostId);
       if (!set) return;
       const payload = JSON.stringify(frame);
       for (const v of set) { try { v.send(payload); } catch {} }
@@ -865,6 +878,8 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'POST'   && path === '/fleet/exec') {
     return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
+  if (method === 'GET' && new RegExp(`^/fleet/hosts/${SID_RE}/metrics$`, 'i').test(path))    return handleHostMetrics({ req, res, ctx });
+  if (method === 'GET' && new RegExp(`^/fleet/hosts/${SID_RE}/inventory$`, 'i').test(path))  return handleHostInventory({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) return handleHostFileGet({ req, res, ctx });
   if (method === 'PUT'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) {
     return readBody(req).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
@@ -1036,6 +1051,17 @@ async function handleDaemonWs(ws, params, ctx) {
         }
         return;
       }
+      if (f.type === 'metrics') {
+        await fleetDb.insertHostMetric(ctx.db, host.id, f);
+        await fleetDb.setHostLatestMetrics(ctx.db, host.id, f);
+        ctx.bus.broadcastHostMetrics(host.id, { type: 'metrics', host_id: host.id, ...f });
+        return;
+      }
+      if (f.type === 'inventory') {
+        await fleetDb.setHostInventory(ctx.db, host.id, f);
+        ctx.bus.broadcastHostMetrics(host.id, { type: 'inventory', host_id: host.id, ...f });
+        return;
+      }
     } catch (e) {
       console.error(`[fleet-routes] daemon frame error: ${e.message}`);
     }
@@ -1151,6 +1177,43 @@ async function handleWorkflowViewerWs(ws, params, ctx) {
   ctx.bus.addWorkflowViewer(runId, ws);
 }
 
+async function handleMetricsViewerWs(ws, params, ctx) {
+  const hostId = params.get('host_id');
+  if (!hostId) return ws.close(4002, 'host_id required');
+  try {
+    const h = await fleetDb.getHost(ctx.db, hostId);
+    if (!h) return ws.close(4004, 'host not found');
+    const meta = h.metadata || {};
+    if (meta.latest_metrics) ws.send(JSON.stringify({ type: 'metrics', host_id: hostId, ...meta.latest_metrics }));
+    if (meta.inventory)      ws.send(JSON.stringify({ type: 'inventory', host_id: hostId, ...meta.inventory }));
+  } catch (e) { console.error('[fleet] metrics_viewer init:', e.message); }
+  ctx.bus.addMetricsViewer(hostId, ws);
+}
+
+async function handleHostMetrics({ req, res, ctx }) {
+  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/hosts/(${SID_RE})/metrics$`, 'i'));
+  if (!m) return send(res, 404, { error: 'bad path' });
+  const hostId = m[1];
+  const u = new URL(req.url, 'http://x');
+  const since = u.searchParams.get('since') || '1h';
+  const allowedIntervals = { '15m': '15 minutes', '1h': '1 hour', '6h': '6 hours', '24h': '24 hours', '7d': '7 days' };
+  const interval = allowedIntervals[since];
+  if (!interval) return send(res, 422, { error: `invalid since (allowed: ${Object.keys(allowedIntervals).join(',')})` });
+  const downsampled = u.searchParams.get('downsampled') === '1';
+  const rows = downsampled
+    ? await fleetDb.readMetricsRollupSince(ctx.db, hostId, interval)
+    : await fleetDb.readMetricsSince(ctx.db, hostId, interval);
+  send(res, 200, rows);
+}
+
+async function handleHostInventory({ req, res, ctx }) {
+  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/hosts/(${SID_RE})/inventory$`, 'i'));
+  if (!m) return send(res, 404, { error: 'bad path' });
+  const h = await fleetDb.getHost(ctx.db, m[1]);
+  if (!h) return send(res, 404, { error: 'host not found' });
+  send(res, 200, (h.metadata && h.metadata.inventory) || {});
+}
+
 // --- Mount ---
 
 function attach(server, ctx) {
@@ -1187,11 +1250,12 @@ function attach(server, ctx) {
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = server._fleetCtx;
       if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
-      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer') {
+      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
         return ws.close(4003, 'invalid role');
       }
       if (role === 'daemon')                handleDaemonWs(ws, u.searchParams, ctx);
       else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, u.searchParams, ctx);
+      else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, u.searchParams, ctx);
       else                                  handleViewerWs(ws, u.searchParams, ctx);
     });
   });
@@ -1244,11 +1308,12 @@ function attachUpgrade(server, getCtx) {
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = getCtx();
       if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
-      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer') {
+      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
         return ws.close(4003, 'invalid role');
       }
       if (role === 'daemon')                handleDaemonWs(ws, u.searchParams, ctx);
       else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, u.searchParams, ctx);
+      else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, u.searchParams, ctx);
       else                                  handleViewerWs(ws, u.searchParams, ctx);
     });
   });
