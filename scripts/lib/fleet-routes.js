@@ -102,10 +102,24 @@ function requireAdmin(req, res, ctx) {
 // vt-0136: short-lived signed WS tickets for browsers. The old path put the
 // raw bearer in the `Sec-WebSocket-Protocol` subprotocol where it leaks into
 // browser DevTools + reverse-proxy access logs and stays valid until token
-// rotation. Tickets are HMAC(role|exp), valid 60s, single use is not enforced
-// (cheap to issue) but expiry bounds replay.
+// rotation. Tickets are HMAC(role|exp), valid 60s.
+// vt-0179: ticket is SINGLE-USE — once consumed by a WS upgrade, the sig is
+// recorded in _consumedTickets (Map<sigHash,expiry>) and any second use in
+// the 60s window 4001s. Map is GC'd every 30s by sweeping expired entries.
 const WS_TICKET_TTL_MS = 60_000;
 const WS_TICKET_DERIVATION = 'fleet-ws-ticket-v1';
+const _consumedTickets = new Map();
+const _consumedSweepTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [sig, exp] of _consumedTickets) if (exp < now) _consumedTickets.delete(sig);
+}, 30_000);
+_consumedSweepTimer.unref?.();
+function _ticketSigHash(ticket) {
+  // Hash only the signature half — full ticket is bulky and the sig alone
+  // is unique per (role,exp,secret) tuple.
+  const parts = String(ticket).split('.');
+  return parts.length === 2 ? crypto.createHash('sha256').update(parts[1]).digest('hex').slice(0, 16) : null;
+}
 function wsTicketSecret(ctx) {
   // Per-process deterministic derivation from the viewer token — operators
   // who want explicit rotation can set VAULT_RAG_FLEET_WS_SECRET. Tickets are
@@ -1906,6 +1920,14 @@ function acceptWsUpgrade(ws, { role, auth, params, ctx, ticket }) {
     if (!viewerOk && !adminOk && ticket) {
       const verified = verifyWsTicket(ctx, ticket);
       if (verified) {
+        // vt-0179: single-use guard. Once consumed, the sig hash is parked
+        // in _consumedTickets until its natural expiry; a replay 401s.
+        const sigHash = _ticketSigHash(ticket);
+        if (sigHash && _consumedTickets.has(sigHash)) {
+          console.warn(`[fleet-routes] ws ticket replay refused (sig=${sigHash})`);
+          return ws.close(4001, 'ticket already used');
+        }
+        if (sigHash) _consumedTickets.set(sigHash, verified.exp);
         // Ticket role must match (or be a generic 'viewer' that fits the requested role).
         if (verified.role === role || verified.role === 'viewer') ticketOk = true;
       }
