@@ -29,6 +29,11 @@
     if (node.type === 'set_variable') return `${node.id}: set ${node.key || '?'}`;
     if (node.type === 'fan_out')      return `${node.id}: fan_out → ${(node.targets || []).length}`;
     if (node.type === 'aggregate')    return `${node.id}: ${node.op || 'concat'}`;
+    if (node.type === 'assert')       return `${node.id}: assert${node.fail_workflow ? '!' : ''}`;
+    if (node.type === 'log')          return `${node.id}: log [${node.level || 'info'}]`;
+    if (node.type === 'retry')        return `${node.id}: retry × ${node.max_attempts || 3}`;
+    if (node.type === 'for_each')     return `${node.id}: for_each ${node.input_ref || '?'}`;
+    if (node.type === 'sub_workflow') return `${node.id}: sub_workflow`;
     return node.id;
   }
 
@@ -110,6 +115,11 @@
                        n.type === 'notify'        ? '#b87a5f' :
                        n.type === 'transform'     ? '#9ab85f' :
                        n.type === 'set_variable'  ? '#5fb8b3' :
+                       n.type === 'assert'        ? '#b85f7a' :
+                       n.type === 'log'           ? '#7a8aa0' :
+                       n.type === 'retry'         ? '#b85f5f' :
+                       n.type === 'for_each'      ? '#a05fb8' :
+                       n.type === 'sub_workflow'  ? '#5f7ab8' :
                        '#6b7a8a';
         el('rect', {
           x: 0, y: 0, width: NODE_W, height: NODE_H,

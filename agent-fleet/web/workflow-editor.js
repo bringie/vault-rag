@@ -140,6 +140,11 @@
     document.getElementById('wf-add-set-variable')?.addEventListener('click', () => canvas.addNode(newNode('set_variable')));
     document.getElementById('wf-add-fan-out')     ?.addEventListener('click', () => canvas.addNode(newNode('fan_out')));
     document.getElementById('wf-add-aggregate')   ?.addEventListener('click', () => canvas.addNode(newNode('aggregate')));
+    document.getElementById('wf-add-assert')      ?.addEventListener('click', () => canvas.addNode(newNode('assert')));
+    document.getElementById('wf-add-log')         ?.addEventListener('click', () => canvas.addNode(newNode('log')));
+    document.getElementById('wf-add-retry')       ?.addEventListener('click', () => canvas.addNode(newNode('retry')));
+    document.getElementById('wf-add-for-each')    ?.addEventListener('click', () => canvas.addNode(newNode('for_each')));
+    document.getElementById('wf-add-sub-workflow')?.addEventListener('click', () => canvas.addNode(newNode('sub_workflow')));
     document.getElementById('wf-back').onclick       = () => location.hash = '#/workflows';
 
     document.getElementById('wf-save').onclick = async () => {
@@ -185,6 +190,11 @@
       if (type === 'set_variable') return { ...base, key: 'name', value_expr: '"value"' };
       if (type === 'fan_out')      return { ...base, targets: [], prompt: '', model: '', timeout_s: 300, headless: true };
       if (type === 'aggregate')    return { ...base, input_ref: '', op: 'concat' };
+      if (type === 'assert')       return { ...base, expr: 'true', message: '', fail_workflow: false };
+      if (type === 'log')          return { ...base, message: '', level: 'info' };
+      if (type === 'retry')        return { ...base, max_attempts: 3, backoff_ms: 1000, inner: { type: 'http_request', method: 'GET', url: 'https://' } };
+      if (type === 'for_each')     return { ...base, input_ref: '', item_var: 'item', inner: { type: 'transform', expr: 'item' } };
+      if (type === 'sub_workflow') return { ...base, workflow_id: '', inputs_map: {} };
       return base;
     }
 
@@ -282,6 +292,58 @@
           </select>
         `;
         wireInputs(cur.id, ['ref','op']);
+      } else if (cur.type === 'assert') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (assert)</h3>
+          <label>expr (JS predicate; sees ctx vars)</label>
+          <textarea id="i-assert-expr">${esc(cur.expr || '')}</textarea>
+          <label>message (shown on assert_result frame)</label>
+          <input id="i-assert-msg" value="${esc(cur.message || '')}">
+          <label><input id="i-assert-fail" type="checkbox" ${cur.fail_workflow ? 'checked' : ''}> fail_workflow on falsy</label>
+        `;
+        wireInputs(cur.id, ['assert-expr','assert-msg','assert-fail']);
+      } else if (cur.type === 'log') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (log)</h3>
+          <label>level</label>
+          <select id="i-loglevel">
+            ${['info','debug','warn','error'].map(l => `<option value="${l}" ${cur.level===l?'selected':''}>${l}</option>`).join('')}
+          </select>
+          <label>message (templated, supports {{n1.output}})</label>
+          <textarea id="i-logmsg">${esc(cur.message || '')}</textarea>
+        `;
+        wireInputs(cur.id, ['loglevel','logmsg']);
+      } else if (cur.type === 'retry') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (retry)</h3>
+          <label>max_attempts (1–10)</label>
+          <input id="i-max-attempts" type="number" min="1" max="10" value="${cur.max_attempts || 3}">
+          <label>backoff_ms (starts; exponential)</label>
+          <input id="i-backoff" type="number" value="${cur.backoff_ms || 1000}">
+          <label>inner (JSON of any other node minus id/position)</label>
+          <textarea id="i-inner-retry" rows="6">${esc(JSON.stringify(cur.inner || {}, null, 2))}</textarea>
+        `;
+        wireInputs(cur.id, ['max-attempts','backoff','inner-retry']);
+      } else if (cur.type === 'for_each') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (for_each)</h3>
+          <label>input_ref (ctx path to array, e.g. "n1.results" or "inputs.list")</label>
+          <input id="i-fe-ref" value="${esc(cur.input_ref || '')}">
+          <label>item_var (name exposed in ctx)</label>
+          <input id="i-item-var" value="${esc(cur.item_var || 'item')}">
+          <label>inner (JSON node config)</label>
+          <textarea id="i-inner-fe" rows="5">${esc(JSON.stringify(cur.inner || {}, null, 2))}</textarea>
+        `;
+        wireInputs(cur.id, ['fe-ref','item-var','inner-fe']);
+      } else if (cur.type === 'sub_workflow') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (sub_workflow)</h3>
+          <label>workflow_id (uuid of child workflow)</label>
+          <input id="i-sub-wf" value="${esc(cur.workflow_id || '')}">
+          <label>inputs_map (JSON {key: "js_expr_string"}; exprs see parent ctx)</label>
+          <textarea id="i-sub-inputs" rows="4">${esc(JSON.stringify(cur.inputs_map || {}, null, 2))}</textarea>
+        `;
+        wireInputs(cur.id, ['sub-wf','sub-inputs']);
       }
     }
 
@@ -323,6 +385,24 @@
           // aggregate
           if (k === 'ref')          cur.input_ref = elInp.value;
           if (k === 'op')           cur.op = elInp.value;
+          // assert
+          if (k === 'assert-expr')  cur.expr = elInp.value;
+          if (k === 'assert-msg')   cur.message = elInp.value;
+          if (k === 'assert-fail')  cur.fail_workflow = elInp.checked;
+          // log
+          if (k === 'loglevel')     cur.level = elInp.value;
+          if (k === 'logmsg')       cur.message = elInp.value;
+          // retry
+          if (k === 'max-attempts') cur.max_attempts = Math.min(10, Math.max(1, parseInt(elInp.value, 10) || 3));
+          if (k === 'backoff')      cur.backoff_ms = Math.max(0, parseInt(elInp.value, 10) || 1000);
+          if (k === 'inner-retry')  { try { cur.inner = JSON.parse(elInp.value); } catch {} }
+          // for_each
+          if (k === 'fe-ref')       cur.input_ref = elInp.value;
+          if (k === 'item-var')     cur.item_var = elInp.value || 'item';
+          if (k === 'inner-fe')     { try { cur.inner = JSON.parse(elInp.value); } catch {} }
+          // sub_workflow
+          if (k === 'sub-wf')       cur.workflow_id = elInp.value;
+          if (k === 'sub-inputs')   { try { cur.inputs_map = JSON.parse(elInp.value || '{}'); } catch {} }
           canvas.replaceDefinition(d);
           definition = d;
         };

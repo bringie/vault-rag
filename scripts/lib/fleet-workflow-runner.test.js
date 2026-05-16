@@ -353,3 +353,201 @@ test('transform: invalid expr fails the run with failed_node_id set', async () =
     assert.strictEqual(final.failed_node_id, 'n1');
   });
 });
+
+// --- vt-0109 blocks ---
+
+test('log: emits broadcast frame, output mirrors message', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'log', message: 'hello {{inputs.who}}' }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-log', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def, state: { inputs: { who: 'fleet' } } });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n1.output, 'hello fleet');
+    const logFrames = deps.getFrames().filter(f => f.frame.type === 'log');
+    assert.strictEqual(logFrames.length, 1);
+    assert.strictEqual(logFrames[0].frame.message, 'hello fleet');
+  });
+});
+
+test('assert: pass case → exit_code 0', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'assert', expr: '1 + 1 === 2', message: 'math works' }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-assert-ok', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n1.exit_code, 0);
+    assert.strictEqual(final.state.outputs.n1.pass, true);
+  });
+});
+
+test('assert: fail_workflow=true → run fails with failed_node_id', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'assert', expr: 'false', message: 'nope', fail_workflow: true }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-assert-fail', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'failed');
+    assert.strictEqual(final.failed_node_id, 'n1');
+  });
+});
+
+test('retry: re-executes inner on failure, succeeds on 3rd attempt', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{
+        id: 'n1', type: 'retry', max_attempts: 3, backoff_ms: 10,
+        inner: { type: 'claude', target: { host_name: 'h' }, prompt: 'p' },
+      }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-retry', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    let calls = 0;
+    const deps = makeDeps(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error(`attempt ${calls} fails`);
+      return { output: 'ok', exit_code: 0, session_id: 's' };
+    });
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(calls, 3, 'inner ran 3 times');
+    assert.strictEqual(final.state.outputs.n1.output, 'ok');
+  });
+});
+
+test('retry: exhausts attempts and fails the run', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{
+        id: 'n1', type: 'retry', max_attempts: 2, backoff_ms: 1,
+        inner: { type: 'transform', expr: 'nope.broken' },
+      }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-retry-fail', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'failed');
+    assert.strictEqual(final.failed_node_id, 'n1');
+  });
+});
+
+test('for_each: iterates array, binds item_var, collects results', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{
+        id: 'n1', type: 'for_each', input_ref: 'inputs.list', item_var: 'item',
+        inner: { type: 'transform', expr: '"item=" + item' },
+      }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-for-each', definition: def });
+    const r = await wfDb.createRun(c, {
+      workflowId: w.id, snapshot: def,
+      state: { inputs: { list: ['a', 'b', 'c'] } },
+    });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n1.results.length, 3);
+    assert.deepStrictEqual(final.state.outputs.n1.results.map(r => r.output), ['item=a', 'item=b', 'item=c']);
+  });
+});
+
+test('sub_workflow: drives child to completion and exposes outputs', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const childDef = {
+      start: 'a',
+      nodes: [{ id: 'a', type: 'transform', expr: '"child output " + inputs.x' }],
+      edges: [],
+    };
+    const childWf = await wfDb.createWorkflow(c, { name: 'wf-child', definition: childDef });
+
+    const parentDef = {
+      start: 'n1',
+      nodes: [{
+        id: 'n1', type: 'sub_workflow',
+        workflow_id: childWf.id,
+        inputs_map: { x: '"parent val"' },
+      }],
+      edges: [],
+    };
+    const parentWf = await wfDb.createWorkflow(c, { name: 'wf-parent', definition: parentDef });
+    const r = await wfDb.createRun(c, { workflowId: parentWf.id, snapshot: parentDef });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n1.outputs.a.output, 'child output parent val');
+  });
+});
+
+test('recursion guard: dispatch cap kicks in on infinite-loop sub_workflow', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // Create a workflow that calls itself — guarded only by dispatch cap.
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'sub_workflow', workflow_id: 'placeholder' }],
+      edges: [],
+    };
+    const wf = await wfDb.createWorkflow(c, { name: 'wf-self', definition: def });
+    def.nodes[0].workflow_id = wf.id;
+    await wfDb.updateWorkflow(c, wf.id, { definition: def });
+    const r = await wfDb.createRun(c, { workflowId: wf.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'failed');
+    // Walk descendant runs (created during recursion) until we find one that
+    // carries the actual depth-exceeded error — the root run only sees its
+    // immediate child's "sub_workflow ended with status=failed" wrapper.
+    const { rows: descendants } = await c.query(
+      'SELECT state FROM fleet_workflow_runs WHERE id <> $1 ORDER BY created_at',
+      [r.id]);
+    const allErrors = descendants.map(d => (d.state && d.state.error) || '').join(' || ');
+    assert.match(allErrors, /recursion|dispatches|nesting|depth/i);
+  });
+});

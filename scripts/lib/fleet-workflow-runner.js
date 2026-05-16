@@ -85,11 +85,22 @@ function nextNode(currentId, def, branchResult) {
   return out[0].to;
 }
 
+// Cap on total node dispatches per run — guards against runaway recursion
+// when sub_workflow / retry / for_each are nested aggressively. 500 covers
+// any realistic workflow (each top-level node usually counts as 1; the cap
+// is the sum across recursion levels).
+const MAX_DISPATCHES_PER_RUN = 500;
+// Max chain of nested sub_workflow runs (depth=0 is root run). Prevents
+// runaway recursion when workflow A calls B calls A.
+const MAX_SUB_WORKFLOW_DEPTH = 10;
+
 function createRunner(deps) {
   const cancelled = new Set();
   // Per-run AbortControllers — abort() on cancel() so long-running execClaude
   // poll loops can short-circuit instead of waiting full timeout_s (vt-0075).
   const activeControllers = new Map(); // runId → AbortController
+  // Per-run dispatch counter (resets on cancel cleanup).
+  const dispatchCount = new Map(); // runId → int
 
   async function execClaude(node, ctx, runId) {
     const prompt = substituteTemplates(node.prompt, ctx);
@@ -272,6 +283,149 @@ function createRunner(deps) {
     return { output: String(output), exit_code: 0 };
   }
 
+  // assert: predicate check with optional named failure event. Like branch but
+  // doesn't fork; if fail_workflow=true a falsy result throws to kill the run.
+  // Use case: "exit_code === 0 before continuing" style guards.
+  function execAssert(node, ctx, runId) {
+    if (!node.expr) throw new Error('assert: expr required');
+    const sandbox = vm.createContext({ ...ctx });
+    let pass;
+    try {
+      pass = !!vm.runInContext(node.expr, sandbox, { timeout: 200 });
+    } catch (e) {
+      throw new Error(`assert error: ${e.message}`);
+    }
+    const message = node.message || (pass ? 'ok' : 'assertion failed');
+    deps.broadcast(runId, { type: 'assert_result', run_id: runId, node_id: node.id, pass, message });
+    if (!pass && node.fail_workflow) throw new Error(`assert failed: ${message}`);
+    return { output: message, exit_code: pass ? 0 : 1, pass };
+  }
+
+  // log: emit a debug/audit marker into the broadcast stream. Output mirrors
+  // the message so downstream nodes can reference it via {{nX.output}}.
+  function execLog(node, ctx, runId) {
+    const message = substituteTemplates(node.message || '', ctx);
+    const level = node.level || 'info';
+    deps.broadcast(runId, { type: 'log', run_id: runId, node_id: node.id, level, message });
+    return { output: message, exit_code: 0 };
+  }
+
+  // retry: wrap an inner node, re-execute up to max_attempts with exponential
+  // backoff on non-cancellation errors. Returns inner's first successful
+  // result, or throws the last error after exhausting attempts.
+  async function execRetry(node, ctx, runId) {
+    if (!node.inner || !node.inner.type) throw new Error('retry: inner.{type} required');
+    const maxAttempts = Math.max(1, Math.min(node.max_attempts || 3, 10));
+    const baseBackoff = Math.max(0, node.backoff_ms || 1000);
+    let lastErr;
+    for (let i = 1; i <= maxAttempts; i++) {
+      if (cancelled.has(runId)) throw new Error('cancelled');
+      try {
+        return await dispatchNode({ ...node.inner, id: `${node.id}.attempt${i}` }, ctx, runId);
+      } catch (e) {
+        if (e.message === 'cancelled') throw e;
+        lastErr = e;
+        if (i < maxAttempts) {
+          await new Promise(r => setTimeout(r, baseBackoff * Math.pow(2, i - 1)));
+        }
+      }
+    }
+    throw lastErr || new Error(`retry: exhausted ${maxAttempts} attempts`);
+  }
+
+  // for_each: iterate over a referenced array (ctx path like "n2.results"),
+  // execute inner per item with ctx[item_var] bound to current value. Sibling
+  // to fan_out — same shape of result, but serial (good for rate-limited APIs).
+  async function execForEach(node, ctx, runId) {
+    if (!node.inner || !node.inner.type) throw new Error('for_each: inner.{type} required');
+    if (!node.input_ref) throw new Error('for_each: input_ref required');
+    const parts = String(node.input_ref).split('.');
+    let arr = ctx;
+    for (const p of parts) { if (arr == null) { arr = []; break; } arr = arr[p]; }
+    if (!Array.isArray(arr)) throw new Error(`for_each: ${node.input_ref} is not an array`);
+    const itemVar = node.item_var || 'item';
+    const results = [];
+    for (let i = 0; i < arr.length; i++) {
+      if (cancelled.has(runId)) throw new Error('cancelled');
+      const itemCtx = { ...ctx, [itemVar]: arr[i], index: i };
+      try {
+        const r = await dispatchNode({ ...node.inner, id: `${node.id}.${i}` }, itemCtx, runId);
+        results.push(r);
+      } catch (e) {
+        if (e.message === 'cancelled') throw e;
+        results.push({ error: e.message, exit_code: -1 });
+      }
+    }
+    return { output: `for_each ${arr.length} iterations`, exit_code: 0, results };
+  }
+
+  // sub_workflow: load another workflow, create a child run, drive to completion,
+  // expose its outputs. Inputs to the child are computed from inputs_map (string
+  // JS exprs evaluated against parent ctx). Recursion guarded by dispatch counter.
+  async function execSubWorkflow(node, ctx, runId) {
+    if (!node.workflow_id) throw new Error('sub_workflow: workflow_id required');
+    // Recursion guard: walk parent chain via state.depth. dispatchCount is
+    // per-runId so it doesn't catch cross-run recursion — depth does.
+    const parentRun = await wfDb.getRun(deps.db, runId);
+    const depth = (parentRun && parentRun.state && parentRun.state.depth) || 0;
+    if (depth >= MAX_SUB_WORKFLOW_DEPTH) {
+      throw new Error(`sub_workflow: max nesting depth (${MAX_SUB_WORKFLOW_DEPTH}) exceeded`);
+    }
+    const child = await wfDb.getWorkflow(deps.db, node.workflow_id);
+    if (!child) throw new Error(`sub_workflow: workflow ${node.workflow_id} not found`);
+    const childInputs = {};
+    for (const [k, expr] of Object.entries(node.inputs_map || {})) {
+      const sb = vm.createContext({ ...ctx });
+      try { childInputs[k] = vm.runInContext(expr, sb, { timeout: 200 }); }
+      catch (e) { throw new Error(`sub_workflow: inputs_map.${k}: ${e.message}`); }
+    }
+    const childRun = await wfDb.createRun(deps.db, {
+      workflowId: child.id, snapshot: child.definition,
+      state: { inputs: childInputs, parent_run_id: runId, parent_node_id: node.id, depth: depth + 1 },
+    });
+    deps.broadcast(runId, { type: 'sub_workflow_started', run_id: runId, node_id: node.id, child_run_id: childRun.id });
+    await _runToCompletion(childRun.id);
+    const finalRun = await wfDb.getRun(deps.db, childRun.id);
+    if (!finalRun || finalRun.status !== 'done') {
+      throw new Error(`sub_workflow ended with status=${finalRun ? finalRun.status : 'missing'}`);
+    }
+    return {
+      output: `sub_workflow ${child.name} done`,
+      exit_code: 0,
+      child_run_id: childRun.id,
+      outputs: (finalRun.state && finalRun.state.outputs) || {},
+    };
+  }
+
+  // Unified dispatcher — used by both the main while-loop and by retry/for_each
+  // when they execute their inner node. Recursion is depth-limited via
+  // dispatchCount; cancellation is checked at every dispatch.
+  async function dispatchNode(node, ctx, runId) {
+    const n = (dispatchCount.get(runId) || 0) + 1;
+    if (n > MAX_DISPATCHES_PER_RUN) {
+      throw new Error(`run ${runId} exceeded ${MAX_DISPATCHES_PER_RUN} dispatches — recursion guard`);
+    }
+    dispatchCount.set(runId, n);
+    if (cancelled.has(runId)) throw new Error('cancelled');
+    switch (node.type) {
+      case 'claude':       return await execClaude(node, ctx, runId);
+      case 'branch':       return execBranch(node, ctx);
+      case 'delay':        return await execDelay(node, runId);
+      case 'transform':    return execTransform(node, ctx);
+      case 'http_request': return await execHttpRequest(node, ctx, runId);
+      case 'notify':       return await execNotify(node, ctx, runId);
+      case 'set_variable': return execSetVariable(node, ctx);
+      case 'fan_out':      return await execFanOut(node, ctx, runId);
+      case 'aggregate':    return execAggregate(node, ctx);
+      case 'assert':       return execAssert(node, ctx, runId);
+      case 'log':          return execLog(node, ctx, runId);
+      case 'retry':        return await execRetry(node, ctx, runId);
+      case 'for_each':     return await execForEach(node, ctx, runId);
+      case 'sub_workflow': return await execSubWorkflow(node, ctx, runId);
+      default: throw new Error(`unknown node type: ${node.type}`);
+    }
+  }
+
   async function execDelay(node, runId) {
     const ms = Math.max(0, (node.seconds || 0) * 1000);
     if (ms === 0) return {};
@@ -296,6 +450,7 @@ function createRunner(deps) {
     } finally {
       // vt-0082: clean Set entry so it doesn't leak over hub lifetime.
       cancelled.delete(runId);
+      dispatchCount.delete(runId);
     }
   }
 
@@ -329,16 +484,7 @@ function createRunner(deps) {
       const ctxData = { ...outputs, inputs };
       let result;
       try {
-        if      (node.type === 'claude')        result = await execClaude(node, ctxData, runId);
-        else if (node.type === 'branch')        result = execBranch(node, ctxData);
-        else if (node.type === 'delay')         result = await execDelay(node, runId);
-        else if (node.type === 'transform')     result = execTransform(node, ctxData);
-        else if (node.type === 'http_request')  result = await execHttpRequest(node, ctxData, runId);
-        else if (node.type === 'notify')        result = await execNotify(node, ctxData, runId);
-        else if (node.type === 'set_variable')  result = execSetVariable(node, ctxData);
-        else if (node.type === 'fan_out')       result = await execFanOut(node, ctxData, runId);
-        else if (node.type === 'aggregate')     result = execAggregate(node, ctxData);
-        else throw new Error(`unknown node type: ${node.type}`);
+        result = await dispatchNode(node, ctxData, runId);
       } catch (e) {
         if (e.message === 'cancelled') {
           await wfDb.updateRunStatus(deps.db, runId, 'cancelled');
