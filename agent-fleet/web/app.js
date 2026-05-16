@@ -1165,10 +1165,12 @@
         btn.onclick = async () => {
           const idx = parseInt(btn.dataset.rmLabel, 10);
           const newLabels = (g.labels || []).filter((_, i) => i !== idx);
-          await api('PATCH', '/groups/' + g.id, { labels: newLabels });
-          g.labels = newLabels;
-          renderLabels();
-          loadGroups();
+          try {
+            await api('PATCH', '/groups/' + g.id, { labels: newLabels });
+            g.labels = newLabels;
+            renderLabels();
+            loadGroups();
+          } catch (e) { alert('remove label failed: ' + e.message); }
         };
       });
     }
@@ -1184,15 +1186,19 @@
         : '<span style="color:var(--text-faint)">no hosts in this group</span>';
       row.querySelectorAll('[data-rm-host]').forEach(btn => {
         btn.onclick = async () => {
-          await fetch(`/api/fleet/groups/${g.id}/hosts/${btn.dataset.rmHost}`, {
-            method: 'DELETE', headers: { authorization: 'Bearer ' + state.token } });
-          g.hosts = (g.hosts || []).filter(h => h.id !== btn.dataset.rmHost);
-          renderHosts();
-          // Refresh host picker
-          $('gd-host-pick').innerHTML = state.hosts
-            .filter(h => !(g.hosts||[]).find(gh => gh.id === h.id))
-            .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
-          loadGroups();
+          // vt-0081: use api() helper (throws on !ok) instead of raw fetch.
+          // Commit local state AFTER server confirms. Surface error to user.
+          try {
+            await api('DELETE', `/groups/${g.id}/hosts/${btn.dataset.rmHost}`);
+            g.hosts = (g.hosts || []).filter(h => h.id !== btn.dataset.rmHost);
+            renderHosts();
+            $('gd-host-pick').innerHTML = state.hosts
+              .filter(h => !(g.hosts||[]).find(gh => gh.id === h.id))
+              .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
+            loadGroups();
+          } catch (e) {
+            alert('remove host failed: ' + e.message);
+          }
         };
       });
     }
@@ -1204,24 +1210,28 @@
       const v = (inp.value || '').trim();
       if (!v) return;
       const newLabels = [...(g.labels || []), v];
-      await api('PATCH', '/groups/' + g.id, { labels: newLabels });
-      g.labels = newLabels;
-      inp.value = '';
-      renderLabels();
-      loadGroups();
+      try {
+        await api('PATCH', '/groups/' + g.id, { labels: newLabels });
+        g.labels = newLabels;
+        inp.value = '';
+        renderLabels();
+        loadGroups();
+      } catch (e) { alert('add label failed: ' + e.message); }
     };
     $('gd-add-host-form').onsubmit = async (ev) => {
       ev.preventDefault();
       const hostId = $('gd-host-pick').value;
       if (!hostId) return;
-      await api('POST', `/groups/${g.id}/hosts`, { host_id: hostId });
-      const added = state.hosts.find(h => h.id === hostId);
-      if (added) g.hosts = [...(g.hosts || []), added];
-      renderHosts();
-      $('gd-host-pick').innerHTML = state.hosts
-        .filter(h => !(g.hosts||[]).find(gh => gh.id === h.id))
-        .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
-      loadGroups();
+      try {
+        await api('POST', `/groups/${g.id}/hosts`, { host_id: hostId });
+        const added = state.hosts.find(h => h.id === hostId);
+        if (added) g.hosts = [...(g.hosts || []), added];
+        renderHosts();
+        $('gd-host-pick').innerHTML = state.hosts
+          .filter(h => !(g.hosts||[]).find(gh => gh.id === h.id))
+          .map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('');
+        loadGroups();
+      } catch (e) { alert('add host failed: ' + e.message); }
     };
     modal.querySelector('[data-gd-close]').onclick = () => { modal.hidden = true; };
   }
