@@ -332,32 +332,94 @@
       row.onclick = async () => {
         listEl.querySelectorAll('.vault-history-row.active').forEach(r => r.classList.remove('active'));
         row.classList.add('active');
-        previewEl.innerHTML = '<em>loading…</em>';
-        try {
-          const s = await api('GET', `/notes/show?path=${encodeURIComponent(p)}&sha=${encodeURIComponent(c.sha)}`);
-          // Render as Markdown so the preview is readable; user can right-click
-          // → "view source" if they need raw.
-          const wrap = document.createElement('div');
-          wrap.className = 'vault-md';
-          // Don't pass through expandWikiLinks here — historic state may have
-          // referenced files that are renamed/gone today; raw markdown is
-          // truthful, and unresolved links would mislead.
-          const html = window.marked && window.DOMPurify
-            ? window.DOMPurify.sanitize(window.marked.parse(s.text || ''), { ADD_ATTR: ['target'] })
-            : esc(s.text || '');
-          wrap.innerHTML = html;
-          previewEl.innerHTML = '';
-          const meta = document.createElement('div');
-          meta.className = 'vault-history-meta';
-          meta.textContent = `${c.sha.slice(0,8)} · ${new Date(c.ts).toLocaleString()} · ${c.author}`;
-          previewEl.appendChild(meta);
-          previewEl.appendChild(wrap);
-        } catch (e) {
-          previewEl.innerHTML = `<em>error: ${esc(e.message)}</em>`;
-        }
+        await renderHistoryPreview(previewEl, p, c, 'blob');
       };
       listEl.appendChild(row);
     }
+  }
+
+  // vt-0159: history preview supports three modes:
+  //   blob       — full file content at this revision (Markdown rendered)
+  //   patch      — `git show sha -- path` (this commit vs its parent)
+  //   vs-current — `git diff sha WORK -- path` (this commit vs working tree)
+  async function renderHistoryPreview(previewEl, p, c, mode) {
+    previewEl.innerHTML = '<em>loading…</em>';
+    const meta = document.createElement('div');
+    meta.className = 'vault-history-meta';
+    meta.textContent = `${c.sha.slice(0,8)} · ${new Date(c.ts).toLocaleString()} · ${c.author}`;
+    // Mode switcher buttons.
+    const modes = document.createElement('div');
+    modes.className = 'vault-history-modes';
+    for (const m of [
+      { id: 'blob',       label: 'blob' },
+      { id: 'patch',      label: 'patch (vs parent)' },
+      { id: 'vs-current', label: 'diff vs current' },
+    ]) {
+      const b = document.createElement('button');
+      b.className = 'btn-ghost' + (m.id === mode ? ' active-nav' : '');
+      b.textContent = m.label;
+      b.onclick = () => renderHistoryPreview(previewEl, p, c, m.id);
+      modes.appendChild(b);
+    }
+    try {
+      if (mode === 'blob') {
+        const s = await api('GET', `/notes/show?path=${encodeURIComponent(p)}&sha=${encodeURIComponent(c.sha)}`);
+        const wrap = document.createElement('div');
+        wrap.className = 'vault-md';
+        // Don't pass through expandWikiLinks — historic state may reference
+        // renamed/gone files; raw markdown is truthful.
+        wrap.innerHTML = window.marked && window.DOMPurify
+          ? window.DOMPurify.sanitize(window.marked.parse(s.text || ''), { ADD_ATTR: ['target'] })
+          : esc(s.text || '');
+        previewEl.innerHTML = '';
+        previewEl.appendChild(modes);
+        previewEl.appendChild(meta);
+        previewEl.appendChild(wrap);
+      } else {
+        const url = mode === 'patch'
+          ? `/notes/diff?path=${encodeURIComponent(p)}&sha=${encodeURIComponent(c.sha)}`
+          : `/notes/diff?path=${encodeURIComponent(p)}&from=${encodeURIComponent(c.sha)}&to=WORK`;
+        const r = await api('GET', url);
+        previewEl.innerHTML = '';
+        previewEl.appendChild(modes);
+        previewEl.appendChild(meta);
+        if (!r.diff || !r.diff.trim()) {
+          const empty = document.createElement('div');
+          empty.innerHTML = '<em>no differences</em>';
+          previewEl.appendChild(empty);
+        } else {
+          previewEl.appendChild(renderDiff(r.diff));
+        }
+      }
+    } catch (e) {
+      previewEl.innerHTML = '';
+      previewEl.appendChild(modes);
+      previewEl.appendChild(meta);
+      const err = document.createElement('div');
+      err.innerHTML = `<em>error: ${esc(e.message)}</em>`;
+      previewEl.appendChild(err);
+    }
+  }
+
+  // Minimal colorizer for unified diff. Classifies each line by leading
+  // char and wraps in a span — no parsing of hunks beyond the visual cue.
+  function renderDiff(text) {
+    const pre = document.createElement('pre');
+    pre.className = 'vault-diff';
+    const out = String(text || '').split('\n').map(line => {
+      if (line.startsWith('+++') || line.startsWith('---')) {
+        return `<span class="diff-meta">${esc(line)}</span>`;
+      }
+      if (line.startsWith('@@')) return `<span class="diff-hunk">${esc(line)}</span>`;
+      if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('commit ') || line.startsWith('Author:') || line.startsWith('Date:')) {
+        return `<span class="diff-meta">${esc(line)}</span>`;
+      }
+      if (line.startsWith('+')) return `<span class="diff-add">${esc(line)}</span>`;
+      if (line.startsWith('-')) return `<span class="diff-del">${esc(line)}</span>`;
+      return esc(line);
+    }).join('\n');
+    pre.innerHTML = out;
+    return pre;
   }
 
   function startEdit() {

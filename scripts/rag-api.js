@@ -359,6 +359,51 @@ async function handleNotesShow(req, res) {
   });
 }
 
+// vt-0159: unified diff for a vault file. Two modes:
+//   ?path=X&sha=Y           → `git show --no-color Y -- X` (this commit vs parent)
+//   ?path=X&from=A&to=B     → `git diff --no-color A B -- X` (arbitrary range)
+//                             B may be the literal "HEAD" or "WORK" (working tree)
+// Auth: viewer Bearer. Read-only.
+async function handleNotesDiff(req, res) {
+  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  const u = new URL(req.url, 'http://x');
+  const rel = (u.searchParams.get('path') || '').replace(/^\/+/, '');
+  if (!rel || rel.includes('..')) return send(res, 422, { error: 'bad path' });
+  const sha = u.searchParams.get('sha') || '';
+  const from = u.searchParams.get('from') || '';
+  const to = u.searchParams.get('to') || '';
+  // sha-or-ref pattern: hex sha, or HEAD, or WORK (alias for working tree).
+  const refRe = /^([0-9a-f]{4,64}|HEAD|WORK)$/i;
+  let args;
+  if (sha) {
+    if (!refRe.test(sha)) return send(res, 422, { error: 'bad sha' });
+    args = ['-C', VAULT, 'show', '--no-color', '--unified=3', sha, '--', rel];
+  } else if (from && to) {
+    if (!refRe.test(from) || !refRe.test(to)) return send(res, 422, { error: 'bad ref' });
+    if (to.toUpperCase() === 'WORK') {
+      // working tree side — `git diff <from> -- path` does this implicitly
+      args = ['-C', VAULT, 'diff', '--no-color', '--unified=3', from, '--', rel];
+    } else {
+      args = ['-C', VAULT, 'diff', '--no-color', '--unified=3', from, to, '--', rel];
+    }
+  } else {
+    return send(res, 422, { error: 'sha OR (from+to) required' });
+  }
+  const { spawn } = require('node:child_process');
+  const p = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const chunks = []; let err = '';
+  p.stdout.on('data', (c) => chunks.push(c));
+  p.stderr.on('data', (c) => { err += c.toString('utf8'); });
+  p.on('close', (code) => {
+    if (code !== 0 && code !== 1) {
+      // git diff exits 1 when there ARE differences — that's not an error.
+      // Only treat other non-zero as failure.
+      return send(res, 500, { error: 'git failed', detail: err.slice(0, 200) });
+    }
+    send(res, 200, { path: rel, diff: Buffer.concat(chunks).toString('utf8') });
+  });
+}
+
 // vt-0140: ingest path moved from the standalone tokmon-ingest container.
 // Auth is the separate VAULT_RAG_TOKMON_INGEST_TOKEN — shippers don't hold
 // the viewer or admin bearer.
@@ -714,6 +759,13 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url.startsWith('/notes/show')) {
     return handleNotesShow(req, res).catch(e => {
       console.error('[rag-api] /notes/show', e.stack || e.message);
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
+  // vt-0159: unified diff (patch for one commit, or arbitrary range).
+  if (req.method === 'GET' && req.url.startsWith('/notes/diff')) {
+    return handleNotesDiff(req, res).catch(e => {
+      console.error('[rag-api] /notes/diff', e.stack || e.message);
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }

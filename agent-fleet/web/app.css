@@ -829,6 +829,26 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   font:10px/1.4 monospace; color:var(--text-dim, #888);
   padding-bottom:8px; margin-bottom:10px; border-bottom:1px solid var(--border, #333);
 }
+
+/* vt-0159: history preview mode switcher + unified diff */
+.vault-history-modes {
+  display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;
+}
+.vault-history-modes .btn-ghost { padding:.25em .7em; font-size:11px; }
+.vault-history-modes .btn-ghost.active-nav {
+  background:var(--bg-hover, #1c1c1c); color:var(--accent, #6cf);
+  border:1px solid var(--accent, #6cf);
+}
+.vault-diff {
+  background:var(--bg-hover, #1c1c1c); padding:10px 12px; border-radius:3px;
+  font:11px/1.5 "JetBrains Mono", monospace;
+  white-space:pre; overflow:auto; margin:0;
+  max-height:calc(85vh - 200px);
+}
+.vault-diff .diff-add  { color:#7ec699; display:block; background:rgba(126,198,153,.08); }
+.vault-diff .diff-del  { color:#f08080; display:block; background:rgba(240,128,128,.08); }
+.vault-diff .diff-hunk { color:#6cf;    display:block; }
+.vault-diff .diff-meta { color:var(--text-dim, #888); display:block; }
 @media (max-width:768px) {
   .vault-history-body { flex-direction:column; }
   .vault-history-list { width:auto; border-right:none; border-bottom:1px solid var(--border, #333); max-height:40vh; }
