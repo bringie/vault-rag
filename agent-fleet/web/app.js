@@ -1181,10 +1181,15 @@
   }
 
   // ============ Boot ============
-  function boot() {
+  async function boot() {
     readToken();
     if (!state.token) { showAuth(); return; }
     showApp();
+    // Load i18n dictionary BEFORE first render to avoid raw-key flash
+    if (window.fleetI18n) {
+      await window.fleetI18n.loadLang(localStorage.fleetLang || 'en');
+      window.fleetI18n.wireSwitcher();
+    }
     wireSpawn();
     $('reload').onclick = refresh;
     $('nav-dashboard').onclick = () => navigate('/dashboard');
