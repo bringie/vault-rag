@@ -266,6 +266,7 @@ services:
       retries: 3
 
   vault-rag-grafana:
+    profiles: ["monitoring"]   # vt-0112: agent-fleet UI covers cost+host metrics; bring back with --profile monitoring
     image: grafana/grafana:11.3.0
     container_name: vault-rag-grafana
     logging: *default-logging
@@ -305,6 +306,7 @@ services:
 
 
   vault-rag-vmsingle:
+    profiles: ["monitoring"]
     image: victoriametrics/victoria-metrics:v1.108.1
     container_name: vault-rag-vmsingle
     logging: *default-logging
@@ -331,6 +333,7 @@ services:
       retries: 3
 
   vault-rag-node-exporter:
+    profiles: ["monitoring"]
     image: prom/node-exporter:v1.8.2
     container_name: vault-rag-node-exporter
     logging: *default-logging
@@ -357,6 +360,7 @@ services:
       retries: 3
 
   vault-rag-cadvisor:
+    profiles: ["monitoring"]
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: vault-rag-cadvisor
     logging: *default-logging
@@ -376,6 +380,7 @@ services:
       - vault-rag-net
 
   vault-rag-postgres-exporter:
+    profiles: ["monitoring"]
     image: prometheuscommunity/postgres-exporter:v0.15.0
     container_name: vault-rag-postgres-exporter
     logging: *default-logging
