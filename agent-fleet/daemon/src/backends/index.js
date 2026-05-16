@@ -38,8 +38,14 @@ function loadBackends({ configPath, baseDir } = {}) {
     let cfg;
     try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8')); }
     catch (e) {
-      console.warn(`[backends] failed to parse ${configPath}: ${e.message} — using claude only`);
-      return { registry, default: defaultName };
+      // vt-0183: on parse error during a HOT reload we MUST NOT return
+      // claude-only — that would silently drop third-party backends
+      // already running. Throw; caller (reloadBackends) catches and
+      // keeps the prior good registry. Initial load is also protected
+      // in ws-client.js (wrap reloadBackends() at startup in try/catch).
+      const err = new Error(`failed to parse ${configPath}: ${e.message}`);
+      err.parseError = true;
+      throw err;
     }
     if (cfg.default) defaultName = cfg.default;
     const dir = baseDir || path.dirname(configPath);

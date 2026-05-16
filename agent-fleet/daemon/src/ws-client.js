@@ -105,12 +105,19 @@ const MAX_BACKOFF = 30_000;
 function computeBackoff(attempt) {
   const exp = Math.min(MAX_BACKOFF, MIN_BACKOFF * 2 ** attempt);
   const jitter = (Math.random() * 0.5 - 0.25) * exp;
-  return Math.max(0, Math.round(exp + jitter));
+  // vt-0183: clamp BOTH sides — without the upper clamp, jitter at the
+  // cap could push the result to ~37.5s (25% above MAX_BACKOFF).
+  return Math.min(MAX_BACKOFF, Math.max(0, Math.round(exp + jitter)));
 }
 
 function safeSend(ws, obj) {
   if (!ws || ws.readyState !== 1) return;
-  try { ws.send(JSON.stringify(obj)); } catch {}
+  try { ws.send(JSON.stringify(obj)); }
+  catch (e) {
+    // vt-0183: silent drop made circular-ref / oversized frames invisible.
+    // Log type+error so operators can see a misbehaving collector.
+    console.error(`[daemon] safeSend dropped frame type=${obj && obj.type}: ${e.message}`);
+  }
 }
 
 async function runDaemon(opts) {
@@ -136,7 +143,16 @@ async function runDaemon(opts) {
     defaultBackend = out.default;
     console.log(`[daemon] backends loaded: ${[...backends.keys()].join(', ')} (default=${defaultBackend})`);
   };
-  reloadBackends();
+  // vt-0183: initial load may now throw on parse error (so hot-reloads
+  // don't silently drop third-party backends). Fall back to claude-only
+  // here so the daemon still starts.
+  try { reloadBackends(); }
+  catch (e) {
+    console.error(`[daemon] initial backends load failed: ${e.message} — falling back to claude only`);
+    backends = new Map();
+    backends.set('claude', require('./backends').loadBackends({}).registry.get('claude'));
+    defaultBackend = 'claude';
+  }
   // vt-0103: hot-reload on SIGHUP (POSIX) so the operator can `kill -HUP $(pidof
   // agent-fleet-daemon)` after editing backends.json without restarting the
   // daemon (= no session loss). Also watch the file directly so even systems

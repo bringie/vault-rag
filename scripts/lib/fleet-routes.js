@@ -305,6 +305,12 @@ async function handleGetHost({ req, res, ctx }) {
 
 async function handleDeleteHost({ req, res, ctx }) {
   const id = pathMatch(req.url, '/fleet/hosts');
+  // vt-0183: require ?confirm=1 — DELETE cascades to sessions+events+
+  // metrics+groups, so a typo'd UUID wipes a host's full history.
+  const u = new URL(req.url, 'http://x');
+  if (u.searchParams.get('confirm') !== '1') {
+    return send(res, 400, { error: 'add ?confirm=1 to delete (cascades to sessions+events+metrics)' });
+  }
   await fleetDb.deleteHost(ctx.db, id);
   res.writeHead(204); res.end();
 }

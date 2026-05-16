@@ -124,10 +124,14 @@ function checkAuth(req) {
   const h = req.headers['authorization'] || '';
   if (!h.startsWith('Bearer ')) return false;
   const tok = h.slice(7).trim();
+  // vt-0183: use crypto.timingSafeEqual for consistency with shared-auth.js
+  // and to handle multi-byte UTF-8 correctly (charCodeAt was fine for ASCII
+  // tokens, but the buffer-based form is textbook + matches the rest of
+  // the codebase).
   if (tok.length !== TOKEN.length) return false;
-  let diff = 0;
-  for (let i = 0; i < tok.length; i++) diff |= tok.charCodeAt(i) ^ TOKEN.charCodeAt(i);
-  return diff === 0;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(tok, 'utf8'), Buffer.from(TOKEN, 'utf8'));
+  } catch { return false; }
 }
 
 function safeRel(p) {
@@ -558,6 +562,12 @@ async function handleGet(body) {
   const full = path.join(VAULT, p);
   if (!full.startsWith(VAULT + path.sep) && full !== VAULT) throw new Error('bad path');
   if (!fs.existsSync(full)) throw new Error('not found');
+  // vt-0183: realpath check — match handlePut. A pre-existing symlink
+  // could otherwise let a GET leak content from outside the vault root.
+  const realFull = fs.realpathSync(full);
+  if (!realFull.startsWith(VAULT + path.sep) && realFull !== VAULT) {
+    throw new Error('bad path (symlink escape)');
+  }
   const text = fs.readFileSync(full, 'utf8');
   const stat = fs.statSync(full);
   // vt-0141: round-trip sha so callers (Fleet UI editor) can send it back

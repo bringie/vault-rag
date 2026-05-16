@@ -427,7 +427,13 @@
   //   blob       — full file content at this revision (Markdown rendered)
   //   patch      — `git show sha -- path` (this commit vs its parent)
   //   vs-current — `git diff sha WORK -- path` (this commit vs working tree)
+  // vt-0183: _previewSeq guards against out-of-order completion when the
+  // user clicks commits faster than the network round-trip — only the
+  // latest click renders.
+  let _previewSeq = 0;
   async function renderHistoryPreview(previewEl, p, c, mode) {
+    const seq = ++_previewSeq;
+    const isStale = () => seq !== _previewSeq;
     previewEl.innerHTML = '<em>loading…</em>';
     const meta = document.createElement('div');
     meta.className = 'vault-history-meta';
@@ -449,6 +455,7 @@
     try {
       if (mode === 'blob') {
         const s = await api('GET', `/notes/show?path=${encodeURIComponent(p)}&sha=${encodeURIComponent(c.sha)}`);
+        if (isStale()) return;
         const wrap = document.createElement('div');
         wrap.className = 'vault-md';
         // Don't pass through expandWikiLinks — historic state may reference
@@ -465,6 +472,7 @@
           ? `/notes/diff?path=${encodeURIComponent(p)}&sha=${encodeURIComponent(c.sha)}`
           : `/notes/diff?path=${encodeURIComponent(p)}&from=${encodeURIComponent(c.sha)}&to=WORK`;
         const r = await api('GET', url);
+        if (isStale()) return;
         previewEl.innerHTML = '';
         previewEl.appendChild(modes);
         previewEl.appendChild(meta);
@@ -477,6 +485,7 @@
         }
       }
     } catch (e) {
+      if (isStale()) return;
       previewEl.innerHTML = '';
       previewEl.appendChild(modes);
       previewEl.appendChild(meta);
@@ -529,6 +538,10 @@
   async function saveNote(text, force = false, autosave = false) {
     const status = $('vault-save-status');
     if (status) status.textContent = autosave ? 'autosaving…' : 'saving…';
+    // vt-0183: cancel any pending autosave when an explicit save fires —
+    // otherwise the timer fires 2s later and produces a duplicate commit
+    // against the just-updated sha.
+    if (!autosave && _autosaveTimer) { clearTimeout(_autosaveTimer); _autosaveTimer = null; }
     const body = {
       path: state.currentPath,
       content: text,
@@ -666,13 +679,19 @@
       let remaining = 30;
       $('secret-reveal-timer').textContent = remaining + 's';
       const tick = setInterval(() => {
+        // vt-0183: null-guard — if user navigated away (hash router
+        // re-rendered) the timer element is gone; bail instead of
+        // crashing and leaking the interval.
+        const timerEl = $('secret-reveal-timer');
+        if (!timerEl) { clearInterval(tick); return; }
         remaining -= 1;
-        $('secret-reveal-timer').textContent = remaining + 's';
+        timerEl.textContent = remaining + 's';
         if (remaining <= 0) { clearInterval(tick); closeReveal(); }
       }, 1000);
       function closeReveal() {
         clearInterval(tick);
-        $('secret-reveal-value').textContent = '';
+        const valEl = $('secret-reveal-value');
+        if (valEl) valEl.textContent = '';
         plaintext = '';
         try { dlg.close(); } catch {}
       }

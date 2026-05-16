@@ -199,13 +199,18 @@ class SecretRevealModal extends obsidian.Modal {
     const copyBtn = bar.createEl('button', { text: 'copy' });
     copyBtn.addEventListener('click', () => {
       if (!this.plaintext) return;
-      navigator.clipboard.writeText(this.plaintext).then(() => {
+      const copied = this.plaintext;
+      navigator.clipboard.writeText(copied).then(() => {
         new obsidian.Notice('copied — clipboard auto-clears in '
           + this.plugin.settings.clipboardClearSeconds + 's');
-        // Auto-clear clipboard: write empty string after configured delay.
-        // Best-effort — user may have copied something else by then; the
-        // explicit clear still helps the common case.
-        setTimeout(() => {
+        // vt-0183: read clipboard before clearing — if user already copied
+        // something else, leave it alone. Falls back to unconditional
+        // clear on platforms where clipboard.readText is denied (iOS).
+        setTimeout(async () => {
+          try {
+            const cur = await navigator.clipboard.readText();
+            if (cur !== copied) return;
+          } catch { /* readText not allowed → fall through to clear */ }
           navigator.clipboard.writeText('').catch(() => {});
         }, this.plugin.settings.clipboardClearSeconds * 1000);
       }).catch((e) => {
