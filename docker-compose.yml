@@ -256,10 +256,15 @@ services:
       - FORGEJO__database__PASSWD=${VAULT_RAG_PG_PASSWORD}
     ports:
       - "127.0.0.1:3000:3000"
-      # H7 (audit pass 2): loopback bind — public 222:22 exposed Forgejo SSH
-      # to the internet on hosts with a public IP. Operators who need remote
-      # git-over-ssh should reverse-proxy via Caddy or whitelist explicitly.
-      - "127.0.0.1:222:22"
+      # H7 was reverted: loopback bind broke vault-rag-secrets / -api git
+      # operations against the vault remote ssh://git@<host>:222. Containers
+      # reach the host via the docker bridge gateway IP, NOT 127.0.0.1, so
+      # 127.0.0.1:222 is unreachable from inside.
+      # Forgejo SSH is key-only + REQUIRE_SIGNIN + DISABLE_REGISTRATION; the
+      # exposure surface is small. Filed as vt-0138 for a proper fix
+      # (either firewall whitelist, or switch vault remote to use the
+      # internal docker hostname).
+      - "222:22"
     volumes:
       - vault-rag-forgejo-data:/data
     networks:
