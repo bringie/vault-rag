@@ -89,6 +89,21 @@
       } else {
         const base = target.endsWith('.md') ? target.slice(0, -3) : target;
         resolved = idx[base] || idxLc[base.toLowerCase()] || null;
+        // Fallback: prefix-match against indexAll. Useful for task IDs
+        // ([[vt-0158]] where the file is vt-0158-long-slug.md). First
+        // match wins after sort by path length — shortest path = closest
+        // to a "canonical" home, since deep buried duplicates lose.
+        if (!resolved && state.indexAll && state.indexAll.length) {
+          const baseLc = base.toLowerCase();
+          const candidates = state.indexAll.filter(p => {
+            const fname = p.split('/').pop().toLowerCase();
+            return fname.startsWith(baseLc + '-') || fname === baseLc + '.md';
+          });
+          if (candidates.length) {
+            candidates.sort((a, b) => a.length - b.length);
+            resolved = candidates[0];
+          }
+        }
       }
       const display = alias || (heading ? `${target}#${heading}` : target);
       if (!resolved) {
@@ -119,9 +134,9 @@
   }
 
   async function fetchDir(prefix) {
-    // depth=1 keeps the per-click round-trip tiny — we only need immediate
-    // children. Sub-dirs lazy-load on their own click.
-    const r = await api('GET', `/notes/list?prefix=${encodeURIComponent(prefix)}&depth=1`);
+    // depth=0 = only immediate children (dirs + files), no recursion.
+    // Sub-dirs lazy-load on their own click via toggleDir().
+    const r = await api('GET', `/notes/list?prefix=${encodeURIComponent(prefix)}&depth=0`);
     return r.entries || [];
   }
 
@@ -396,6 +411,7 @@
     api('GET', '/notes/index').then(r => {
       state.indexByBase = r.byBase || {};
       state.indexByBaseLower = r.byBaseLower || {};
+      state.indexAll = r.all || [];
     }).catch(() => { /* ignore — links just render as unresolved */ });
     try {
       const items = await fetchDir('');
