@@ -392,7 +392,34 @@ async function handleBacklinks(body) {
   return { target, sources: r.rows.map(x => x.source) };
 }
 
+// vt-0153: per-path in-process mutex serialises the expected_sha check +
+// the writeFileSync that follows it. Without this, two PUTs targeting the
+// same file can both pass the SHA gate before either writes, producing a
+// last-writer-wins (the second writer is the "winner" but its merge was
+// computed against stale shaBefore). The lock is in-memory only — it does
+// NOT protect against external writers (Obsidian-Git auto-sync); that
+// race is bounded by vault-sync.sh's debounce window and accepted.
+const _pathLocks = new Map();
+async function withPathLock(key, fn) {
+  const prev = _pathLocks.get(key) || Promise.resolve();
+  let release;
+  const next = new Promise((r) => { release = r; });
+  const chain = prev.then(() => next);
+  _pathLocks.set(key, chain);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+    // Only clear if no one else queued behind us (chain still on top).
+    if (_pathLocks.get(key) === chain) _pathLocks.delete(key);
+  }
+}
+
 async function handlePut(body) {
+  return await withPathLock(String(body.path || ''), () => handlePutLocked(body));
+}
+async function handlePutLocked(body) {
   const agent_id = body.agent_id ? String(body.agent_id).trim() : null;
   const relPath  = String(body.path || '').trim();
   const content  = String(body.content || '');
@@ -443,7 +470,10 @@ async function handlePut(body) {
   // expected_sha is meaningless on the create path (mode === 'create' already
   // 409s on exists), and null/undefined means "no concurrency check" so old
   // callers keep working.
-  if (body.expected_sha !== undefined && body.expected_sha !== null
+  // vt-0154: treat empty-string expected_sha as "no check" (same as undefined/
+  // null). A client that wires up a form binding may send '' instead of
+  // omitting the field; rejecting every PUT in that case was a footgun.
+  if (body.expected_sha !== undefined && body.expected_sha !== null && body.expected_sha !== ''
       && exists && mode !== 'create' && body.expected_sha !== shaBefore) {
     const err = new Error(`stale write: expected_sha=${body.expected_sha} but current=${shaBefore}`);
     err.code = 412;

@@ -463,9 +463,14 @@ async function handleDispatch({ req, res, body, ctx }) {
   // vt-0151: structured spawn fields (model/prompt/system_prompt/etc) are
   // forwarded to the daemon so backends like claude can apply --model,
   // --append-system-prompt, etc. When the dispatch targets a group with a
-  // brain_prompt, prepend it to body.system_prompt — the per-call prompt
-  // wins on the same flag (it's appended after), and an empty per-call
-  // system_prompt just inherits the group's.
+  // brain_prompt, prepend it to body.system_prompt — both are concatenated
+  // server-side into a single string ("<brain>\n\n<per-call>"), which is
+  // then handed to whichever backend handles system_prompt (claude:
+  // --append-system-prompt, codex: --instructions, hermes wrapper: prepends
+  // as <<SYSTEM>> block, etc.). Precedence is by string order, NOT by flag
+  // order — per-call lands later in the combined text, so it acts as a
+  // refinement on top of the group's shared context. An empty per-call
+  // system_prompt just inherits the group's verbatim.
   const structured = {};
   for (const k of STRUCTURED_SPAWN_FIELDS) {
     if (body[k] != null) structured[k] = body[k];

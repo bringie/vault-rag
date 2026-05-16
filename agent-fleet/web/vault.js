@@ -262,8 +262,13 @@
     try {
       const r = await api('POST', '/secrets/get', { name });
       const dlg = $('secret-reveal');
+      // vt-0155: hold the plaintext in a mutable let so closeReveal can
+      // null it out — copy/dom both reference this same slot. After
+      // closeReveal the closure no longer holds the secret in JS memory
+      // (subject to V8 GC; can't truly purge, but no live binding remains).
+      let plaintext = String(r.value || '');
       $('secret-reveal-name').textContent = name;
-      $('secret-reveal-value').textContent = String(r.value || '');
+      $('secret-reveal-value').textContent = plaintext;
       let remaining = 30;
       $('secret-reveal-timer').textContent = remaining + 's';
       const tick = setInterval(() => {
@@ -274,11 +279,13 @@
       function closeReveal() {
         clearInterval(tick);
         $('secret-reveal-value').textContent = '';
+        plaintext = '';
         try { dlg.close(); } catch {}
       }
       $('secret-reveal-close').onclick = closeReveal;
       $('secret-reveal-copy').onclick = () => {
-        try { navigator.clipboard.writeText(r.value); } catch {}
+        if (!plaintext) return;
+        try { navigator.clipboard.writeText(plaintext); } catch {}
       };
       dlg.addEventListener('close', closeReveal, { once: true });
       dlg.showModal();

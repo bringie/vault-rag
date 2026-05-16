@@ -75,7 +75,11 @@ function collectHostInfo() {
 // (CLAUDE.md edit feature). resolveAllowedPath is the only gatekeeper.
 // vt-0150: write allowlist is built from the shared backend-configs map.
 // Resolved lazily so the require cycle stays clean.
+// vt-0157: SIGHUP clears the cache so an operator who changes HOME in the
+// systemd unit (or hot-edits the rel map) can refresh without a full
+// daemon restart — mirrors the backends.json reload pattern.
 let _allowMap = null;
+process.on('SIGHUP', () => { _allowMap = null; });
 function resolveAllowedPath(reqPath) {
   if (!_allowMap) {
     const home = process.env.HOME || os.homedir() || '/root';
