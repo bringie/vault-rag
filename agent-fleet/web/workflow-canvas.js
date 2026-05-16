@@ -37,7 +37,13 @@
     return `M ${from.x},${from.y} C ${from.x + dx},${from.y} ${to.x - dx},${to.y} ${to.x},${to.y}`;
   }
 
+  // Module-level singleton tracker — auto-destroy prior canvas to prevent keydown
+  // listener accumulation when callers (editor/viewer) navigate without calling destroy()
+  // explicitly. vt-0080.
+  let _activeCanvas = null;
+
   function create({ mount, definition, interactive = false, onSelect, onDefinitionChange, statusByNode = {} }) {
+    if (_activeCanvas) { try { _activeCanvas.destroy(); } catch {} _activeCanvas = null; }
     mount.innerHTML = '';
     const svg = el('svg', { class: 'wf-canvas', width: '100%', height: '100%', viewBox: '0 0 1600 1000' }, mount);
     const defs = el('defs', {}, svg);
@@ -242,7 +248,7 @@
 
     render();
 
-    return {
+    const api = {
       addNode(node) {
         def.nodes.push(node);
         if (!def.start) def.start = node.id;
@@ -253,8 +259,13 @@
       setNodeStatus(id, status) { statusByNode[id] = status; render(); },
       getDefinition() { return JSON.parse(JSON.stringify(def)); },
       replaceDefinition(d) { def = JSON.parse(JSON.stringify(d)); render(); },
-      destroy() { document.removeEventListener('keydown', keyHandler); },
+      destroy() {
+        document.removeEventListener('keydown', keyHandler);
+        if (_activeCanvas === api) _activeCanvas = null;
+      },
     };
+    _activeCanvas = api;
+    return api;
   }
 
   window.WorkflowCanvas = { create };
