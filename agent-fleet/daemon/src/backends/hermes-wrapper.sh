@@ -7,16 +7,28 @@
 # Env in:
 #   MODEL          — ollama model tag (default: hermes-3-llama-3.1-8b)
 # Stdin:
-#   the prompt (with optional <<SYSTEM>> ... <<USER>> framing from hermes.js)
+#   either a plain prompt, or the framed form from hermes.js:
+#     <<SYSTEM>>
+#     <system text>
+#     <<USER>>
+#     <user prompt>
+#   When framing is present, system text is forwarded via `ollama run --system`.
 
 set -euo pipefail
 MODEL="${MODEL:-hermes-3-llama-3.1-8b}"
-PROMPT=$(cat)
+RAW=$(cat)
 
 if ! command -v ollama >/dev/null 2>&1; then
   echo "[hermes-wrapper] ollama not on PATH" >&2
   exit 127
 fi
 
-# `ollama run` streams to stdout — exactly what the PTY captures.
-exec ollama run "$MODEL" "$PROMPT"
+# vt-0121: parse <<SYSTEM>>/<<USER>> framing. Without parsing the markers
+# leak verbatim into the model context (was a design no-op).
+if printf '%s' "$RAW" | grep -q '^<<SYSTEM>>$'; then
+  SYS=$(printf '%s' "$RAW" | awk '/^<<SYSTEM>>$/{f=1;next} /^<<USER>>$/{f=0;next} f')
+  USR=$(printf '%s' "$RAW" | awk '/^<<USER>>$/{f=1;next} f')
+  exec ollama run --system "$SYS" "$MODEL" "$USR"
+fi
+
+exec ollama run "$MODEL" "$RAW"
