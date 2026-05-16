@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to /etc/agent-fleet/backends.json on Linux or ~/Library/Application Support/agent-fleet/conf/backends.json on macOS, edit, then SIGHUP the daemon (or restart). claude is registered automatically — list it explicitly only to override its bin path.",
+  "default": "claude",
+  "backends": [
+    { "name": "opencode", "module": "./opencode.js", "bin": "/usr/local/bin/opencode" },
+    { "name": "codex",    "module": "./codex.js",    "bin": "/usr/local/bin/codex" },
+    { "name": "hermes",   "module": "./hermes.js" }
+  ]
+}

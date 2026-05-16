@@ -72,10 +72,42 @@ async function runDaemon(opts) {
   const backendsCfg = opts.backendsConfig
     || process.env.AGENT_FLEET_BACKENDS_PATH
     || '/etc/agent-fleet/backends.json';
-  const { registry: backends, default: defaultBackend } = backendsLib.loadBackends({
-    configPath: backendsCfg,
-    baseDir: path.dirname(backendsCfg),
+  // Relative module paths in backends.json are resolved against the daemon's
+  // bundled backends/ directory, NOT the config file's location — operators
+  // shouldn't have to mirror JS modules into /etc/agent-fleet/.
+  let backends, defaultBackend;
+  const reloadBackends = () => {
+    const out = backendsLib.loadBackends({
+      configPath: backendsCfg,
+      baseDir: path.join(__dirname, 'backends'),
+    });
+    backends = out.registry;
+    defaultBackend = out.default;
+    console.log(`[daemon] backends loaded: ${[...backends.keys()].join(', ')} (default=${defaultBackend})`);
+  };
+  reloadBackends();
+  // vt-0103: hot-reload on SIGHUP (POSIX) so the operator can `kill -HUP $(pidof
+  // agent-fleet-daemon)` after editing backends.json without restarting the
+  // daemon (= no session loss). Also watch the file directly so even systems
+  // without SIGHUP delivery (Windows) get hot-reload via fs.watch.
+  process.on('SIGHUP', () => {
+    try { reloadBackends(); } catch (e) { console.error('[daemon] SIGHUP reload failed:', e.message); }
   });
+  try {
+    if (fs.existsSync(backendsCfg)) {
+      let reloadT = null;
+      fs.watch(backendsCfg, () => {
+        // Debounce — editors typically fire 2–3 events per save.
+        if (reloadT) clearTimeout(reloadT);
+        reloadT = setTimeout(() => {
+          try { reloadBackends(); }
+          catch (e) { console.error('[daemon] backends.json watcher reload failed:', e.message); }
+        }, 500);
+      });
+    }
+  } catch (e) {
+    console.warn('[daemon] could not watch backends.json:', e.message);
+  }
   // PtyManager keeps claudeBin as the default; per-spawn we override via env.
   const ptyMgr = new PtyManager({ claudeBin: opts.claudeBin });
   let ws = null;

@@ -79,3 +79,55 @@ test('loadBackends: malformed config → claude-only, no throw', () => {
   assert.strictEqual(registry.size, 1);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// --- vt-0097 additional backends ---
+
+const opencode = require('../src/backends/opencode');
+const codex = require('../src/backends/codex');
+const hermes = require('../src/backends/hermes');
+
+test('opencode: model→--model, system→--system, dangerous→--auto-approve', () => {
+  const r = opencode.buildSpawnArgs({
+    model: 'anthropic/claude-opus-4-7',
+    system_prompt: 'sys',
+    dangerous: true,
+    args: ['--extra'],
+    prompt: 'hi',
+  });
+  assert.deepStrictEqual(r.argv, [
+    '--model', 'anthropic/claude-opus-4-7',
+    '--system', 'sys',
+    '--auto-approve',
+    '--extra',
+  ]);
+  assert.strictEqual(r.stdin, 'hi');
+});
+
+test('opencode: allowed_tools warns once and is dropped', () => {
+  const r = opencode.buildSpawnArgs({ allowed_tools: 'Bash' });
+  assert.deepStrictEqual(r.argv, []);
+});
+
+test('codex: model→--model, system→--instructions, drops unsupported', () => {
+  const r = codex.buildSpawnArgs({
+    model: 'gpt-5',
+    system_prompt: 'be terse',
+    resume_session_id: 'X',   // dropped
+    args: ['--foo'],
+  });
+  assert.deepStrictEqual(r.argv, [
+    '--model', 'gpt-5',
+    '--instructions', 'be terse',
+    '--foo',
+  ]);
+});
+
+test('hermes: model→$MODEL env, system+prompt framed in stdin', () => {
+  const r = hermes.buildSpawnArgs({
+    model: 'hermes-3-llama-3.1-8b',
+    system_prompt: 'rules',
+    prompt: 'do thing',
+  });
+  assert.strictEqual(r.env.MODEL, 'hermes-3-llama-3.1-8b');
+  assert.match(r.stdin, /<<SYSTEM>>\nrules\n<<USER>>\ndo thing/);
+});
