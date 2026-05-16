@@ -430,6 +430,32 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         console.error(`[rag-api] workflow trigger scan failed: ${e.message}`);
       }
     }, 60 * 1000).unref?.();
+
+    // vt-0120: tokmon.events retention. Cost-event rows otherwise grow
+    // forever; we keep N days of fine-grained data + the daily cost view
+    // (computed on read, not pre-aggregated for now — see vt-0114 for the
+    // rollup follow-up). Default 90 days; override via env.
+    const TOKMON_RETAIN_DAYS = parseInt(process.env.VAULT_RAG_TOKMON_RETAIN_DAYS || '90', 10);
+    setInterval(async () => {
+      if (!fleetCtx.tokmonDb) return;
+      try {
+        let total = 0, limited = true, passes = 0;
+        while (limited && passes < 20) {
+          const { rowCount } = await fleetCtx.tokmonDb.query(
+            `DELETE FROM events WHERE id IN (
+               SELECT id FROM events
+               WHERE ts < now() - ($1 || ' days')::interval
+               LIMIT 50000
+             )`, [String(TOKMON_RETAIN_DAYS)]);
+          total += rowCount;
+          limited = rowCount >= 50000;
+          passes += 1;
+        }
+        if (total) console.log(`[rag-api] tokmon: purged ${total} events older than ${TOKMON_RETAIN_DAYS} days (${passes} passes)`);
+      } catch (e) {
+        console.error(`[rag-api] tokmon purge failed: ${e.message}`);
+      }
+    }, 24 * 60 * 60 * 1000).unref?.();
   }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${SKIP_PG ? 'skipped' : `${PG.host}/${PG.database}`}, auth=Bearer)`);

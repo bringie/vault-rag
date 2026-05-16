@@ -145,12 +145,15 @@ async function runDaemon(opts) {
       });
       attempt = 0;
       const hostInfo = collectHostInfo();
-      // Probe every registered backend so the hub can see what this host can run.
-      const backendVersions = {};
-      for (const [name, b] of backends) {
-        try { backendVersions[name] = await b.detectVersion(b.bin); }
-        catch { backendVersions[name] = null; }
-      }
+      // Probe every backend IN PARALLEL — serial probes with 3s timeouts
+      // each blocked the WS hello frame for ~18s on 6 backends (vt-0119).
+      const probeEntries = await Promise.all(
+        Array.from(backends, async ([name, b]) => {
+          try { return [name, await b.detectVersion(b.bin)]; }
+          catch { return [name, null]; }
+        })
+      );
+      const backendVersions = Object.fromEntries(probeEntries);
       ws.send(JSON.stringify({
         type: 'hello', host_name: opts.hostName,
         os: process.platform, arch: process.arch,
@@ -221,7 +224,10 @@ async function runDaemon(opts) {
                 });
                 argv = built.argv;
                 env = { ...env, ...(built.env || {}) };
-                bin = backend.bin;
+                // Some backends (e.g. nanoclaw) return a _shimBin so we run
+                // their argv through /bin/sh instead of the backend's real
+                // binary — used to surface "not supported" errors cleanly.
+                bin = built._shimBin || backend.bin;
               }
               ptyMgr.spawn({
                 sessionId: f.session_id, cwd: f.cwd,

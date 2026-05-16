@@ -630,3 +630,74 @@ test('wait_for_approval: validateDefinition requires approve+reject edges', () =
     edges: [{ from: 'n1', to: 'n2', label: 'approve' }], // missing reject
   }), /approve.*reject/);
 });
+
+// --- vt-0118: sub_workflow cancel propagation ---
+
+test('cancel(parent) propagates into sub_workflow child run', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // child: a long delay so it's still running when parent is cancelled
+    const childDef = {
+      start: 'a',
+      nodes: [{ id: 'a', type: 'delay', seconds: 5 }],
+      edges: [],
+    };
+    const child = await wfDb.createWorkflow(c, { name: 'wf-child', definition: childDef });
+    const parentDef = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'sub_workflow', workflow_id: child.id }],
+      edges: [],
+    };
+    const parent = await wfDb.createWorkflow(c, { name: 'wf-parent', definition: parentDef });
+    const r = await wfDb.createRun(c, { workflowId: parent.id, snapshot: parentDef });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    const runner = createRunner(deps);
+    const runPromise = runner.runToCompletion(r.id);
+    // Let parent enter child, then cancel parent.
+    setTimeout(() => runner.cancel(r.id), 100);
+    await runPromise;
+    const finalParent = await wfDb.getRun(c, r.id);
+    assert.strictEqual(finalParent.status, 'cancelled');
+    // Find the child run (only one was created) and assert it's also cancelled.
+    const { rows } = await c.query(
+      `SELECT id, status FROM fleet_workflow_runs WHERE workflow_id = $1`, [child.id]);
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].status, 'cancelled', 'child run must be cancelled');
+  });
+});
+
+test('fan_out children abort on parent cancel', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{
+        id: 'n1', type: 'fan_out',
+        targets: [{ host_name: 'a' }, { host_name: 'b' }, { host_name: 'c' }],
+        prompt: 'p', timeout_s: 60,
+      }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-fo-cancel', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const aborts = [];
+    const deps = makeDeps(({ signal }) => new Promise((resolve, reject) => {
+      // Long-running stub that resolves only when signal aborts.
+      if (signal.aborted) { aborts.push(true); return reject(new Error('cancelled')); }
+      signal.addEventListener('abort', () => {
+        aborts.push(true);
+        reject(new Error('cancelled'));
+      });
+      setTimeout(() => resolve({ output: 'late', exit_code: 0, session_id: 's' }), 30000);
+    }));
+    deps.db = c;
+    const runner = createRunner(deps);
+    const p = runner.runToCompletion(r.id);
+    setTimeout(() => runner.cancel(r.id), 100);
+    await p;
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'cancelled');
+    assert.strictEqual(aborts.length, 3, 'all 3 fan_out children received abort');
+  });
+});

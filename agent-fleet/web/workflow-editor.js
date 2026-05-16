@@ -370,6 +370,32 @@
       }
     }
 
+    // Apply a JSON-text input → field with visible error feedback (vt-0119).
+    // Marks the input red on parse failure and shows a hint near it; the
+    // prior value is preserved (no silent data loss).
+    function applyJson(elInp, defaultVal, onOk) {
+      const text = (elInp.value || '').trim();
+      if (!text) { onOk(defaultVal); markValid(elInp); return; }
+      try { onOk(JSON.parse(text)); markValid(elInp); }
+      catch (e) { markInvalid(elInp, e.message); }
+    }
+    function markInvalid(el, msg) {
+      el.style.borderColor = 'var(--danger)';
+      let hint = el.nextElementSibling;
+      if (!hint || !hint.classList.contains('json-err')) {
+        hint = document.createElement('div');
+        hint.className = 'json-err';
+        hint.style.cssText = 'color:var(--danger); font-size:11px; margin-top:2px';
+        el.after(hint);
+      }
+      hint.textContent = '⚠ invalid JSON: ' + msg;
+    }
+    function markValid(el) {
+      el.style.borderColor = '';
+      const hint = el.nextElementSibling;
+      if (hint && hint.classList.contains('json-err')) hint.remove();
+    }
+
     function wireInputs(nodeId, keys) {
       for (const k of keys) {
         const elInp = document.getElementById(`i-${k}`);
@@ -391,7 +417,7 @@
           // http_request
           if (k === 'method')       cur.method = elInp.value;
           if (k === 'url')          cur.url = elInp.value;
-          if (k === 'headers')      { try { cur.headers = JSON.parse(elInp.value || '{}'); } catch {} }
+          if (k === 'headers')      applyJson(elInp, {},  v => cur.headers = v);
           if (k === 'body')         { try { cur.body = JSON.parse(elInp.value); } catch { cur.body = elInp.value; } }
           if (k === 'timeout-ms')   cur.timeout_ms = parseInt(elInp.value, 10) || 30000;
           // notify
@@ -401,7 +427,7 @@
           if (k === 'key')          cur.key = elInp.value;
           if (k === 'value-expr')   cur.value_expr = elInp.value;
           // fan_out
-          if (k === 'targets')      { try { cur.targets = JSON.parse(elInp.value || '[]'); } catch {} }
+          if (k === 'targets')      applyJson(elInp, [],  v => cur.targets = v);
           if (k === 'prompt-fan')   cur.prompt = elInp.value;
           if (k === 'model')        cur.model = elInp.value || undefined;
           if (k === 'timeout-fan')  cur.timeout_s = parseInt(elInp.value, 10) || 300;
@@ -418,14 +444,14 @@
           // retry
           if (k === 'max-attempts') cur.max_attempts = Math.min(10, Math.max(1, parseInt(elInp.value, 10) || 3));
           if (k === 'backoff')      cur.backoff_ms = Math.max(0, parseInt(elInp.value, 10) || 1000);
-          if (k === 'inner-retry')  { try { cur.inner = JSON.parse(elInp.value); } catch {} }
+          if (k === 'inner-retry')  applyJson(elInp, {},  v => cur.inner = v);
           // for_each
           if (k === 'fe-ref')       cur.input_ref = elInp.value;
           if (k === 'item-var')     cur.item_var = elInp.value || 'item';
-          if (k === 'inner-fe')     { try { cur.inner = JSON.parse(elInp.value); } catch {} }
+          if (k === 'inner-fe')     applyJson(elInp, {},  v => cur.inner = v);
           // sub_workflow
           if (k === 'sub-wf')       cur.workflow_id = elInp.value;
-          if (k === 'sub-inputs')   { try { cur.inputs_map = JSON.parse(elInp.value || '{}'); } catch {} }
+          if (k === 'sub-inputs')   applyJson(elInp, {},  v => cur.inputs_map = v);
           // wait_for_approval
           if (k === 'approval-reason')  cur.reason = elInp.value;
           if (k === 'approval-timeout') cur.timeout_s = Math.max(60, parseInt(elInp.value, 10) || 86400);

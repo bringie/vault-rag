@@ -107,8 +107,14 @@ function createRunner(deps) {
   // Per-run AbortControllers — abort() on cancel() so long-running execClaude
   // poll loops can short-circuit instead of waiting full timeout_s (vt-0075).
   const activeControllers = new Map(); // runId → AbortController
+  // fan_out children get their own AbortControllers stored here so parent
+  // cancel() can abort all of them (vt-0118 P2).
+  const fanOutControllers = new Map(); // runId → AbortController[]
   // Per-run dispatch counter (resets on cancel cleanup).
   const dispatchCount = new Map(); // runId → int
+  // Map child→parent run id (sub_workflow chain). Lets cancel(parent) walk
+  // and mark every descendant cancelled (vt-0118 P1).
+  const runParents = new Map(); // childRunId → parentRunId
 
   async function execClaude(node, ctx, runId) {
     const prompt = substituteTemplates(node.prompt, ctx);
@@ -234,25 +240,48 @@ function createRunner(deps) {
   async function execFanOut(node, ctx, runId) {
     const targets = Array.isArray(node.targets) ? node.targets : [];
     if (!targets.length) throw new Error('fan_out: targets[] required');
+    // Cap to avoid a malformed workflow spawning hundreds of parallel sessions.
+    if (targets.length > 50) {
+      throw new Error(`fan_out: targets[] limit is 50, got ${targets.length}`);
+    }
     const promptTpl = node.prompt || '';
-    const calls = targets.map((target, idx) => {
-      const childNode = {
-        id: `${node.id}.${idx}`,
-        type: 'claude',
-        target,
-        prompt: promptTpl,
-        model: node.model,
-        timeout_s: node.timeout_s || 300,
-        headless: node.headless !== false,
-      };
-      const childPrompt = substituteTemplates(promptTpl, ctx);
-      const ctrl = new AbortController();
-      return deps.spawnClaude({ node: childNode, prompt: childPrompt, ctx, runId, signal: ctrl.signal })
-        .then(r => ({ target, output: r.output, exit_code: r.exit_code, session_id: r.session_id }))
-        .catch(e => ({ target, error: e.message, exit_code: -1 }));
-    });
-    const results = await Promise.all(calls);
-    return { output: `fan_out ${results.length} results`, exit_code: 0, results };
+    // Register all child controllers so cancel(runId) can abort them.
+    const myControllers = [];
+    const prev = fanOutControllers.get(runId) || [];
+    fanOutControllers.set(runId, prev.concat(myControllers));
+    try {
+      const calls = targets.map((target, idx) => {
+        const childNode = {
+          id: `${node.id}.${idx}`,
+          type: 'claude',
+          target,
+          prompt: promptTpl,
+          model: node.model,
+          timeout_s: node.timeout_s || 300,
+          headless: node.headless !== false,
+        };
+        const childPrompt = substituteTemplates(promptTpl, ctx);
+        const ctrl = new AbortController();
+        myControllers.push(ctrl);
+        fanOutControllers.get(runId).push(ctrl);
+        return deps.spawnClaude({ node: childNode, prompt: childPrompt, ctx, runId, signal: ctrl.signal })
+          .then(r => ({ target, output: r.output, exit_code: r.exit_code, session_id: r.session_id }))
+          .catch(e => ({ target, error: e.message, exit_code: -1 }));
+      });
+      const results = await Promise.all(calls);
+      // If the run was cancelled mid-fan-out, every child rejected with
+      // 'cancelled' but we swallowed those into result objects. Surface the
+      // cancellation to the main loop so the run flips to 'cancelled', not
+      // 'done' (vt-0118).
+      if (cancelled.has(runId)) throw new Error('cancelled');
+      return { output: `fan_out ${results.length} results`, exit_code: 0, results };
+    } finally {
+      // Remove only OUR controllers from the run-level list; other concurrent
+      // fan_out nodes on the same run (if any) keep theirs.
+      const remaining = (fanOutControllers.get(runId) || []).filter(c => !myControllers.includes(c));
+      if (remaining.length) fanOutControllers.set(runId, remaining);
+      else fanOutControllers.delete(runId);
+    }
   }
 
   // aggregate: reduce a prior fan_out result array via a fixed op set.
@@ -391,11 +420,32 @@ function createRunner(deps) {
       workflowId: child.id, snapshot: child.definition,
       state: { inputs: childInputs, parent_run_id: runId, parent_node_id: node.id, depth: depth + 1 },
     });
+    // Register parent link BEFORE running so a cancel(parentRunId) that
+    // arrives mid-child-run still propagates (vt-0118 P1).
+    runParents.set(childRun.id, runId);
+    // If the parent is already cancelled by the time we enter the child run,
+    // mark the child cancelled up-front so the runner exits at the first
+    // cancellation check.
+    if (cancelled.has(runId)) cancelled.add(childRun.id);
     deps.broadcast(runId, { type: 'sub_workflow_started', run_id: runId, node_id: node.id, child_run_id: childRun.id });
-    await _runToCompletion(childRun.id);
+    // Use the PUBLIC runToCompletion so finally{} cleans cancelled +
+    // dispatchCount entries for the child run (vt-0118 P2 leak fix).
+    try {
+      await runToCompletion(childRun.id);
+    } finally {
+      runParents.delete(childRun.id);
+    }
     const finalRun = await wfDb.getRun(deps.db, childRun.id);
-    if (!finalRun || finalRun.status !== 'done') {
-      throw new Error(`sub_workflow ended with status=${finalRun ? finalRun.status : 'missing'}`);
+    if (!finalRun) {
+      throw new Error('sub_workflow ended with status=missing');
+    }
+    // Propagate cancellation as a 'cancelled' error so the main while-loop
+    // routes the parent to 'cancelled' status (not 'failed'). vt-0118.
+    if (finalRun.status === 'cancelled') {
+      throw new Error('cancelled');
+    }
+    if (finalRun.status !== 'done') {
+      throw new Error(`sub_workflow ended with status=${finalRun.status}`);
     }
     return {
       output: `sub_workflow ${child.name} done`,
@@ -574,8 +624,21 @@ function createRunner(deps) {
 
   function cancel(runId) {
     cancelled.add(runId);
+    // Walk runParents to mark every descendant run cancelled too — otherwise
+    // sub_workflow children keep burning tokens after a parent abort (P1).
+    for (const [child, parent] of runParents) {
+      let p = parent;
+      // Bounded by MAX_SUB_WORKFLOW_DEPTH to avoid pathological chain loops.
+      for (let i = 0; i < MAX_SUB_WORKFLOW_DEPTH + 1 && p; i++) {
+        if (p === runId) { cancelled.add(child); break; }
+        p = runParents.get(p);
+      }
+    }
     const ctrl = activeControllers.get(runId);
     if (ctrl) try { ctrl.abort(); } catch {}
+    // Abort every in-flight fan_out child too.
+    const fo = fanOutControllers.get(runId);
+    if (fo) for (const c of fo) { try { c.abort(); } catch {} }
   }
 
   function start(runId) {
