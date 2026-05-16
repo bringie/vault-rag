@@ -21,7 +21,9 @@ NODE_MAJ=$(node -p 'process.versions.node.split(".")[0]')
 
 echo "[install] downloading daemon → $TARBALL_URL"
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+PLIST_TMP=""
+cleanup() { rm -rf "$TMP"; [[ -n "$PLIST_TMP" && -e "$PLIST_TMP" ]] && rm -f "$PLIST_TMP"; }
+trap cleanup EXIT INT TERM
 if [[ "$TARBALL_URL" == file://* ]]; then
   cp "${TARBALL_URL#file://}" "$TMP/daemon.tar.gz"
 else
@@ -49,12 +51,37 @@ if [[ -z "${AGENT_FLEET_TOKEN:-}" ]] && ! grep -q '^AGENT_FLEET_TOKEN=.\+' "$CON
 fi
 HOST_NAME="${AGENT_FLEET_HOST_NAME:-$(hostname)}"
 
-# Update env file (best-effort regex; daemon.env is tiny).
+# Update env file. vt-0123: sed interpolation broke for tokens containing `|`,
+# `&`, `\`, or newline — and chmod after sed left a race window where the new
+# .env was readable at default umask before being tightened. Now: perl
+# does a literal-string replacement and writes to a tempfile under umask 077,
+# then atomic-mv to destination.
+update_env_var() {
+  local key="$1" val="$2"
+  local tmp; tmp=$(mktemp -t agent-fleet-env.XXXXXX)
+  (
+    umask 077
+    KEY="$key" VAL="$val" SRC="$CONF_DIR/daemon.env" OUT="$tmp" \
+    perl -e '
+      use strict; use warnings;
+      open(my $in, "<", $ENV{SRC}) or die "open: $!";
+      local $/; my $body = <$in>; close $in;
+      my $key = quotemeta $ENV{KEY};
+      my $line = "$ENV{KEY}=$ENV{VAL}";
+      if ($body =~ /^${key}=/m) { $body =~ s/^${key}=.*$/$line/m; }
+      else { $body .= "\n" unless $body =~ /\n\z/; $body .= "$line\n"; }
+      open(my $out, ">", $ENV{OUT}) or die "open out: $!";
+      print $out $body; close $out;
+    '
+  )
+  mv "$tmp" "$CONF_DIR/daemon.env"
+  chmod 0600 "$CONF_DIR/daemon.env"
+}
 if [[ -n "${AGENT_FLEET_HUB:-}" ]]; then
-  sed -i '' "s|^AGENT_FLEET_HUB=.*|AGENT_FLEET_HUB=${AGENT_FLEET_HUB}|" "$CONF_DIR/daemon.env"
+  update_env_var AGENT_FLEET_HUB "$AGENT_FLEET_HUB"
 fi
 if [[ -n "${AGENT_FLEET_TOKEN:-}" ]]; then
-  sed -i '' "s|^AGENT_FLEET_TOKEN=.*|AGENT_FLEET_TOKEN=${AGENT_FLEET_TOKEN}|" "$CONF_DIR/daemon.env"
+  update_env_var AGENT_FLEET_TOKEN "$AGENT_FLEET_TOKEN"
 fi
 
 echo "[install] generating LaunchAgent plist"
@@ -62,16 +89,47 @@ echo "[install] generating LaunchAgent plist"
 HUB=$(grep '^AGENT_FLEET_HUB=' "$CONF_DIR/daemon.env" | cut -d= -f2-)
 TOKEN=$(grep '^AGENT_FLEET_TOKEN=' "$CONF_DIR/daemon.env" | cut -d= -f2-)
 
-sed \
-  -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
-  -e "s|__CONF_DIR__|$CONF_DIR|g" \
-  -e "s|__STATE_DIR__|$STATE_DIR|g" \
-  -e "s|__LOG_DIR__|$LOG_DIR|g" \
-  -e "s|__HUB__|$HUB|g" \
-  -e "s|__TOKEN__|$TOKEN|g" \
-  -e "s|__HOST_NAME__|$HOST_NAME|g" \
-  "$INSTALL_DIR/packaging/macos/com.fleet.daemon.plist" > "$PLIST_DST"
+# vt-0123: render plist via perl (literal substitution + XML-escape) into a
+# tempfile created under umask 077, then atomic-mv to destination. Previously
+# `sed | > $PLIST_DST` followed by `chmod 0600` left a race window where the
+# plist contained the bearer token at default 0644.
+PLIST_TMP=$(mktemp -t agent-fleet-plist.XXXXXX)
+(
+  umask 077
+  INSTALL_DIR_V="$INSTALL_DIR" \
+  CONF_DIR_V="$CONF_DIR" \
+  STATE_DIR_V="$STATE_DIR" \
+  LOG_DIR_V="$LOG_DIR" \
+  HUB_V="$HUB" \
+  TOKEN_V="$TOKEN" \
+  HOST_NAME_V="$HOST_NAME" \
+  TPL="$INSTALL_DIR/packaging/macos/com.fleet.daemon.plist" \
+  OUT="$PLIST_TMP" \
+  perl -e '
+    use strict; use warnings;
+    my %sub = (
+      "__INSTALL_DIR__" => $ENV{INSTALL_DIR_V},
+      "__CONF_DIR__"    => $ENV{CONF_DIR_V},
+      "__STATE_DIR__"   => $ENV{STATE_DIR_V},
+      "__LOG_DIR__"     => $ENV{LOG_DIR_V},
+      "__HUB__"         => $ENV{HUB_V},
+      "__TOKEN__"       => $ENV{TOKEN_V},
+      "__HOST_NAME__"   => $ENV{HOST_NAME_V},
+    );
+    open(my $in, "<", $ENV{TPL}) or die "open tpl: $!";
+    local $/; my $body = <$in>; close $in;
+    for my $k (keys %sub) {
+      my $v = defined $sub{$k} ? $sub{$k} : "";
+      $v =~ s/&/&amp;/g; $v =~ s/</&lt;/g; $v =~ s/>/&gt;/g;
+      $body =~ s/\Q$k\E/$v/g;
+    }
+    open(my $out, ">", $ENV{OUT}) or die "open out: $!";
+    print $out $body; close $out;
+  '
+)
+mv "$PLIST_TMP" "$PLIST_DST"
 chmod 0600 "$PLIST_DST"
+PLIST_TMP=""
 
 echo "[install] loading LaunchAgent"
 launchctl unload "$PLIST_DST" 2>/dev/null || true

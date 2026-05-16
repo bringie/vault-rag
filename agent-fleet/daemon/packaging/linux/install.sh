@@ -68,11 +68,34 @@ if [[ -z "${AGENT_FLEET_TOKEN:-}" ]] && ! grep -q '^AGENT_FLEET_TOKEN=.\+' "$CON
   echo
 fi
 
+# vt-0123: sed interpolation broke for tokens containing `|`, `&`, `\`, or
+# newline. Use perl literal-string replacement and write through a tempfile
+# under umask 077 so the bearer token is never written at default 0644.
+update_env_var() {
+  local key="$1" val="$2"
+  local tmp; tmp=$(mktemp)
+  (
+    umask 077
+    KEY="$key" VAL="$val" SRC="$CONF_DIR/daemon.env" OUT="$tmp" \
+    perl -e '
+      use strict; use warnings;
+      open(my $in, "<", $ENV{SRC}) or die "open: $!";
+      local $/; my $body = <$in>; close $in;
+      my $key = quotemeta $ENV{KEY};
+      my $line = "$ENV{KEY}=$ENV{VAL}";
+      if ($body =~ /^${key}=/m) { $body =~ s/^${key}=.*$/$line/m; }
+      else { $body .= "\n" unless $body =~ /\n\z/; $body .= "$line\n"; }
+      open(my $out, ">", $ENV{OUT}) or die "open out: $!";
+      print $out $body; close $out;
+    '
+  )
+  mv "$tmp" "$CONF_DIR/daemon.env"
+}
 if [[ -n "${AGENT_FLEET_HUB:-}" ]]; then
-  sed -i "s|^AGENT_FLEET_HUB=.*|AGENT_FLEET_HUB=${AGENT_FLEET_HUB}|" "$CONF_DIR/daemon.env"
+  update_env_var AGENT_FLEET_HUB "$AGENT_FLEET_HUB"
 fi
 if [[ -n "${AGENT_FLEET_TOKEN:-}" ]]; then
-  sed -i "s|^AGENT_FLEET_TOKEN=.*|AGENT_FLEET_TOKEN=${AGENT_FLEET_TOKEN}|" "$CONF_DIR/daemon.env"
+  update_env_var AGENT_FLEET_TOKEN "$AGENT_FLEET_TOKEN"
 fi
 # Set HOST_NAME default if not already set.
 if ! grep -q '^AGENT_FLEET_HOST_NAME=' "$CONF_DIR/daemon.env"; then
