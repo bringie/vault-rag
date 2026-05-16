@@ -1,0 +1,5 @@
+/* vault-rag secrets plugin styling — minimal overrides only.
+   Everything else inherits the user's Obsidian theme. */
+.modal.vault-rag-reveal pre {
+  font-family: var(--font-monospace);
+}

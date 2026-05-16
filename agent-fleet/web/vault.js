@@ -27,6 +27,17 @@
     state.isAdmin = !!ev.detail.isAdmin;
   });
 
+  // Token fallback: the fleet-token-ready event fires only AFTER app.js
+  // finishes its admin-probe fetch, which is async. If the user clicks
+  // nav-vault before that resolves, state.token is still null. Reuse
+  // localStorage.fleetToken — that's exactly what app.js reads on boot,
+  // and the admin probe upgrades isAdmin once it returns.
+  function ensureToken() {
+    if (!state.token && typeof localStorage !== 'undefined') {
+      state.token = localStorage.fleetToken || null;
+    }
+  }
+
   function esc(s) {
     return String(s ?? '').replace(/[<>&"']/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
   }
@@ -325,6 +336,7 @@
 
   // -------- open --------
   async function open() {
+    ensureToken();
     if (!state.token) {
       $('vault-tree').textContent = 'auth required';
       return;

@@ -401,7 +401,7 @@ body::after {
   display: grid; grid-template-rows: auto auto 1fr auto;
   overflow: auto;
 }
-#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview {
+#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview, #vaultview {
   position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
   left: 0; right: 0; z-index: 80; background: var(--bg);
   display: flex; flex-direction: column; overflow: auto;

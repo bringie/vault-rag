@@ -1,0 +1,10 @@
+{
+  "id": "vault-rag-secrets",
+  "name": "vault-rag secrets",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Reveal secrets from your self-hosted vault-rag hub (age-encrypted on the server, decrypted on demand via REST). Does NOT store the age private key on this device — secrets are fetched plaintext over HTTPS and auto-hidden after 30s.",
+  "author": "vault-rag",
+  "authorUrl": "https://github.com/bringie/vault-rag",
+  "isDesktopOnly": false
+}
