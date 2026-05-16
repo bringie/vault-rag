@@ -167,3 +167,27 @@ test('runner cancellation halts mid-run', async () => {
     assert.ok(!final.state.outputs || !final.state.outputs.n3, 'n3 never executed');
   });
 });
+
+test('runner.start: crashed run flips DB status to failed (not stuck running)', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'claude', target: { host_name: 'h' }, prompt: 'p' }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-crash', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => { throw new Error('synthetic crash'); });
+    deps.db = c;
+    const runner = createRunner(deps);
+    // start() uses fire-and-forget; crash should flip status
+    runner.start(r.id);
+    // Wait briefly for async crash + cleanup
+    await new Promise(res => setTimeout(res, 200));
+    const final = await wfDb.getRun(c, r.id);
+    // Run should have failed via the try/catch inside runToCompletion OR via start.catch cleanup
+    assert.ok(final.status === 'failed', `expected 'failed', got '${final.status}'`);
+    assert.ok(final.finished_at, 'finished_at must be set');
+  });
+});

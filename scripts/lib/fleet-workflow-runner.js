@@ -167,8 +167,16 @@ function createRunner(deps) {
   }
 
   function start(runId) {
-    runToCompletion(runId).catch(e => {
+    runToCompletion(runId).catch(async (e) => {
       console.error(`[fleet-workflow-runner] run ${runId} crashed:`, e);
+      // Best-effort: flip DB row to 'failed' so UI doesn't show stuck 'running'.
+      // Inner try guards against cascading failure (e.g. db pool down).
+      try {
+        await wfDb.updateRunStatus(deps.db, runId, 'failed', `runner crash: ${e.message}`);
+        deps.broadcast(runId, { type: 'run_state', run_id: runId, status: 'failed', error: e.message });
+      } catch (e2) {
+        console.error(`[fleet-workflow-runner] run ${runId} cleanup also failed:`, e2);
+      }
     });
   }
 
