@@ -707,3 +707,26 @@ body::after {
   .status-bar { gap: 1em; }
   .status-bar .stat:nth-child(4) { display: none; }
 }
+
+/* vt-0146: vault tab — read-only viewer */
+.vault-split { display:flex; gap:12px; height:calc(100vh - 110px); padding:8px; }
+#vault-tree-pane { width:340px; min-width:240px; overflow:auto; border-right:1px solid var(--border, #333); }
+#vault-tree { padding:8px; font:12px/1.5 monospace; }
+.vault-tree-ul { list-style:none; padding:0; margin:0; }
+.vault-row { cursor:pointer; padding:2px 6px; border-radius:3px; }
+.vault-row:hover { background:var(--bg-hover, #1c1c1c); }
+.vault-dir { color:var(--text-dim, #888); }
+.vault-file { color:var(--text, #ccc); }
+#vault-viewer-pane { flex:1; overflow:auto; }
+.vault-viewer { padding:16px 24px; }
+.vault-viewer-head { font:11px/1.5 monospace; color:var(--text-dim, #888); border-bottom:1px solid var(--border, #333); padding-bottom:6px; margin-bottom:12px; }
+.vault-md { line-height:1.6; }
+.vault-md h1,.vault-md h2,.vault-md h3 { margin-top:1em; }
+.vault-md code { background:var(--bg-hover, #1c1c1c); padding:1px 4px; border-radius:3px; font:11px/1.4 monospace; }
+.vault-md pre { background:var(--bg-hover, #1c1c1c); padding:8px; border-radius:4px; overflow:auto; }
+.vault-md pre code { background:transparent; padding:0; }
+.vault-md a { color:var(--accent, #6cf); }
+@media (max-width:768px) {
+  .vault-split { flex-direction:column; height:auto; }
+  #vault-tree-pane { width:auto; max-height:40vh; border-right:none; border-bottom:1px solid var(--border, #333); }
+}

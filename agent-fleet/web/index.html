@@ -55,6 +55,7 @@
         <button id="nav-groups"    class="btn-ghost" data-i18n="nav.groups">⌘ groups</button>
         <button id="nav-workflows" class="btn-ghost" data-i18n="nav.workflows">⎇ workflows</button>
         <button id="nav-prices"    class="btn-ghost" data-i18n="nav.prices">$ prices</button>
+        <button id="nav-vault"     class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
         <select id="lang-select" class="switcher" title="language">
           <option value="en">EN</option>
           <option value="ru">RU</option>
@@ -516,6 +517,27 @@
     </div>
   </div>
 
+  <!-- vt-0146: vault tab — read-only viewer (vt-0147 adds editor + secrets) -->
+  <div id="vaultview" hidden>
+    <header class="archive-head overlay-header">
+      <h2 data-i18n="vault.title">VAULT</h2>
+      <span id="vault-mode-badge" class="pill" data-i18n="vault.notes">notes</span>
+      <span style="flex:1"></span>
+      <button id="vault-reload" class="btn-ghost" data-i18n="vault.reload" title="reload tree">↻ reload</button>
+      <button id="vaultview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+    </header>
+    <div class="vault-split">
+      <div id="vault-tree-pane">
+        <div id="vault-tree" class="vault-tree">loading…</div>
+      </div>
+      <div id="vault-viewer-pane">
+        <div id="vault-viewer" class="vault-viewer">
+          <em data-i18n="vault.click_hint">Select a note from the tree.</em>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- FILE EDITOR MODAL -->
   <div id="editor" hidden>
     <div class="editor-frame">
@@ -546,6 +568,10 @@
   <script src="/fleet/static/workflow-run-viewer.js"></script>
   <script src="/fleet/static/prices.js"></script>
   <script src="/fleet/static/host-metrics.js"></script>
+  <!-- vt-0146: vendored marked + DOMPurify (no CDN — works in air-gapped) -->
+  <script src="/fleet/static/vendor/marked.min.js"></script>
+  <script src="/fleet/static/vendor/dompurify.min.js"></script>
+  <script src="/fleet/static/vault.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
 </html>

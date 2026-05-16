@@ -196,6 +196,58 @@ function mapOutcome(e) {
   return 'error';
 }
 
+// vt-0146: directory listing for the Fleet UI vault tab. Filesystem walk
+// (vault_files table never existed). Auth: viewer Bearer enough — readers
+// only. Tag overlay from chunks table is best-effort.
+async function handleNotesList(req, res) {
+  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  const u = new URL(req.url, 'http://x');
+  const prefix = (u.searchParams.get('prefix') || '').replace(/^\/+/, '').replace(/\/+$/, '');
+  const depth = Math.min(Math.max(parseInt(u.searchParams.get('depth') || '2', 10), 0), 5);
+  if (prefix.includes('..')) return send(res, 422, { error: 'bad prefix' });
+  const base = prefix ? path.join(VAULT, prefix) : VAULT;
+  if (!base.startsWith(VAULT)) return send(res, 422, { error: 'bad prefix' });
+  if (!fs.existsSync(base)) return send(res, 200, { entries: [] });
+
+  const entries = [];
+  function walk(dir, depthLeft, rel) {
+    let dirents;
+    try { dirents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const d of dirents) {
+      if (d.name.startsWith('.')) continue;
+      if (d.name === 'node_modules') continue;
+      const full = path.join(dir, d.name);
+      const subRel = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        entries.push({ path: subRel + '/', kind: 'dir' });
+        if (depthLeft > 0) walk(full, depthLeft - 1, subRel);
+      } else if (d.name.endsWith('.md')) {
+        let stat;
+        try { stat = fs.statSync(full); } catch { continue; }
+        entries.push({ path: subRel, kind: 'file', size: stat.size, mtime: stat.mtimeMs });
+      }
+    }
+  }
+  walk(base, depth, prefix);
+
+  if (entries.length && !SKIP_PG) {
+    try {
+      const paths = entries.filter(e => e.kind === 'file').map(e => e.path);
+      if (paths.length) {
+        const r = await withPg(c => c.query(
+          `SELECT path, array_agg(DISTINCT t) AS tags
+           FROM chunks, unnest(tags) AS t
+           WHERE path = ANY($1)
+           GROUP BY path`, [paths]));
+        const tagsByPath = Object.fromEntries(r.rows.map(row => [row.path, row.tags]));
+        for (const e of entries) if (e.kind === 'file' && tagsByPath[e.path]) e.tags = tagsByPath[e.path];
+      }
+    } catch (e) { console.error('[notes-list] tag overlay:', e.message); }
+  }
+
+  send(res, 200, { entries: entries.slice(0, 5000) });
+}
+
 // vt-0140: ingest path moved from the standalone tokmon-ingest container.
 // Auth is the separate VAULT_RAG_TOKMON_INGEST_TOKEN — shippers don't hold
 // the viewer or admin bearer.
@@ -491,6 +543,15 @@ const server = http.createServer(async (req, res) => {
       && process.env.VAULT_RAG_TOKMON_INGEST_ENABLED !== '0') {
     return handleTokmonIngest(req, res).catch(e => {
       console.error('[rag-api] /tokmon/ingest', e.stack || e.message);
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
+  // vt-0146: GET /api/notes/list — directory listing for the Fleet UI vault
+  // tab. Filesystem walk under VAULT (no DB dependency on vault_files which
+  // doesn't exist). Optional tag overlay from chunks.
+  if (req.method === 'GET' && req.url.startsWith('/notes/list')) {
+    return handleNotesList(req, res).catch(e => {
+      console.error('[rag-api] /notes/list', e.stack || e.message);
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }

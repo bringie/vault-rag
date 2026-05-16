@@ -27,6 +27,23 @@
       history.replaceState(null, '', location.pathname);
     }
     state.token = localStorage.fleetToken || null;
+    // vt-0146/0147: vault.js + future tabs need the token + admin flag.
+    if (state.token) {
+      // Best-effort probe: hit an admin-only endpoint. 403 → viewer; anything
+      // else (200, 422, 502, 503) → admin. Done in parallel; vault tab waits
+      // on the global event.
+      fetch('/api/fleet/dispatch', {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
+        body: '{}',
+      }).then(r => {
+        state.isAdmin = r.status !== 403;
+        window.dispatchEvent(new CustomEvent('fleet-token-ready', { detail: { token: state.token, isAdmin: state.isAdmin } }));
+      }).catch(() => {
+        state.isAdmin = false;
+        window.dispatchEvent(new CustomEvent('fleet-token-ready', { detail: { token: state.token, isAdmin: false } }));
+      });
+    }
   }
   function showAuth() {
     $('auth').hidden = false; $('app').hidden = true;
@@ -982,9 +999,10 @@
                        open: arg => arg ? window.openWorkflowEditor?.(arg) : window.openWorkflowsList?.() },
     'workflow-runs': { panels: ['workflowrunviewer'], nav: 'workflows', title: 'page.workflow_run',    open: arg => window.openWorkflowRunViewer?.(arg) },
     prices:          { panels: ['pricesview'],        nav: 'prices',    title: 'page.prices',          open: () => window.openPricesView?.() },
+    vault:           { panels: ['vaultview'],         nav: 'vault',     title: 'page.vault',           open: () => window.openVaultView?.() },
   };
-  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview'];
-  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices'];
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview'];
+  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault'];
 
   function setPage(name, arg) {
     const p = PAGES[name] || PAGES.dashboard;
@@ -1578,6 +1596,9 @@
     $('nav-groups').onclick = () => navigate('/groups');
     const wfNav = $('nav-workflows'); if (wfNav) wfNav.onclick = () => navigate('/workflows');
     const pNav = $('nav-prices'); if (pNav) pNav.onclick = () => navigate('/prices');
+    // vt-0146: vault tab
+    const vNav = $('nav-vault'); if (vNav) vNav.onclick = () => navigate('/vault');
+    const vBack = $('vaultview-close'); if (vBack) vBack.onclick = () => navigate('/dashboard');
     const wfNew = $('wf-new'); if (wfNew) wfNew.onclick = () => navigate('/workflows/new');
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
