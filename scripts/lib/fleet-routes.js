@@ -443,10 +443,12 @@ async function handleDispatch({ req, res, body, ctx }) {
     const taggedIds = new Set(taggedHosts.map(h => h.id));
     candidates = candidates.filter(h => taggedIds.has(h.id));
   }
+  // vt-0151: hold the group record so we can inject its brain_prompt below.
+  let resolvedGroup = null;
   if (group) {
-    const g = await fleetDb.getGroupByName(ctx.db, group);
-    if (!g) return send(res, 404, { error: `group not found: ${group}` });
-    const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
+    resolvedGroup = await fleetDb.getGroupByName(ctx.db, group);
+    if (!resolvedGroup) return send(res, 404, { error: `group not found: ${group}` });
+    const members = await fleetDb.listHostsInGroup(ctx.db, resolvedGroup.id);
     const memberIds = new Set(members.map(h => h.id));
     candidates = candidates.filter(h => memberIds.has(h.id));
   }
@@ -457,16 +459,43 @@ async function handleDispatch({ req, res, body, ctx }) {
   for (const s of sessions) busyByHost[s.host_id] = (busyByHost[s.host_id] || 0) + 1;
   candidates.sort((a, b) => (busyByHost[a.id] || 0) - (busyByHost[b.id] || 0));
   const host = candidates[0];
+
+  // vt-0151: structured spawn fields (model/prompt/system_prompt/etc) are
+  // forwarded to the daemon so backends like claude can apply --model,
+  // --append-system-prompt, etc. When the dispatch targets a group with a
+  // brain_prompt, prepend it to body.system_prompt — the per-call prompt
+  // wins on the same flag (it's appended after), and an empty per-call
+  // system_prompt just inherits the group's.
+  const structured = {};
+  for (const k of STRUCTURED_SPAWN_FIELDS) {
+    if (body[k] != null) structured[k] = body[k];
+  }
+  if (resolvedGroup && resolvedGroup.brain_prompt) {
+    structured.system_prompt = structured.system_prompt
+      ? `${resolvedGroup.brain_prompt}\n\n${structured.system_prompt}`
+      : resolvedGroup.brain_prompt;
+  }
+
+  const sessionMetadata = { ...(metadata || {}), ...structured };
+  if (resolvedGroup) sessionMetadata.dispatched_group = resolvedGroup.name;
+
   const s = await fleetDb.createSession(ctx.db, {
     hostId: host.id, cwd: cwd || '~',
     args: args || [], env: env || {},
     createdBy: 'dispatch',
-    label: label || null, metadata: metadata || {},
+    label: label || null, metadata: sessionMetadata,
   });
   if (ctx.bus) {
-    ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env });
+    const payload = { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env, ...structured };
+    ctx.bus.requestSpawn(host.id, payload);
   }
-  send(res, 201, { session_id: s.id, host_id: host.id, host_name: host.name, display_name: host.display_name });
+  send(res, 201, {
+    session_id: s.id,
+    host_id: host.id,
+    host_name: host.name,
+    display_name: host.display_name,
+    group_brain_prompt_applied: !!(resolvedGroup && resolvedGroup.brain_prompt),
+  });
 }
 
 async function handleListSessions({ req, res, ctx }) {
@@ -689,6 +718,7 @@ async function handleCreateGroup({ res, body, ctx }) {
     const g = await fleetDb.createGroup(ctx.db, {
       name: body.name, description: body.description, color: body.color || null,
       labels: Array.isArray(body.labels) ? body.labels : [],
+      brain_prompt: typeof body.brain_prompt === 'string' ? body.brain_prompt : null,
     });
     send(res, 201, g);
   } catch (e) {
@@ -710,6 +740,12 @@ async function handlePatchGroup({ req, res, body, ctx }) {
   if ('labels' in body) {
     if (!Array.isArray(body.labels)) return send(res, 422, { error: 'labels must be array of strings' });
     patch.labels = body.labels;
+  }
+  if ('brain_prompt' in body) {
+    if (body.brain_prompt !== null && typeof body.brain_prompt !== 'string') {
+      return send(res, 422, { error: 'brain_prompt must be string or null' });
+    }
+    patch.brain_prompt = body.brain_prompt;
   }
   const expectedVersion = Number.isFinite(body.expected_version) ? body.expected_version : undefined;
   try {

@@ -1498,6 +1498,15 @@
               <button type="submit" class="btn-ghost">+ add host</button>
             </form>
           </section>
+          <section style="margin-top:1.4em">
+            <label class="lbl">BRAIN PROMPT — prepended to every spawn dispatched to this group</label>
+            <textarea id="gd-brain-prompt" rows="6" spellcheck="false"
+              style="width:100%; box-sizing:border-box; padding:.4em .6em; background:var(--bg); color:var(--text); border:1px solid var(--line); font-family:var(--font-mono); font-size:12px; resize:vertical">${esc(g.brain_prompt || '')}</textarea>
+            <div style="display:flex; gap:8px; align-items:center; margin-top:.4em">
+              <button id="gd-save-brain" class="btn-primary" style="width:auto; padding:.3em 1em">save brain</button>
+              <span id="gd-brain-status" class="lbl"></span>
+            </div>
+          </section>
         </div>
       </div>
     `;
@@ -1537,6 +1546,19 @@
         g.description = v;
         loadGroups();
       } catch (e) { alert(e.message); }
+    };
+    // vt-0151: group brain prompt — explicit save (large textarea, not onblur)
+    const saveBrain = $('gd-save-brain');
+    if (saveBrain) saveBrain.onclick = async () => {
+      const v = $('gd-brain-prompt').value;
+      const status = $('gd-brain-status');
+      status.textContent = 'saving…';
+      try {
+        const updated = await patchGroupWithVersion(g, { brain_prompt: v || null });
+        if (!updated) { status.textContent = ''; return; }
+        g.brain_prompt = v || null;
+        status.textContent = v ? 'saved · injected into group dispatches' : 'saved · cleared';
+      } catch (e) { status.textContent = 'error: ' + e.message; }
     };
     function renderLabels() {
       const row = $('gd-labels-chip-row');

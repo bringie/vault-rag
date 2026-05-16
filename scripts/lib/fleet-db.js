@@ -59,10 +59,10 @@ async function getGroupByName(c, name) {
   return rows[0] || null;
 }
 
-async function createGroup(c, { name, description, color, labels }) {
+async function createGroup(c, { name, description, color, labels, brain_prompt }) {
   const { rows } = await c.query(
-    `INSERT INTO fleet_groups (name, description, color, labels) VALUES ($1, $2, $3, $4) RETURNING *`,
-    [name, description || null, color || null, labels || []]);
+    `INSERT INTO fleet_groups (name, description, color, labels, brain_prompt) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [name, description || null, color || null, labels || [], brain_prompt || null]);
   return rows[0];
 }
 
@@ -78,6 +78,10 @@ async function updateGroup(c, id, patch, expectedVersion) {
     if (!Array.isArray(patch.labels)) throw new Error('labels must be array');
     args.push(patch.labels.map(String).filter(Boolean));
     updates.push(`labels = $${args.length}`);
+  }
+  if ('brain_prompt' in patch) {
+    args.push(patch.brain_prompt || null);
+    updates.push(`brain_prompt = $${args.length}`);
   }
   if (!updates.length) return await getGroup(c, id);
   updates.push(`version = version + 1`);
