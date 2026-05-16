@@ -74,14 +74,29 @@
     const flag = { stopped: false };
     stopFlags.push(flag);
     let backoff = 800;
-    const connectStream = () => {
+    const connectStream = async () => {
       if (flag.stopped || gen !== myGen) return;
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       // Use /api/fleet prefix consistently with the session viewer (see app.js).
       // The server's attachUpgrade handler accepts both, but reverse-proxy
       // deployments may only forward /api/* upstream.
       const url = `${proto}//${location.host}/api/fleet/ws?role=workflow_viewer&run_id=${runId}`;
-      const ws = new WebSocket(url, [`bearer.${token()}`]);
+      // vt-0136: ticket subprotocol with graceful fallback to bearer.<token>
+      // for servers that haven't deployed the ticket endpoint yet.
+      let subProto = [`bearer.${token()}`];
+      try {
+        const r = await fetch('/api/fleet/auth/ws-ticket', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ role: 'workflow_viewer' }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          if (j.ticket) subProto = [`ticket.${j.ticket}`];
+        }
+      } catch {}
+      if (flag.stopped || gen !== myGen) return;
+      const ws = new WebSocket(url, subProto);
       activeWs = ws;
       ws.onopen = () => { backoff = 800; };
       ws.onmessage = (ev) => {

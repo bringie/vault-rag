@@ -519,10 +519,29 @@
     state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   }
 
-  function connectWs(id) {
+  // vt-0136: short-lived signed ticket replaces bearer-in-subprotocol so the
+  // raw token no longer lands in DevTools / reverse-proxy logs. Falls back to
+  // legacy bearer.<token> if the server doesn't ship the ws-ticket endpoint
+  // yet (rolling upgrade).
+  async function fetchWsTicket(role = 'viewer') {
+    try {
+      const r = await fetch('/api/fleet/auth/ws-ticket', {
+        method: 'POST',
+        headers: { 'authorization': 'Bearer ' + state.token, 'content-type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      return j.ticket || null;
+    } catch { return null; }
+  }
+
+  async function connectWs(id) {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/fleet/ws?role=viewer&session_id=${id}`;
-    const ws = new WebSocket(url, ['bearer.' + state.token]);
+    const ticket = await fetchWsTicket('viewer');
+    const subProto = ticket ? ['ticket.' + ticket] : ['bearer.' + state.token];
+    const ws = new WebSocket(url, subProto);
     state.ws = ws;
     ws.onopen = () => {
       state.backoff = 800;

@@ -77,6 +77,87 @@ test('healthz is reachable without auth', async () => {
   await close();
 });
 
+// vt-0136: WS auth via short-lived signed ticket instead of bearer-in-subprotocol.
+test('vt-0136: POST /fleet/auth/ws-ticket mints a viewer ticket', async () => {
+  const { server, close } = await startWithDb();
+  const r = await reqJson(server, 'POST', '/fleet/auth/ws-ticket', {
+    token: 'T', body: { role: 'viewer' },
+  });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.ticket);
+  assert.equal(r.body.role, 'viewer');
+  assert.ok(r.body.expires_in_ms > 0);
+  // Ticket shape: base64.hex
+  assert.match(r.body.ticket, /^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/);
+  await close();
+});
+
+test('vt-0136: POST /fleet/auth/ws-ticket rejects role=daemon', async () => {
+  const { server, close } = await startWithDb();
+  const r = await reqJson(server, 'POST', '/fleet/auth/ws-ticket', {
+    token: 'T', body: { role: 'daemon' },
+  });
+  assert.equal(r.status, 403);
+  await close();
+});
+
+test('vt-0136: POST /fleet/auth/ws-ticket rejects unknown role', async () => {
+  const { server, close } = await startWithDb();
+  const r = await reqJson(server, 'POST', '/fleet/auth/ws-ticket', {
+    token: 'T', body: { role: 'attacker' },
+  });
+  assert.equal(r.status, 422);
+  await close();
+});
+
+test('vt-0136: WS upgrade accepts ticket.<payload>.<sig> subprotocol', async () => {
+  const { server, pg, close } = await startWithDb();
+  // 1. Mint ticket
+  const port = server.address().port;
+  const minted = await reqJson(server, 'POST', '/fleet/auth/ws-ticket', {
+    token: 'T', body: { role: 'viewer' },
+  });
+  assert.equal(minted.status, 200);
+  const ticket = minted.body.ticket;
+  // 2. Insert a session so WS has something to attach to.
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('hT') RETURNING id")).rows[0].id;
+  const s = (await pg.query("INSERT INTO fleet_sessions (host_id, cwd, status, exit_code, ended_at) VALUES ($1,'/','exited',0,now()) RETURNING id", [h])).rows[0].id;
+  // 3. Open WS with ticket subprotocol — no Authorization header
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=viewer&session_id=${s}`,
+    [`ticket.${ticket}`]);
+  const msg = await new Promise((resolve, reject) => {
+    const onErr = (e) => reject(e);
+    ws.once('message', b => { ws.off('error', onErr); resolve(JSON.parse(b.toString())); });
+    ws.once('error', onErr);
+    setTimeout(() => { ws.off('error', onErr); reject(new Error('timeout')); }, 2000);
+  });
+  assert.equal(msg.type, 'hello');
+  // Detach all listeners + force-terminate so the post-`close()` socket
+  // tear-down doesn't bubble an "Error: Connection terminated" unhandled
+  // rejection from the ws internals.
+  ws.removeAllListeners();
+  ws.on('error', () => {});
+  ws.terminate();
+  await close();
+});
+
+test('vt-0136: WS upgrade rejects forged ticket', async () => {
+  const { server, pg, close } = await startWithDb();
+  const port = server.address().port;
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('hF') RETURNING id")).rows[0].id;
+  const s = (await pg.query("INSERT INTO fleet_sessions (host_id, cwd, status, exit_code, ended_at) VALUES ($1,'/','exited',0,now()) RETURNING id", [h])).rows[0].id;
+  // Random base64 + random hex — should fail HMAC verification
+  const bad = 'aGVsbG8.' + 'a'.repeat(64);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/fleet/ws?role=viewer&session_id=${s}`,
+    [`ticket.${bad}`]);
+  const code = await new Promise((resolve) => {
+    ws.on('close', (c) => resolve(c));
+    setTimeout(() => resolve(0), 2000);
+  });
+  assert.equal(code, 4001);
+  await close();
+});
+
 // vt-0125: /fleet/sessions/by-bucket used to silently return all sessions on
 // a day for dim=model|group|label (set dim_unfiltered:true). Drill-down now
 // narrows correctly, or returns 422 for unknown dims.

@@ -56,7 +56,21 @@
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/fleet/ws?role=metrics_viewer&host_id=${hostId}`;
-    activeWs = new WebSocket(url, [`bearer.${token()}`]);
+    // vt-0136: prefer signed ticket; fall back to legacy bearer.<token> on
+    // pre-vt-0136 servers.
+    let subProto = [`bearer.${token()}`];
+    try {
+      const r = await fetch('/api/fleet/auth/ws-ticket', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'metrics_viewer' }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.ticket) subProto = [`ticket.${j.ticket}`];
+      }
+    } catch {}
+    activeWs = new WebSocket(url, subProto);
     activeWs.onmessage = (ev) => {
       let f;
       try { f = JSON.parse(ev.data); } catch { return; }

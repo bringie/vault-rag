@@ -85,6 +85,9 @@ function isAdminPath(method, path) {
   if (method === 'GET') return false;
   // POST shape but read-only: cost batch is POST due to body size.
   if (path === '/fleet/sessions/cost-batch') return false;
+  // vt-0136: ticket endpoint mints a ticket scoped to the bearer that called
+  // it — no privilege escalation, viewer can ask for viewer ticket.
+  if (path === '/fleet/auth/ws-ticket') return false;
   // POST workflow-pending-approvals fan-out — currently GET only, but guard
   // by allowing only known read-shaped POSTs above.
   return true;
@@ -94,6 +97,62 @@ function requireAdmin(req, res, ctx) {
   if (checkAdminAuth(req, ctx)) return true;
   send(res, 403, { error: 'admin token required for this operation' });
   return false;
+}
+
+// vt-0136: short-lived signed WS tickets for browsers. The old path put the
+// raw bearer in the `Sec-WebSocket-Protocol` subprotocol where it leaks into
+// browser DevTools + reverse-proxy access logs and stays valid until token
+// rotation. Tickets are HMAC(role|exp), valid 60s, single use is not enforced
+// (cheap to issue) but expiry bounds replay.
+const WS_TICKET_TTL_MS = 60_000;
+const WS_TICKET_DERIVATION = 'fleet-ws-ticket-v1';
+function wsTicketSecret(ctx) {
+  // Per-process deterministic derivation from the viewer token — operators
+  // who want explicit rotation can set VAULT_RAG_FLEET_WS_SECRET. Tickets are
+  // ephemeral; rotating the viewer token invalidates all in-flight tickets
+  // (acceptable: a manual rotation is already a security event).
+  const base = process.env.VAULT_RAG_FLEET_WS_SECRET || ctx.token || '';
+  return crypto.createHmac('sha256', base).update(WS_TICKET_DERIVATION).digest();
+}
+function signWsTicket(ctx, role) {
+  const payload = { role, exp: Date.now() + WS_TICKET_TTL_MS };
+  const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', wsTicketSecret(ctx)).update(b64).digest('hex');
+  return `${b64}.${sig}`;
+}
+function verifyWsTicket(ctx, ticket) {
+  if (typeof ticket !== 'string') return null;
+  const parts = ticket.split('.');
+  if (parts.length !== 2) return null;
+  const [b64, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', wsTicketSecret(ctx)).update(b64).digest('hex');
+  // Constant-time compare; mismatched length is also rejected via tokenEqual.
+  if (!tokenEqual(sig, expectedSig)) return null;
+  let payload;
+  try { payload = JSON.parse(Buffer.from(b64, 'base64url').toString('utf8')); }
+  catch { return null; }
+  if (!payload || typeof payload.role !== 'string' || typeof payload.exp !== 'number') return null;
+  if (Date.now() > payload.exp) return null;
+  return payload;
+}
+
+async function handleWsTicket({ req, res, body, ctx }) {
+  // Auth: viewer-or-admin already enforced by dispatchHttp before we land here.
+  // Role: ticket carries the role the bearer was admitted under. Daemons never
+  // call this (they use Authorization header on the WS upgrade); we still
+  // refuse to mint daemon tickets via this endpoint to avoid future bypass.
+  const requested = (body && body.role) ? String(body.role) : 'viewer';
+  if (requested === 'daemon') {
+    return send(res, 403, { error: 'daemon role uses Authorization header, not tickets' });
+  }
+  if (!['viewer', 'workflow_viewer', 'metrics_viewer'].includes(requested)) {
+    return send(res, 422, { error: `unknown role: ${requested}` });
+  }
+  // Admin-bearer holders may request any viewer role; viewer-bearer holders
+  // may only request the same. Auth check is uniform — we already passed
+  // checkAuth in dispatchHttp.
+  const ticket = signWsTicket(ctx, requested);
+  send(res, 200, { ticket, role: requested, expires_in_ms: WS_TICKET_TTL_MS });
 }
 
 function pathMatch(url, prefix) {
@@ -1395,6 +1454,12 @@ function dispatchHttp(req, res, ctx) {
     return readBody(req).then(b => handleFireWorkflowEvent({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
+  // vt-0136: short-lived WS ticket for browsers. Lets us drop bearer.<token>
+  // out of Sec-WebSocket-Protocol (where it leaks into DevTools + proxy logs).
+  if (method === 'POST' && path === '/fleet/auth/ws-ticket') {
+    return readBody(req).then(b => handleWsTicket({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+  }
+
   send(res, 404, { error: 'not found' });
 }
 
@@ -1710,36 +1775,59 @@ function attach(server, ctx) {
     const u = new URL(req.url, 'http://x');
     const role = u.searchParams.get('role');
     const auth = req.headers.authorization || '';
+    // vt-0136: browsers send `ticket.<payload>.<sig>` as a Sec-WebSocket-Protocol
+    // entry. Test-harness path doesn't auto-decode, but the wss is constructed
+    // without handleProtocols so we have to peek at headers ourselves.
+    const proto = req.headers['sec-websocket-protocol'] || '';
+    const ticketProto = proto.split(',').map(s => s.trim()).find(s => s.startsWith('ticket.'));
+    const ticket = ticketProto ? ticketProto.slice('ticket.'.length) : null;
     wss.handleUpgrade(req, sock, head, (ws) => {
-      acceptWsUpgrade(ws, { role, auth, params: u.searchParams, ctx: server._fleetCtx });
+      acceptWsUpgrade(ws, { role, auth, params: u.searchParams, ctx: server._fleetCtx, ticket });
     });
   });
 }
 
 // vt-N1 (audit): shared WS-upgrade auth + role dispatch helper. Used by both
 // attach() (test harness) and attachUpgrade() (production) so they can't drift.
-function acceptWsUpgrade(ws, { role, auth, params, ctx }) {
+function acceptWsUpgrade(ws, { role, auth, params, ctx, ticket }) {
   const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
   const viewerBearer = `Bearer ${ctx.token}`;
   // Daemon WS executes code on a host — requires admin token when configured.
-  // Other viewer roles are read-only; either token works. C2: constant-time
-  // comparisons throughout (auth flows in from a TLS-terminated WS handshake;
-  // a timing oracle is realistic).
+  // Daemons never use tickets (they hold the long-lived token in their config
+  // file and pass it via Authorization header).
   if (role === 'daemon') {
     const needed = adminBearer || viewerBearer;
     if (!tokenEqual(auth, needed)) return ws.close(4001, 'unauthorized');
   } else {
+    // vt-0136: browsers may authenticate with a short-lived HMAC ticket
+    // instead of the bearer. Daemon-style bearer header is still accepted
+    // for CLI tools (vt.js, scripts).
     const viewerOk = tokenEqual(auth, viewerBearer);
     const adminOk = adminBearer && tokenEqual(auth, adminBearer);
-    if (!viewerOk && !adminOk) return ws.close(4001, 'unauthorized');
+    let ticketOk = false;
+    if (!viewerOk && !adminOk && ticket) {
+      const verified = verifyWsTicket(ctx, ticket);
+      if (verified) {
+        // Ticket role must match (or be a generic 'viewer' that fits the requested role).
+        if (verified.role === role || verified.role === 'viewer') ticketOk = true;
+      }
+    }
+    if (!viewerOk && !adminOk && !ticketOk) return ws.close(4001, 'unauthorized');
   }
   if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
     return ws.close(4003, 'invalid role');
   }
-  if (role === 'daemon')                handleDaemonWs(ws, params, ctx);
-  else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, params, ctx);
-  else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, params, ctx);
-  else                                  handleViewerWs(ws, params, ctx);
+  // vt-0136 follow-up: wrap async handlers so unhandled rejections (e.g. pg
+  // connection terminated mid-stream) don't bubble out to the process — they
+  // close the WS with 1011 and log, instead.
+  const dispatch = role === 'daemon'           ? handleDaemonWs
+                 : role === 'workflow_viewer'  ? handleWorkflowViewerWs
+                 : role === 'metrics_viewer'   ? handleMetricsViewerWs
+                 :                                handleViewerWs;
+  Promise.resolve(dispatch(ws, params, ctx)).catch((e) => {
+    console.error(`[fleet-routes] ws ${role}: ${e.stack || e.message}`);
+    try { ws.close(1011, 'internal'); } catch {}
+  });
 }
 
 // tryDispatch: synchronous fast-path for rag-api callback integration.
@@ -1767,13 +1855,16 @@ function tryDispatch(req, res, ctx) {
 function attachUpgrade(server, getCtx) {
   if (server._fleetUpgradeAttached) return;
   server._fleetUpgradeAttached = true;
-  // Accept bearer.<token> subprotocol so browsers (no header API) can authenticate.
+  // Accept either `ticket.<payload>.<sig>` (vt-0136 preferred) or legacy
+  // `bearer.<token>` (deprecated) as the Sec-WebSocket-Protocol entry.
   // C3: per-frame cap (see attach() for rationale).
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 4 * 1024 * 1024,
     handleProtocols: (protos) => {
-      for (const p of protos) if (p.startsWith('bearer.')) return p;
+      for (const p of protos) {
+        if (p.startsWith('ticket.') || p.startsWith('bearer.')) return p;
+      }
       return false;
     },
   });
@@ -1783,13 +1874,17 @@ function attachUpgrade(server, getCtx) {
     const u = new URL(req.url, 'http://x');
     const role = u.searchParams.get('role');
     let auth = req.headers.authorization || '';
+    let ticket = null;
+    const proto = req.headers['sec-websocket-protocol'] || '';
+    const parts = proto.split(',').map(s => s.trim());
     if (!auth) {
-      const proto = req.headers['sec-websocket-protocol'] || '';
-      const b = proto.split(',').map(s => s.trim()).find(s => s.startsWith('bearer.'));
+      const b = parts.find(s => s.startsWith('bearer.'));
       if (b) auth = `Bearer ${b.slice('bearer.'.length)}`;
     }
+    const t = parts.find(s => s.startsWith('ticket.'));
+    if (t) ticket = t.slice('ticket.'.length);
     wss.handleUpgrade(req, sock, head, (ws) => {
-      acceptWsUpgrade(ws, { role, auth, params: u.searchParams, ctx: getCtx() });
+      acceptWsUpgrade(ws, { role, auth, params: u.searchParams, ctx: getCtx(), ticket });
     });
   });
 }
