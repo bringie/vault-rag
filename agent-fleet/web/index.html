@@ -8,7 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&family=Major+Mono+Display&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/fleet/static/xterm.min.css">
+  <link rel="stylesheet" href="/fleet/static/themes.css">
   <link rel="stylesheet" href="/fleet/static/app.css">
+  <script src="/fleet/static/theme.js"></script>
 </head>
 <body>
 
@@ -53,6 +55,13 @@
         <button id="nav-groups"    class="btn-ghost">⌘ groups</button>
         <button id="nav-workflows" class="btn-ghost">⎇ workflows</button>
         <button id="nav-prices"    class="btn-ghost">$ prices</button>
+        <select id="theme-select" class="switcher" title="theme">
+          <option value="dark">dark</option>
+          <option value="light">light</option>
+          <option value="solarized">solarized</option>
+          <option value="nord">nord</option>
+          <option value="hi-contrast">hi-contrast</option>
+        </select>
         <button id="reload" title="refresh" class="btn-icon">⟳</button>
         <button id="logout" class="btn-ghost">ABORT</button>
       </div>

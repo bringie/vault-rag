@@ -1,0 +1,83 @@
+/* agent-fleet themes — switchable via [data-theme] on <html>.
+   Each theme defines: layout vars (bg/text/lines/etc) + 16-color ANSI palette for xterm. */
+
+/* dark (default) — tactical command-console aesthetic */
+:root, :root[data-theme="dark"] {
+  --bg: #0a0a0c; --bg-warm: #0d0c0a; --panel: #14141a; --panel-2: #1c1c24;
+  --line: #2a2832; --line-2: #3a3845;
+  --text: #e8e6e1; --text-dim: #8a8580; --text-faint: #5a5550;
+  --ok: #5cf08c; --ok-glow: rgba(92,240,140,.4);
+  --warn: #ffb547; --warn-glow: rgba(255,181,71,.4);
+  --danger: #ff4d5e; --danger-glow: rgba(255,77,94,.4);
+  --accent: #6fd5ff; --magenta: #ff79c6;
+  --term-bg: #0a0a0c; --term-fg: #e8e6e1;
+  --term-black: #16161e; --term-red: #ff4d5e; --term-green: #5cf08c; --term-yellow: #ffb547;
+  --term-blue: #6fd5ff; --term-magenta: #ff79c6; --term-cyan: #88c0d0; --term-white: #c0c0c0;
+  --term-br-black: #555555; --term-br-red: #ff8088; --term-br-green: #88ffaa; --term-br-yellow: #ffd07a;
+  --term-br-blue: #aae6ff; --term-br-magenta: #ffaadd; --term-br-cyan: #aaeedd; --term-br-white: #ffffff;
+}
+
+/* light/paper — daylight readable */
+:root[data-theme="light"] {
+  --bg: #fafaf7; --bg-warm: #f0eee8; --panel: #ffffff; --panel-2: #f5f3ee;
+  --line: #d0cdc4; --line-2: #b8b5ac;
+  --text: #1a1815; --text-dim: #5a5550; --text-faint: #8a8580;
+  --ok: #1f7f44; --ok-glow: rgba(31,127,68,.3);
+  --warn: #b86f1d; --warn-glow: rgba(184,111,29,.3);
+  --danger: #b8302e; --danger-glow: rgba(184,48,46,.3);
+  --accent: #1d6fb8; --magenta: #9a3a8a;
+  /* Terminal stays dark for readability of pty output — accepted exception */
+  --term-bg: #0a0a0c; --term-fg: #e8e6e1;
+  --term-black: #16161e; --term-red: #ff4d5e; --term-green: #5cf08c; --term-yellow: #ffb547;
+  --term-blue: #6fd5ff; --term-magenta: #ff79c6; --term-cyan: #88c0d0; --term-white: #c0c0c0;
+  --term-br-black: #555555; --term-br-red: #ff8088; --term-br-green: #88ffaa; --term-br-yellow: #ffd07a;
+  --term-br-blue: #aae6ff; --term-br-magenta: #ffaadd; --term-br-cyan: #aaeedd; --term-br-white: #ffffff;
+}
+
+/* solarized — warm beige; primary text #073642 = WCAG AA 12.6:1 on bg */
+:root[data-theme="solarized"] {
+  --bg: #fdf6e3; --bg-warm: #eee8d5; --panel: #fdf6e3; --panel-2: #eee8d5;
+  --line: #cdb78d; --line-2: #93a1a1;
+  --text: #073642; --text-dim: #586e75; --text-faint: #93a1a1;
+  --ok: #859900; --ok-glow: rgba(133,153,0,.3);
+  --warn: #b58900; --warn-glow: rgba(181,137,0,.3);
+  --danger: #dc322f; --danger-glow: rgba(220,50,47,.3);
+  --accent: #268bd2; --magenta: #d33682;
+  --term-bg: #002b36; --term-fg: #93a1a1;
+  --term-black: #073642; --term-red: #dc322f; --term-green: #859900; --term-yellow: #b58900;
+  --term-blue: #268bd2; --term-magenta: #d33682; --term-cyan: #2aa198; --term-white: #eee8d5;
+  --term-br-black: #002b36; --term-br-red: #cb4b16; --term-br-green: #586e75; --term-br-yellow: #657b83;
+  --term-br-blue: #839496; --term-br-magenta: #6c71c4; --term-br-cyan: #93a1a1; --term-br-white: #fdf6e3;
+}
+
+/* nord — arctic blue/grey */
+:root[data-theme="nord"] {
+  --bg: #2e3440; --bg-warm: #3b4252; --panel: #3b4252; --panel-2: #434c5e;
+  --line: #4c566a; --line-2: #5e6779;
+  --text: #eceff4; --text-dim: #d8dee9; --text-faint: #8fbcbb;
+  --ok: #a3be8c; --ok-glow: rgba(163,190,140,.4);
+  --warn: #ebcb8b; --warn-glow: rgba(235,203,139,.4);
+  --danger: #bf616a; --danger-glow: rgba(191,97,106,.4);
+  --accent: #88c0d0; --magenta: #b48ead;
+  --term-bg: #2e3440; --term-fg: #eceff4;
+  --term-black: #3b4252; --term-red: #bf616a; --term-green: #a3be8c; --term-yellow: #ebcb8b;
+  --term-blue: #81a1c1; --term-magenta: #b48ead; --term-cyan: #88c0d0; --term-white: #e5e9f0;
+  --term-br-black: #4c566a; --term-br-red: #d08086; --term-br-green: #b9d49a; --term-br-yellow: #f0d4a1;
+  --term-br-blue: #95b4d0; --term-br-magenta: #c39bbb; --term-br-cyan: #8fbcbb; --term-br-white: #eceff4;
+}
+
+/* hi-contrast — accessibility (yellow on black) */
+:root[data-theme="hi-contrast"] {
+  --bg: #000000; --bg-warm: #0a0a0a; --panel: #111111; --panel-2: #1a1a1a;
+  --line: #ffff00; --line-2: #ffff00;
+  --text: #ffff00; --text-dim: #ffee44; --text-faint: #ccaa00;
+  --ok: #00ff00; --ok-glow: rgba(0,255,0,.5);
+  --warn: #ffaa00; --warn-glow: rgba(255,170,0,.5);
+  --danger: #ff0033; --danger-glow: rgba(255,0,51,.5);
+  --accent: #00ffff; --magenta: #ff66ff;
+  --term-bg: #000000; --term-fg: #ffff00;
+  --term-black: #000000; --term-red: #ff0033; --term-green: #00ff00; --term-yellow: #ffaa00;
+  --term-blue: #00ffff; --term-magenta: #ff66ff; --term-cyan: #00ffaa; --term-white: #ffffff;
+  --term-br-black: #444444; --term-br-red: #ff5566; --term-br-green: #66ff66; --term-br-yellow: #ffdd44;
+  --term-br-blue: #66ffff; --term-br-magenta: #ff99ff; --term-br-cyan: #66ffcc; --term-br-white: #ffffff;
+}

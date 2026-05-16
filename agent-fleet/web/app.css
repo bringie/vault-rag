@@ -1,29 +1,18 @@
 /* agent-fleet — tactical command console aesthetic.
-   Mono dominant. Phosphor green / amber / red status palette.
-   ASCII-ish corner accents, subtle CRT scanlines, grain noise. */
+   Mono dominant. Theme colors live in themes.css.
+   Font vars stay here (not theme-specific). */
 
 :root {
-  --bg:        #0a0a0c;
-  --bg-warm:   #0d0c0a;
-  --panel:     #14141a;
-  --panel-2:   #1c1c24;
-  --line:      #2a2832;
-  --line-2:    #3a3845;
-  --text:      #e8e6e1;
-  --text-dim:  #8a8580;
-  --text-faint:#5a5550;
-  --ok:        #5cf08c;
-  --ok-glow:   rgba(92, 240, 140, 0.4);
-  --warn:      #ffb547;
-  --warn-glow: rgba(255, 181, 71, 0.4);
-  --danger:    #ff4d5e;
-  --danger-glow:rgba(255, 77, 94, 0.4);
-  --accent:    #6fd5ff;
-  --magenta:   #ff79c6;
-
   --font-display: 'Major Mono Display', 'JetBrains Mono', ui-monospace, monospace;
   --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
+
+.switcher {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: .85em; padding: .25em .4em;
+  margin: 0 .3em; cursor: pointer;
+}
+.switcher:hover { border-color: var(--accent); }
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
