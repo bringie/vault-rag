@@ -836,9 +836,8 @@
       li.onclick = () => attachSession(li.dataset.session);
     });
 
-    // wire actions
-    $('hd-md').onclick   = () => openEditor(h.id, 'CLAUDE.md');
-    $('hd-json').onclick = () => openEditor(h.id, 'settings.json');
+    // vt-0150: per-agent edit buttons — one per installed backend.
+    renderHostEditButtons(h);
     $('hd-close-detail').onclick = () => {
       if (window.stopHostMetrics) window.stopHostMetrics();
       state.selectedHost = null;
@@ -869,6 +868,56 @@
     renderHostGroups(h);
     // live metrics + inventory tabs (guards same-host re-render churn)
     if (window.startHostMetrics) window.startHostMetrics(h.id);
+  }
+
+  // vt-0150: per-agent edit buttons. Read host.installed_backends (jsonb
+  // map: name → version), cross-reference with state.backendConfigs (fetched
+  // once from /api/fleet/backend-configs), render one button per editable
+  // file. Dedupe AGENTS.md when both codex+opencode are installed.
+  let _backendConfigsPromise = null;
+  async function getBackendConfigs() {
+    if (state.backendConfigs) return state.backendConfigs;
+    if (!_backendConfigsPromise) {
+      _backendConfigsPromise = api('GET', '/fleet/backend-configs')
+        .then(m => { state.backendConfigs = m; return m; })
+        .catch(() => ({ claude: [
+          { name: 'CLAUDE.md',     label: 'CLAUDE.md' },
+          { name: 'settings.json', label: 'settings.json' },
+        ]}));
+    }
+    return _backendConfigsPromise;
+  }
+  async function renderHostEditButtons(h) {
+    const container = $('hd-edit-buttons');
+    if (!container) return;
+    container.textContent = '';
+    const installed = h.installed_backends || {};
+    const cfgMap = await getBackendConfigs();
+    const seen = new Set();
+    const entries = [];
+    for (const [backend, version] of Object.entries(installed)) {
+      if (!version) continue; // probe returned null → not installed
+      const files = cfgMap[backend] || [];
+      for (const f of files) {
+        if (seen.has(f.name)) continue;
+        seen.add(f.name);
+        entries.push(f);
+      }
+    }
+    // Fallback for pre-vt-0150 daemons that don't ship installed_backends:
+    // surface the legacy claude pair so existing hosts keep working.
+    if (!entries.length) {
+      const claude = cfgMap.claude || [];
+      for (const f of claude) entries.push(f);
+    }
+    for (const f of entries) {
+      const btn = document.createElement('button');
+      btn.className = 'btn-ghost';
+      btn.textContent = 'edit ' + (f.label || f.name);
+      btn.onclick = () => openEditor(h.id, f.name);
+      container.appendChild(btn);
+      container.appendChild(document.createTextNode(' '));
+    }
   }
 
   async function renderHostGroups(h) {

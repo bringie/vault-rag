@@ -1326,6 +1326,12 @@ function dispatchHttp(req, res, ctx) {
     return send(res, 403, { error: 'admin token required for this operation' });
   }
 
+  // vt-0150: shared backend → config-files map (web UI consults this to
+  // render per-host edit buttons). Static; no DB hit.
+  if (method === 'GET' && path === '/fleet/backend-configs') {
+    return send(res, 200, require('./backend-configs').BACKEND_CONFIGS);
+  }
+
   // hosts
   if (method === 'GET'    && path === '/fleet/hosts')   return handleGetHosts({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleGetHost({ req, res, ctx });
@@ -1492,6 +1498,7 @@ async function handleDaemonWs(ws, params, ctx) {
           capabilities: f.capabilities || [],
           daemonVersion: params.get('daemon_version'),
           claudeVersion: f.claude_version,
+          backends: f.backends && typeof f.backends === 'object' ? f.backends : null,
         });
         if (f.host_info && typeof f.host_info === 'object') {
           await fleetDb.setHostMetadata(ctx.db, host.id, f.host_info);

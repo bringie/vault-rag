@@ -6,9 +6,11 @@ async function upsertHost(c, h) {
   // capabilities: only overwrite if explicitly provided AND non-empty
   // (daemon hello has empty array by default; we don't want it to clobber
   // user-set tags via PATCH).
+  // vt-0150: persist installed_backends if provided (empty object = no probe).
+  // Pre-vt-0150 daemons don't send `backends`, so absence is a no-op.
   const sql = `
-    INSERT INTO fleet_hosts (name, os, arch, capabilities, daemon_version, claude_version, status, last_seen)
-    VALUES ($1, $2, $3, $4, $5, $6, 'online', now())
+    INSERT INTO fleet_hosts (name, os, arch, capabilities, daemon_version, claude_version, installed_backends, status, last_seen)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, 'online', now())
     ON CONFLICT (name) DO UPDATE SET
       os = COALESCE(EXCLUDED.os, fleet_hosts.os),
       arch = COALESCE(EXCLUDED.arch, fleet_hosts.arch),
@@ -19,12 +21,18 @@ async function upsertHost(c, h) {
       END,
       daemon_version = COALESCE(EXCLUDED.daemon_version, fleet_hosts.daemon_version),
       claude_version = COALESCE(EXCLUDED.claude_version, fleet_hosts.claude_version),
+      installed_backends = CASE
+        WHEN EXCLUDED.installed_backends IS NOT NULL AND EXCLUDED.installed_backends <> '{}'::jsonb
+        THEN EXCLUDED.installed_backends
+        ELSE fleet_hosts.installed_backends
+      END,
       status = 'online',
       last_seen = now()
     RETURNING *`;
   const { rows } = await c.query(sql, [
     h.name, h.os || null, h.arch || null, h.capabilities || [],
     h.daemonVersion || null, h.claudeVersion || null,
+    h.backends ? JSON.stringify(h.backends) : '{}',
   ]);
   return rows[0];
 }

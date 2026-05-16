@@ -73,14 +73,25 @@ function collectHostInfo() {
 
 // Daemon NEVER reads/writes outside the symbolic-name allowlist below
 // (CLAUDE.md edit feature). resolveAllowedPath is the only gatekeeper.
+// vt-0150: write allowlist is built from the shared backend-configs map.
+// Resolved lazily so the require cycle stays clean.
+let _allowMap = null;
 function resolveAllowedPath(reqPath) {
-  // Map symbolic names → real path. Reject anything else.
-  const home = process.env.HOME || os.homedir() || '/root';
-  const map = {
-    'CLAUDE.md':       path.join(home, '.claude', 'CLAUDE.md'),
-    'settings.json':   path.join(home, '.claude', 'settings.json'),
-  };
-  return map[reqPath] || null;
+  if (!_allowMap) {
+    const home = process.env.HOME || os.homedir() || '/root';
+    // Daemon doesn't depend on scripts/lib at runtime, so vendor a tiny
+    // copy of flatPaths() inline.
+    const rel = {
+      'CLAUDE.md':       '.claude/CLAUDE.md',
+      'settings.json':   '.claude/settings.json',
+      'AGENTS.md':       'AGENTS.md',
+      'GEMINI.md':       '.gemini/GEMINI.md',
+    };
+    _allowMap = Object.fromEntries(
+      Object.entries(rel).map(([k, r]) => [k, path.join(home, r)])
+    );
+  }
+  return _allowMap[reqPath] || null;
 }
 
 const MIN_BACKOFF = 1000;
