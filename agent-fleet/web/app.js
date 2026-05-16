@@ -757,49 +757,44 @@
     return { name: parts[0] || 'dashboard', arg: parts[1] || null };
   }
   function navigate(path) { if (location.hash !== '#' + path) location.hash = path; else applyRoute(); }
+
+  // Route → page descriptor. Each entry: panels (ids to show), nav (highlighted button),
+  // title (i18n key), open (handler). panels/title may be functions of `arg` for parametric routes.
+  const PAGES = {
+    dashboard:       { panels: [],                    nav: 'dashboard', title: 'page.dashboard',       open: () => {} },
+    archive:         { panels: ['archive'],           nav: 'archive',   title: 'page.archive',         open: () => openArchive() },
+    sessions:        { panels: ['sdetail'],           nav: 'archive',   title: 'page.session_detail',  open: arg => openSessionDetail(arg) },
+    cost:            { panels: ['costview'],          nav: 'cost',      title: 'page.cost',            open: () => openCostView() },
+    groups:          { panels: ['groupsview'],        nav: 'groups',    title: 'page.groups',          open: () => openGroupsView() },
+    workflows:       { panels: arg => arg ? ['workfloweditor'] : ['workflowsview'],
+                       nav: 'workflows',
+                       title: arg => arg ? 'page.workflow_editor' : 'page.workflows',
+                       open: arg => arg ? window.openWorkflowEditor?.(arg) : window.openWorkflowsList?.() },
+    'workflow-runs': { panels: ['workflowrunviewer'], nav: 'workflows', title: 'page.workflow_run',    open: arg => window.openWorkflowRunViewer?.(arg) },
+    prices:          { panels: ['pricesview'],        nav: 'prices',    title: 'page.prices',          open: () => window.openPricesView?.() },
+  };
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview'];
+  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices'];
+
+  function setPage(name, arg) {
+    const p = PAGES[name] || PAGES.dashboard;
+    ALL_PANELS.forEach(id => { const el = $(id); if (el) el.hidden = true; });
+    const panels = typeof p.panels === 'function' ? p.panels(arg) : p.panels;
+    panels.forEach(id => { const el = $(id); if (el) el.hidden = false; });
+    ALL_NAVS.forEach(n => {
+      const el = $('nav-' + n); if (el) el.classList.toggle('active-nav', n === p.nav);
+    });
+    const tk = typeof p.title === 'function' ? p.title(arg) : p.title;
+    const titleEl = $('app-title');
+    if (titleEl) {
+      titleEl.dataset.i18n = tk;
+      titleEl.textContent = window.fleetI18n ? window.fleetI18n.t(tk) : tk;
+    }
+    p.open(arg);
+  }
   function applyRoute() {
     const r = currentRoute();
-    const setNav = (active) => {
-      $('nav-dashboard').classList.toggle('active-nav', active === 'dashboard');
-      $('nav-archive').classList.toggle('active-nav', active === 'archive');
-      $('nav-cost').classList.toggle('active-nav', active === 'cost');
-      const wn = $('nav-workflows'); if (wn) wn.classList.toggle('active-nav', active === 'workflows');
-      const pn = $('nav-prices'); if (pn) pn.classList.toggle('active-nav', active === 'prices');
-    };
-    $('archive').hidden = true;
-    $('sdetail').hidden = true;
-    $('costview').hidden = true;
-    $('groupsview').hidden = true;
-    const wlv = $('workflowsview');    if (wlv) wlv.hidden = true;
-    const wed = $('workfloweditor');   if (wed) wed.hidden = true;
-    const wrv = $('workflowrunviewer'); if (wrv) wrv.hidden = true;
-    const pxv = $('pricesview'); if (pxv) pxv.hidden = true;
-    if (r.name === 'archive') { setNav('archive'); openArchive(); $('archive').hidden = false; return; }
-    if (r.name === 'sessions' && r.arg) { setNav('archive'); openSessionDetail(r.arg); $('sdetail').hidden = false; return; }
-    if (r.name === 'cost') { setNav('cost'); openCostView(); $('costview').hidden = false; return; }
-    if (r.name === 'groups') { setNav('groups'); openGroupsView(); $('groupsview').hidden = false; return; }
-    if (r.name === 'workflows' && !r.arg) {
-      setNav('workflows'); wlv.hidden = false;
-      if (window.openWorkflowsList) window.openWorkflowsList();
-      return;
-    }
-    if (r.name === 'workflows' && r.arg) {
-      // /workflows/:id/edit
-      setNav('workflows'); wed.hidden = false;
-      if (window.openWorkflowEditor) window.openWorkflowEditor(r.arg);
-      return;
-    }
-    if (r.name === 'workflow-runs' && r.arg) {
-      setNav('workflows'); wrv.hidden = false;
-      if (window.openWorkflowRunViewer) window.openWorkflowRunViewer(r.arg);
-      return;
-    }
-    if (r.name === 'prices') {
-      setNav('prices'); pxv.hidden = false;
-      if (window.openPricesView) window.openPricesView();
-      return;
-    }
-    setNav('dashboard');
+    setPage(r.name, r.arg);
   }
   window.addEventListener('hashchange', applyRoute);
 
