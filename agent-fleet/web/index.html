@@ -22,16 +22,16 @@
       <div class="auth-corner bl"></div><div class="auth-corner br"></div>
       <h1 class="display">AGENT<br/>FLEET</h1>
       <div class="auth-meta">
-        <div><span class="lbl">SYSTEM</span><span class="val">CONTROL.PLANE</span></div>
-        <div><span class="lbl">STATUS</span><span class="val val-warn">UNAUTHENTICATED</span></div>
-        <div><span class="lbl">PROTO</span><span class="val">BEARER / v0.1</span></div>
+        <div><span class="lbl" data-i18n="auth.system">SYSTEM</span><span class="val" data-i18n="topbar.brand_sub">CONTROL.PLANE</span></div>
+        <div><span class="lbl" data-i18n="viewer.status">STATUS</span><span class="val val-warn" data-i18n="auth.title">UNAUTHENTICATED</span></div>
+        <div><span class="lbl" data-i18n="auth.proto">PROTO</span><span class="val" data-i18n="auth.proto_value">BEARER / v0.1</span></div>
       </div>
       <label class="auth-field">
-        <span class="lbl">ACCESS TOKEN</span>
+        <span class="lbl" data-i18n="auth.access_token">ACCESS TOKEN</span>
         <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="······································">
       </label>
-      <button id="token-save" class="btn-primary">ENGAGE →</button>
-      <p class="auth-hint">// token stored locally · clear via "ABORT" in app header</p>
+      <button id="token-save" class="btn-primary" data-i18n="auth.engage">ENGAGE →</button>
+      <p class="auth-hint" data-i18n="auth.hint">// token stored locally · clear via "ABORT" in app header</p>
     </div>
   </div>
 
@@ -44,19 +44,19 @@
         <span id="app-title" class="page-title" data-i18n="page.dashboard">DASHBOARD</span>
       </div>
       <div class="status-bar">
-        <div class="stat"><span class="lbl">HOSTS</span><span id="stat-hosts" class="val">—</span></div>
-        <div class="stat"><span class="lbl">ONLINE</span><span id="stat-online" class="val val-ok">—</span></div>
-        <div class="stat"><span class="lbl">ACTIVE</span><span id="stat-active" class="val val-warn">—</span></div>
-        <div class="stat"><span class="lbl">UPTIME</span><span id="stat-clock" class="val">T+00:00:00</span></div>
-        <div class="stat"><span class="lbl">7D SPEND</span><span id="stat-cost" class="val val-warn">$—</span></div>
+        <div class="stat"><span class="lbl" data-i18n="topbar.hosts">HOSTS</span><span id="stat-hosts" class="val">—</span></div>
+        <div class="stat"><span class="lbl" data-i18n="topbar.online">ONLINE</span><span id="stat-online" class="val val-ok">—</span></div>
+        <div class="stat"><span class="lbl" data-i18n="topbar.active">ACTIVE</span><span id="stat-active" class="val val-warn">—</span></div>
+        <div class="stat"><span class="lbl" data-i18n="topbar.uptime">UPTIME</span><span id="stat-clock" class="val">T+00:00:00</span></div>
+        <div class="stat"><span class="lbl" data-i18n="topbar.spend7d">7D SPEND</span><span id="stat-cost" class="val val-warn">$—</span></div>
       </div>
       <div class="controls">
-        <button id="nav-dashboard" class="btn-ghost active-nav">⊞ dashboard</button>
-        <button id="nav-archive"   class="btn-ghost">📜 archive</button>
-        <button id="nav-cost"      class="btn-ghost">$ trends</button>
-        <button id="nav-groups"    class="btn-ghost">⌘ groups</button>
-        <button id="nav-workflows" class="btn-ghost">⎇ workflows</button>
-        <button id="nav-prices"    class="btn-ghost">$ prices</button>
+        <button id="nav-dashboard" class="btn-ghost active-nav" data-i18n="nav.dashboard">⊞ dashboard</button>
+        <button id="nav-archive"   class="btn-ghost" data-i18n="nav.archive">📜 archive</button>
+        <button id="nav-cost"      class="btn-ghost" data-i18n="nav.cost">$ trends</button>
+        <button id="nav-groups"    class="btn-ghost" data-i18n="nav.groups">⌘ groups</button>
+        <button id="nav-workflows" class="btn-ghost" data-i18n="nav.workflows">⎇ workflows</button>
+        <button id="nav-prices"    class="btn-ghost" data-i18n="nav.prices">$ prices</button>
         <select id="lang-select" class="switcher" title="language">
           <option value="en">EN</option>
           <option value="ru">RU</option>
@@ -69,27 +69,27 @@
           <option value="nord">nord</option>
           <option value="hi-contrast">hi-contrast</option>
         </select>
-        <button id="reload" title="refresh" class="btn-icon">⟳</button>
-        <button id="logout" class="btn-ghost">ABORT</button>
+        <button id="reload" data-i18n-title="nav.refresh" title="refresh" class="btn-icon">⟳</button>
+        <button id="logout" class="btn-ghost" data-i18n="nav.abort">ABORT</button>
       </div>
     </header>
 
     <main class="grid">
       <aside class="rail">
         <section class="panel">
-          <div class="panel-head"><h3>FLEET / HOSTS</h3><span id="hosts-count" class="pill">0</span></div>
+          <div class="panel-head"><h3 data-i18n="panel.fleet_hosts">FLEET / HOSTS</h3><span id="hosts-count" class="pill">0</span></div>
           <ul id="hosts" class="list"></ul>
         </section>
 
         <section class="panel">
           <div class="panel-head">
-            <h3>SESSIONS</h3>
+            <h3 data-i18n="panel.sessions">SESSIONS</h3>
             <span style="display:flex; gap:.3em; align-items:center">
-              <label class="toggle-row" title="show exited/killed sessions">
+              <label class="toggle-row" data-i18n-title="panel.sessions_closed_tip" title="show exited/killed sessions">
                 <input type="checkbox" id="show-closed">
-                <span class="lbl">closed</span>
+                <span class="lbl" data-i18n="panel.sessions_closed">closed</span>
               </label>
-              <button id="cleanup-btn" class="btn-ghost" style="font-size:.65em; padding:.15em .55em" title="delete closed sessions older than 1h">⌫</button>
+              <button id="cleanup-btn" class="btn-ghost" style="font-size:.65em; padding:.15em .55em" data-i18n-title="panel.sessions_cleanup_tip" title="delete closed sessions older than 1h">⌫</button>
               <span id="sessions-count" class="pill">0</span>
             </span>
           </div>
@@ -97,20 +97,20 @@
         </section>
 
         <section class="panel panel-spawn">
-          <div class="panel-head"><h3>SPAWN</h3></div>
-          <label><span class="lbl">HOST</span><select id="spawn-host"></select></label>
-          <label><span class="lbl">CWD</span><input id="spawn-cwd" value="~" spellcheck="false" placeholder="~ (resolved to host $HOME)"></label>
-          <label><span class="lbl">ARGS</span><input id="spawn-args" placeholder="--print 'hi'" spellcheck="false"></label>
-          <button id="spawn-btn" class="btn-primary">▶ EXECUTE</button>
+          <div class="panel-head"><h3 data-i18n="panel.spawn">SPAWN</h3></div>
+          <label><span class="lbl" data-i18n="spawn.host">HOST</span><select id="spawn-host"></select></label>
+          <label><span class="lbl" data-i18n="spawn.cwd">CWD</span><input id="spawn-cwd" value="~" spellcheck="false" data-i18n-placeholder="spawn.cwd_placeholder" placeholder="~ (resolved to host $HOME)"></label>
+          <label><span class="lbl" data-i18n="spawn.args">ARGS</span><input id="spawn-args" data-i18n-placeholder="spawn.args_placeholder" placeholder="--print 'hi'" spellcheck="false"></label>
+          <button id="spawn-btn" class="btn-primary" data-i18n="spawn.execute">▶ EXECUTE</button>
           <details style="margin-top:.6em">
-            <summary class="lbl" style="cursor:pointer">broadcast…</summary>
-            <label style="margin-top:.3em"><span class="lbl">GROUP</span>
-              <select id="spawn-group"><option value="">(by tag instead)</option></select>
+            <summary class="lbl" style="cursor:pointer" data-i18n="spawn.broadcast">broadcast…</summary>
+            <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.group">GROUP</span>
+              <select id="spawn-group"><option value="" data-i18n="spawn.by_tag_instead">(by tag instead)</option></select>
             </label>
-            <label style="margin-top:.3em"><span class="lbl">OR TAG</span>
-              <input id="spawn-tag" placeholder="dev / prod / …" spellcheck="false">
+            <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.or_tag">OR TAG</span>
+              <input id="spawn-tag" data-i18n-placeholder="spawn.tag_placeholder" placeholder="dev / prod / …" spellcheck="false">
             </label>
-            <button id="bcast-btn" class="btn-ghost" style="width:100%; margin-top:.3em">📡 broadcast</button>
+            <button id="bcast-btn" class="btn-ghost" style="width:100%; margin-top:.3em" data-i18n="spawn.bcast_btn">📡 broadcast</button>
           </details>
         </section>
       </aside>
@@ -118,53 +118,53 @@
       <section class="host-detail" hidden>
         <div class="host-detail-head">
           <div>
-            <span class="lbl">HOST //</span>
+            <span class="lbl" data-i18n="host.detail.host_marker">HOST //</span>
             <span id="hd-display" class="callsign" contenteditable="true" spellcheck="false">—</span>
             <span class="lbl">·</span>
-            <span class="lbl">id</span>
+            <span class="lbl" data-i18n="host.detail.id">id</span>
             <span id="hd-name" class="val">—</span>
           </div>
           <div>
-            <button id="hd-md"   class="btn-ghost">edit CLAUDE.md</button>
-            <button id="hd-json" class="btn-ghost">edit settings.json</button>
-            <button id="hd-close-detail" class="btn-ghost">× close</button>
+            <button id="hd-md"   class="btn-ghost" data-i18n="host.edit_md">edit CLAUDE.md</button>
+            <button id="hd-json" class="btn-ghost" data-i18n="host.edit_json">edit settings.json</button>
+            <button id="hd-close-detail" class="btn-ghost" data-i18n="common.close">× close</button>
           </div>
         </div>
         <div class="host-detail-body">
           <section class="hd-section">
-            <h4>META</h4>
+            <h4 data-i18n="host.detail.meta">META</h4>
             <div class="hd-grid">
-              <div><span class="lbl">os</span><span id="hd-os" class="val">—</span></div>
-              <div><span class="lbl">arch</span><span id="hd-arch" class="val">—</span></div>
-              <div><span class="lbl">status</span><span id="hd-status" class="val">—</span></div>
-              <div><span class="lbl">daemon</span><span id="hd-dver" class="val">—</span></div>
-              <div><span class="lbl">claude</span><span id="hd-cver" class="val">—</span></div>
-              <div><span class="lbl">node</span><span id="hd-node" class="val">—</span></div>
-              <div><span class="lbl">cpu</span><span id="hd-cpu" class="val">—</span></div>
-              <div><span class="lbl">cores</span><span id="hd-cores" class="val">—</span></div>
-              <div><span class="lbl">ram</span><span id="hd-ram" class="val">—</span></div>
-              <div><span class="lbl">uptime</span><span id="hd-uptime" class="val">—</span></div>
-              <div><span class="lbl">last_seen</span><span id="hd-seen" class="val">—</span></div>
-              <div><span class="lbl">hostname</span><span id="hd-hostname" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.os">os</span><span id="hd-os" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.arch">arch</span><span id="hd-arch" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.status">status</span><span id="hd-status" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.daemon">daemon</span><span id="hd-dver" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.claude">claude</span><span id="hd-cver" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.node">node</span><span id="hd-node" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.cpu">cpu</span><span id="hd-cpu" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.cores">cores</span><span id="hd-cores" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.ram">ram</span><span id="hd-ram" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.uptime">uptime</span><span id="hd-uptime" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.last_seen">last_seen</span><span id="hd-seen" class="val">—</span></div>
+              <div><span class="lbl" data-i18n="host.meta.hostname">hostname</span><span id="hd-hostname" class="val">—</span></div>
             </div>
           </section>
           <section class="hd-section">
-            <h4>LABELS / TAGS</h4>
+            <h4 data-i18n="host.tags.section">LABELS / TAGS</h4>
             <div id="hd-tags" class="chip-row"></div>
             <div class="chip-input">
-              <input id="hd-tag-input" placeholder="add label (press enter)" spellcheck="false">
+              <input id="hd-tag-input" data-i18n-placeholder="host.tags.add_placeholder" placeholder="add label (press enter)" spellcheck="false">
             </div>
           </section>
           <section class="hd-section">
-            <h4>GROUPS</h4>
+            <h4 data-i18n="host.groups.section">GROUPS</h4>
             <div id="hd-groups" class="chip-row"></div>
           </section>
           <section class="hd-section">
-            <h4>INHERITED</h4>
+            <h4 data-i18n="host.inherited.section">INHERITED</h4>
             <div id="hd-inherited" class="chip-row chip-row-readonly"></div>
           </section>
           <section class="hd-section">
-            <h4>METRICS</h4>
+            <h4 data-i18n="host.metrics.section">METRICS</h4>
             <div id="hm-live" class="hm-live"></div>
             <div id="hm-sparklines">
               <div class="hm-chart">
@@ -179,16 +179,16 @@
             <div id="hm-disk"></div>
           </section>
           <section class="hd-section">
-            <h4>INVENTORY</h4>
+            <h4 data-i18n="host.inventory.section">INVENTORY</h4>
             <div class="hm-tabs">
-              <button class="hm-tab active" data-tab="skills">Skills</button>
-              <button class="hm-tab" data-tab="mcp">MCP servers</button>
-              <button class="hm-tab" data-tab="settings">Settings</button>
+              <button class="hm-tab active" data-tab="skills" data-i18n="inventory.tabs.skills">Skills</button>
+              <button class="hm-tab" data-tab="mcp" data-i18n="inventory.tabs.mcp">MCP servers</button>
+              <button class="hm-tab" data-tab="settings" data-i18n="inventory.tabs.settings">Settings</button>
             </div>
             <div id="hm-tab-content"></div>
           </section>
           <section class="hd-section">
-            <h4>RECENT SESSIONS</h4>
+            <h4 data-i18n="host.sessions.section">RECENT SESSIONS</h4>
             <ul id="hd-sessions" class="list list-sessions"></ul>
           </section>
         </div>
@@ -197,20 +197,20 @@
       <section class="viewer">
         <div class="viewer-head">
           <div class="viewer-id">
-            <span class="lbl">SESSION</span>
+            <span class="lbl" data-i18n="viewer.session">SESSION</span>
             <span id="v-id" class="callsign">—</span>
           </div>
           <div class="viewer-meta">
-            <span class="lbl">HOST</span><span id="v-host" class="val">—</span>
+            <span class="lbl" data-i18n="viewer.host">HOST</span><span id="v-host" class="val">—</span>
             <span class="sep">·</span>
-            <span class="lbl">CWD</span><span id="v-cwd" class="val">—</span>
+            <span class="lbl" data-i18n="viewer.cwd">CWD</span><span id="v-cwd" class="val">—</span>
             <span class="sep">·</span>
-            <span class="lbl">STATUS</span><span id="v-status" class="val">idle</span>
+            <span class="lbl" data-i18n="viewer.status">STATUS</span><span id="v-status" class="val">idle</span>
             <span class="sep">·</span>
-            <span class="lbl">COST</span><span id="v-cost" class="val">—</span>
+            <span class="lbl" data-i18n="viewer.cost">COST</span><span id="v-cost" class="val">—</span>
           </div>
           <div class="viewer-actions">
-            <button id="v-kill" class="btn-danger" disabled>■ TERMINATE</button>
+            <button id="v-kill" class="btn-danger" disabled data-i18n="viewer.terminate">■ TERMINATE</button>
           </div>
         </div>
         <div class="term-frame">
@@ -219,8 +219,8 @@
           <div id="term"></div>
           <div id="term-overlay" hidden>
             <div class="ovl-body">
-              <span id="ovl-msg">NO SESSION SELECTED</span>
-              <span class="ovl-sub">// select a session from the rail or spawn one</span>
+              <span id="ovl-msg" data-i18n="viewer.no_session">NO SESSION SELECTED</span>
+              <span class="ovl-sub" data-i18n="viewer.no_session_sub">// select a session from the rail or spawn one</span>
             </div>
           </div>
         </div>
@@ -230,7 +230,7 @@
     <footer class="footbar">
       <span class="footstat" id="footstat">— · — · —</span>
       <span class="footdot"></span>
-      <span class="footver">FLEET v0.1.0 / proto=v0.1</span>
+      <span class="footver" data-i18n="footer.version">FLEET v0.1.0 / proto=v0.1</span>
     </footer>
   </div>
 
@@ -238,41 +238,41 @@
   <div id="archive" hidden>
     <header class="archive-head">
       <div>
-        <span class="display" style="font-size:1.1em">SESSIONS ARCHIVE</span>
-        <span id="archive-count" class="lbl" style="margin-left:1em">— sessions</span>
+        <span class="display" style="font-size:1.1em" data-i18n="archive.title_full">SESSIONS ARCHIVE</span>
+        <span id="archive-count" class="lbl" style="margin-left:1em">—</span>
       </div>
       <div>
-        <button id="archive-close" class="btn-ghost">× back</button>
+        <button id="archive-close" class="btn-ghost" data-i18n="common.back">× back</button>
       </div>
     </header>
     <section class="archive-filters">
-      <label><span class="lbl">search</span><input id="ar-q" placeholder="label / notes / cwd"></label>
-      <label><span class="lbl">host</span><select id="ar-host"><option value="">any</option></select></label>
-      <label><span class="lbl">status</span><select id="ar-status">
-        <option value="">any</option>
-        <option value="running">running</option>
-        <option value="pending">pending</option>
-        <option value="orphaned">orphaned</option>
-        <option value="exited">exited</option>
-        <option value="killed">killed</option>
+      <label><span class="lbl" data-i18n="archive.search_placeholder">search</span><input id="ar-q" data-i18n-placeholder="archive.search_placeholder" placeholder="label / notes / cwd"></label>
+      <label><span class="lbl" data-i18n="archive.host">host</span><select id="ar-host"><option value="" data-i18n="common.all">any</option></select></label>
+      <label><span class="lbl" data-i18n="archive.status">status</span><select id="ar-status">
+        <option value="" data-i18n="common.all">any</option>
+        <option value="running" data-i18n="status.running">running</option>
+        <option value="pending" data-i18n="status.pending">pending</option>
+        <option value="orphaned" data-i18n="status.orphaned">orphaned</option>
+        <option value="exited" data-i18n="status.exited">exited</option>
+        <option value="killed" data-i18n="status.killed">killed</option>
       </select></label>
-      <label><span class="lbl">since</span><input id="ar-since" type="datetime-local"></label>
-      <label><span class="lbl">until</span><input id="ar-until" type="datetime-local"></label>
-      <button id="ar-apply" class="btn-primary" style="padding:.4em 1em">apply</button>
-      <button id="ar-reset" class="btn-ghost">reset</button>
+      <label><span class="lbl" data-i18n="archive.since">since</span><input id="ar-since" type="datetime-local"></label>
+      <label><span class="lbl" data-i18n="archive.until">until</span><input id="ar-until" type="datetime-local"></label>
+      <button id="ar-apply" class="btn-primary" style="padding:.4em 1em" data-i18n="archive.apply">apply</button>
+      <button id="ar-reset" class="btn-ghost" data-i18n="archive.reset">reset</button>
     </section>
     <div class="archive-table-wrap">
       <table class="archive-table">
         <thead><tr>
-          <th>started</th><th>id</th><th>host</th><th>status</th><th>cwd</th><th>label / notes</th><th>cost</th>
+          <th data-i18n="archive.col.started">started</th><th data-i18n="archive.col.id">id</th><th data-i18n="archive.col.host">host</th><th data-i18n="archive.col.status">status</th><th data-i18n="archive.col.cwd">cwd</th><th data-i18n="archive.col.label_notes">label / notes</th><th data-i18n="archive.col.cost">cost</th>
         </tr></thead>
         <tbody id="ar-rows"></tbody>
       </table>
     </div>
     <footer class="archive-foot">
-      <button id="ar-prev" class="btn-ghost">← prev</button>
+      <button id="ar-prev" class="btn-ghost" data-i18n="archive.prev">← prev</button>
       <span id="ar-page" class="lbl">0–0</span>
-      <button id="ar-next" class="btn-ghost">next →</button>
+      <button id="ar-next" class="btn-ghost" data-i18n="archive.next">next →</button>
     </footer>
   </div>
 
@@ -280,47 +280,47 @@
   <div id="sdetail" hidden>
     <header class="sd-head">
       <div>
-        <span class="lbl">SESSION //</span>
+        <span class="lbl" data-i18n="session.session_marker">SESSION //</span>
         <span id="sd-id" class="callsign">—</span>
         <span class="lbl">·</span>
-        <span class="lbl">host</span>
+        <span class="lbl" data-i18n="archive.host">host</span>
         <span id="sd-host" class="val">—</span>
         <span class="lbl">·</span>
-        <span class="lbl">status</span>
+        <span class="lbl" data-i18n="archive.status">status</span>
         <span id="sd-status" class="val">—</span>
       </div>
       <div>
-        <button id="sd-attach" class="btn-ghost">▶ attach</button>
-        <button id="sd-rerun" class="btn-ghost">↻ rerun</button>
-        <button id="sd-close" class="btn-ghost">× back</button>
+        <button id="sd-attach" class="btn-ghost" data-i18n="session.btn.attach">▶ attach</button>
+        <button id="sd-rerun" class="btn-ghost" data-i18n="session.btn.rerun">↻ rerun</button>
+        <button id="sd-close" class="btn-ghost" data-i18n="common.back">× back</button>
       </div>
     </header>
     <main class="sd-grid">
       <section class="sd-meta">
-        <h4>META</h4>
+        <h4 data-i18n="session.meta">META</h4>
         <div class="hd-grid">
-          <div><span class="lbl">created_by</span><span id="sd-by" class="val">—</span></div>
-          <div><span class="lbl">started</span><span id="sd-started" class="val">—</span></div>
-          <div><span class="lbl">ended</span><span id="sd-ended" class="val">—</span></div>
-          <div><span class="lbl">exit_code</span><span id="sd-exit" class="val">—</span></div>
-          <div><span class="lbl">cwd</span><span id="sd-cwd" class="val">—</span></div>
-          <div><span class="lbl">pid</span><span id="sd-pid" class="val">—</span></div>
+          <div><span class="lbl" data-i18n="session.field.created_by">created_by</span><span id="sd-by" class="val">—</span></div>
+          <div><span class="lbl" data-i18n="session.field.started">started</span><span id="sd-started" class="val">—</span></div>
+          <div><span class="lbl" data-i18n="session.field.ended">ended</span><span id="sd-ended" class="val">—</span></div>
+          <div><span class="lbl" data-i18n="session.field.exit_code">exit_code</span><span id="sd-exit" class="val">—</span></div>
+          <div><span class="lbl" data-i18n="session.field.cwd">cwd</span><span id="sd-cwd" class="val">—</span></div>
+          <div><span class="lbl" data-i18n="session.field.pid">pid</span><span id="sd-pid" class="val">—</span></div>
         </div>
-        <h4 style="margin-top:1.5em">ARGS</h4>
+        <h4 style="margin-top:1.5em" data-i18n="session.args">ARGS</h4>
         <pre id="sd-args" class="sd-args">—</pre>
-        <h4 style="margin-top:1.5em">NOTES</h4>
-        <textarea id="sd-notes" placeholder="(annotate this session)"></textarea>
-        <button id="sd-save-notes" class="btn-primary" style="margin-top:.4em; width:auto; padding:.4em 1em">save notes</button>
-        <h4 style="margin-top:1.5em">COST</h4>
+        <h4 style="margin-top:1.5em" data-i18n="session.notes">NOTES</h4>
+        <textarea id="sd-notes" data-i18n-placeholder="session.notes_placeholder" placeholder="(annotate this session)"></textarea>
+        <button id="sd-save-notes" class="btn-primary" style="margin-top:.4em; width:auto; padding:.4em 1em" data-i18n="session.save_notes">save notes</button>
+        <h4 style="margin-top:1.5em" data-i18n="session.cost">COST</h4>
         <div id="sd-cost" class="val">—</div>
       </section>
       <section class="sd-main">
         <div class="sd-tabs">
-          <button class="sd-tab active" data-tab="transcript">transcript</button>
-          <button class="sd-tab" data-tab="timeline">timeline</button>
+          <button class="sd-tab active" data-tab="transcript" data-i18n="session.tab.transcript">transcript</button>
+          <button class="sd-tab" data-tab="timeline" data-i18n="session.tab.timeline">timeline</button>
         </div>
         <div id="sd-tab-transcript" class="sd-pane active">
-          <pre id="sd-transcript" class="sd-transcript">loading…</pre>
+          <pre id="sd-transcript" class="sd-transcript" data-i18n="common.loading">loading…</pre>
         </div>
         <div id="sd-tab-timeline" class="sd-pane">
           <ul id="sd-timeline" class="sd-timeline"></ul>
@@ -333,17 +333,17 @@
   <div id="groupsview" hidden>
     <header class="archive-head">
       <div>
-        <span class="display" style="font-size:1.1em">GROUPS</span>
-        <span id="groups-count" class="lbl" style="margin-left:1em">— groups</span>
+        <span class="display" style="font-size:1.1em" data-i18n="groups.title">GROUPS</span>
+        <span id="groups-count" class="lbl" style="margin-left:1em">—</span>
       </div>
       <div>
-        <button id="grp-new" class="btn-ghost">+ new group</button>
-        <button id="groupsview-close" class="btn-ghost">× back</button>
+        <button id="grp-new" class="btn-ghost" data-i18n="groups.new">+ new group</button>
+        <button id="groupsview-close" class="btn-ghost" data-i18n="common.back">× back</button>
       </div>
     </header>
     <div class="archive-table-wrap">
       <table class="archive-table">
-        <thead><tr><th>name</th><th>description</th><th>labels</th><th>hosts</th><th>color</th><th></th></tr></thead>
+        <thead><tr><th data-i18n="groups.col.name">name</th><th data-i18n="groups.col.description">description</th><th data-i18n="groups.col.labels">labels</th><th data-i18n="groups.col.hosts">hosts</th><th data-i18n="groups.col.color">color</th><th></th></tr></thead>
         <tbody id="grp-rows"></tbody>
       </table>
     </div>
@@ -355,23 +355,23 @@
   <div id="pricesview" hidden>
     <header class="archive-head">
       <div>
-        <span class="display" style="font-size:1.1em">MODEL PRICES</span>
-        <span id="prices-count" class="lbl" style="margin-left:1em">— rules</span>
+        <span class="display" style="font-size:1.1em" data-i18n="prices.title">MODEL PRICES</span>
+        <span id="prices-count" class="lbl" style="margin-left:1em">—</span>
       </div>
       <div>
         <label class="lbl" style="margin-right:.6em">
-          <input id="px-history" type="checkbox"> show history
+          <input id="px-history" type="checkbox"> <span data-i18n="prices.show_history">show history</span>
         </label>
-        <button id="px-new" class="btn-ghost">+ new pattern</button>
-        <button id="pricesview-close" class="btn-ghost">× back</button>
+        <button id="px-new" class="btn-ghost" data-i18n="prices.new">+ new pattern</button>
+        <button id="pricesview-close" class="btn-ghost" data-i18n="common.back">× back</button>
       </div>
     </header>
     <div class="archive-table-wrap">
       <table class="archive-table">
         <thead><tr>
-          <th>pattern</th><th>priority</th><th>valid from</th>
-          <th>input $/Mtok</th><th>output $/Mtok</th>
-          <th>cache create</th><th>cache read</th><th>flag</th><th></th>
+          <th data-i18n="prices.pattern">pattern</th><th data-i18n="prices.priority">priority</th><th data-i18n="prices.valid_from">valid from</th>
+          <th data-i18n="prices.input">input $/Mtok</th><th data-i18n="prices.output">output $/Mtok</th>
+          <th data-i18n="prices.cache_create">cache create</th><th data-i18n="prices.cache_read">cache read</th><th data-i18n="prices.flag">flag</th><th></th>
         </tr></thead>
         <tbody id="px-rows"></tbody>
       </table>
@@ -381,24 +381,24 @@
   <!-- COST TIMELINE OVERLAY -->
   <div id="costview" hidden>
     <header class="archive-head">
-      <div><span class="display" style="font-size:1.1em">COST TRENDS</span></div>
+      <div><span class="display" style="font-size:1.1em" data-i18n="cost.title">COST TRENDS</span></div>
       <div>
-        <label class="lbl">group by
+        <label class="lbl"><span data-i18n="cost.group_by">group by</span>
           <select id="cv-groupby" style="margin-left:.4em">
-            <option value="model" selected>model</option>
-            <option value="host">host</option>
-            <option value="label">label</option>
-            <option value="group">group</option>
+            <option value="model" selected data-i18n="cost.legend.model">model</option>
+            <option value="host" data-i18n="cost.legend.host">host</option>
+            <option value="label" data-i18n="cost.legend.label">label</option>
+            <option value="group" data-i18n="cost.legend.group">group</option>
           </select>
         </label>
-        <label class="lbl" style="margin-left:.8em">days
+        <label class="lbl" style="margin-left:.8em"><span data-i18n="cost.days">days</span>
           <select id="cv-days" style="margin-left:.4em">
             <option value="7" selected>7</option>
             <option value="14">14</option>
             <option value="30">30</option>
           </select>
         </label>
-        <button id="costview-close" class="btn-ghost">× back</button>
+        <button id="costview-close" class="btn-ghost" data-i18n="common.back">× back</button>
       </div>
     </header>
     <div id="cv-summary" class="cv-summary"></div>
@@ -411,10 +411,10 @@
   <!-- WORKFLOWS LIST PAGE -->
   <div id="workflowsview" hidden>
     <header class="archive-head overlay-header">
-      <h2>WORKFLOWS</h2>
+      <h2 data-i18n="workflows.title">WORKFLOWS</h2>
       <span style="flex:1"></span>
-      <button id="wf-new" class="btn-ghost">+ new workflow</button>
-      <button id="workflowsview-close" class="btn-ghost">× back</button>
+      <button id="wf-new" class="btn-ghost" data-i18n="workflows.new">+ new workflow</button>
+      <button id="workflowsview-close" class="btn-ghost" data-i18n="common.back">× back</button>
     </header>
     <div id="wf-list-body"></div>
   </div>
@@ -423,34 +423,34 @@
   <div id="workfloweditor" hidden>
     <div class="wf-page">
       <div class="wf-toolbar">
-        <div style="margin-bottom:8px; font-weight:bold; font-family:var(--font-display)">EDITOR</div>
-        <button id="wf-add-claude">+ claude</button>
-        <button id="wf-add-branch">+ branch</button>
-        <button id="wf-add-delay">+ delay</button>
+        <div style="margin-bottom:8px; font-weight:bold; font-family:var(--font-display)" data-i18n="workflow_run.editor_label">EDITOR</div>
+        <button id="wf-add-claude" data-i18n="workflows.add_claude">+ claude</button>
+        <button id="wf-add-branch" data-i18n="workflows.add_branch">+ branch</button>
+        <button id="wf-add-delay" data-i18n="workflows.add_delay">+ delay</button>
         <hr>
-        <button id="wf-save">save</button>
-        <button id="wf-run">run</button>
-        <button id="wf-back">back</button>
+        <button id="wf-save" data-i18n="workflows.save">save</button>
+        <button id="wf-run" data-i18n="workflows.run">run</button>
+        <button id="wf-back" data-i18n="workflows.back">back</button>
         <div id="wf-errors" class="wf-errors"></div>
       </div>
       <div id="wf-canvas-pane" class="wf-canvas-pane"></div>
-      <div id="wf-inspector" class="wf-inspector">Select a node…</div>
+      <div id="wf-inspector" class="wf-inspector" data-i18n="workflows.select_node">Select a node…</div>
     </div>
   </div>
 
   <!-- WORKFLOW RUN VIEWER -->
   <div id="workflowrunviewer" hidden>
     <header class="archive-head overlay-header">
-      <h2 id="wf-run-title">RUN</h2>
-      <span id="wf-run-status" class="wf-run-status-pending">pending</span>
+      <h2 id="wf-run-title" data-i18n="workflow_run.title">RUN</h2>
+      <span id="wf-run-status" class="wf-run-status-pending" data-i18n="status.pending">pending</span>
       <span style="flex:1"></span>
-      <button id="wf-run-cancel" class="btn-ghost" hidden>cancel</button>
-      <button id="wf-run-rerun"  class="btn-ghost" hidden>re-run</button>
-      <button id="workflowrunviewer-close" class="btn-ghost">× back</button>
+      <button id="wf-run-cancel" class="btn-ghost" hidden data-i18n="workflows.run_cancel">cancel</button>
+      <button id="wf-run-rerun"  class="btn-ghost" hidden data-i18n="workflows.run_rerun">re-run</button>
+      <button id="workflowrunviewer-close" class="btn-ghost" data-i18n="common.back">× back</button>
     </header>
     <div style="display:grid; grid-template-columns: 60% 40%; height: calc(100vh - 110px);">
       <div id="wf-run-canvas" class="wf-canvas-pane"></div>
-      <div id="wf-run-detail" class="wf-inspector">Click a node for details.</div>
+      <div id="wf-run-detail" class="wf-inspector" data-i18n="workflows.click_node">Click a node for details.</div>
     </div>
   </div>
 
@@ -458,17 +458,17 @@
   <div id="editor" hidden>
     <div class="editor-frame">
       <div class="editor-head">
-        <span class="lbl">EDIT FILE //</span>
+        <span class="lbl" data-i18n="editor.title_marker">EDIT FILE //</span>
         <span id="editor-path" class="callsign">—</span>
-        <span class="lbl" style="margin-left:.6em">@</span>
+        <span class="lbl" style="margin-left:.6em" data-i18n="editor.host_at">@</span>
         <span id="editor-host" class="val">—</span>
         <span style="flex:1"></span>
-        <button id="editor-cancel" class="btn-ghost">CANCEL</button>
-        <button id="editor-save" class="btn-primary" style="width:auto; padding:.5em 1.2em; margin-left:.5em">SAVE</button>
+        <button id="editor-cancel" class="btn-ghost" data-i18n="editor.cancel">CANCEL</button>
+        <button id="editor-save" class="btn-primary" style="width:auto; padding:.5em 1.2em; margin-left:.5em" data-i18n="editor.save">SAVE</button>
       </div>
-      <textarea id="editor-content" spellcheck="false" placeholder="(file not found — type to create)"></textarea>
+      <textarea id="editor-content" spellcheck="false" data-i18n-placeholder="editor.placeholder" placeholder="(file not found — type to create)"></textarea>
       <div class="editor-foot">
-        <span id="editor-status" class="lbl">ready</span>
+        <span id="editor-status" class="lbl" data-i18n="editor.status_ready">ready</span>
       </div>
     </div>
   </div>

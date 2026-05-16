@@ -1262,13 +1262,13 @@
   // ============ Boot ============
   async function boot() {
     readToken();
-    if (!state.token) { showAuth(); return; }
-    showApp();
-    // Load i18n dictionary BEFORE first render to avoid raw-key flash
+    // Load i18n dictionary BEFORE first render to avoid raw-key flash (auth page too)
     if (window.fleetI18n) {
       await window.fleetI18n.loadLang(localStorage.fleetLang || 'en');
       window.fleetI18n.wireSwitcher();
     }
+    if (!state.token) { showAuth(); return; }
+    showApp();
     wireSpawn();
     $('reload').onclick = refresh;
     $('nav-dashboard').onclick = () => navigate('/dashboard');
