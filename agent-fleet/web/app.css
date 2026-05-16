@@ -128,13 +128,16 @@ body::after {
 .brand-sub { font-size: .68em; color: var(--text-faint); letter-spacing: .22em; margin-top: 4px; }
 .page-title {
   font-family: var(--font-display);
-  font-size: .72em;
+  font-size: .55em;
   color: var(--accent);
   letter-spacing: .18em;
-  margin-top: 6px;
-  padding-top: 4px;
-  border-top: 1px dashed var(--border);
+  margin-left: .6em;
+  padding-left: .6em;
+  border-left: 1px solid var(--line);
+  vertical-align: middle;
 }
+@keyframes spin-once { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.spin { animation: spin-once .4s linear; }
 
 .status-bar { display: flex; gap: 2.2em; justify-content: center; }
 .status-bar .stat { display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
@@ -439,6 +442,8 @@ body::after {
   color: var(--text-dim);
 }
 .archive-table tr:hover td { background: rgba(255,255,255,0.025); color: var(--text); }
+.archive-table tr.row-clickable { cursor: pointer; }
+.archive-table tr.row-clickable:hover td { background: rgba(255,255,255,0.06); }
 .archive-table .sess-id-cell { font-family: var(--font-mono); color: var(--accent); cursor: pointer; }
 .archive-table .sess-id-cell:hover { text-decoration: underline; }
 .archive-table .nowrap { white-space: nowrap; }

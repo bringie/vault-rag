@@ -30,6 +30,8 @@
     localStorage.fleetLang = lang;
     document.documentElement.setAttribute('data-lang', lang);
     applyI18n();
+    // Notify dynamic renderers (inspector, run viewer, etc.) to redraw.
+    window.dispatchEvent(new CustomEvent('fleet-langchange', { detail: { lang } }));
   }
 
   function t(key, vars) {

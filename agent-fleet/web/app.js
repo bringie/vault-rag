@@ -227,7 +227,7 @@
   function startPolling() {
     refresh();
     state.pollTimer = setInterval(refresh, 5000);
-    setInterval(() => { $('stat-clock').textContent = tFromBoot(); }, 1000);
+    setInterval(() => { const el = $('stat-clock'); if (el) el.textContent = tFromBoot(); }, 1000);
   }
 
   // ============ Terminal + WS ============
@@ -797,6 +797,8 @@
     setPage(r.name, r.arg);
   }
   window.addEventListener('hashchange', applyRoute);
+  // Re-render dynamic content when language changes (inspector innerHTML etc.).
+  window.addEventListener('fleet-langchange', () => applyRoute());
 
   // ============ Archive ============
   let archiveState = { offset: 0, limit: 50, filter: {}, total: 0 };
@@ -1077,20 +1079,24 @@
         const labelsChips = (g.labels || []).length
           ? (g.labels || []).map(l => `<span class="chip">${esc(l)}</span>`).join(' ')
           : '<span style="color:var(--text-faint)">—</span>';
-        return `<tr>
-          <td><button class="link-btn" data-grp-open="${g.id}"><strong>${esc(g.name)}</strong></button></td>
+        return `<tr class="row-clickable" data-grp-open="${g.id}">
+          <td><strong>${esc(g.name)}</strong></td>
           <td>${esc(g.description || '—')}</td>
           <td>${labelsChips}</td>
           <td title="${esc(hostNames)}">${(g.host_ids || []).length}</td>
           <td>${g.color ? `<span style="background:${esc(g.color)};display:inline-block;width:16px;height:16px;border:1px solid var(--line);vertical-align:middle"></span> ${esc(g.color)}` : '—'}</td>
-          <td><button class="btn-ghost" data-grp-del="${g.id}" style="font-size:.75em; padding:.2em .6em">✕</button></td>
+          <td><button class="btn-row" data-grp-del="${g.id}" title="delete">✕</button></td>
         </tr>`;
       }).join('');
-    body.querySelectorAll('button[data-grp-open]').forEach(btn => {
-      btn.onclick = () => openGroupDetail(btn.dataset.grpOpen);
+    body.querySelectorAll('tr[data-grp-open]').forEach(tr => {
+      tr.onclick = (ev) => {
+        if (ev.target.closest('[data-grp-del]')) return;
+        openGroupDetail(tr.dataset.grpOpen);
+      };
     });
     body.querySelectorAll('button[data-grp-del]').forEach(btn => {
-      btn.onclick = async () => {
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();
         if (!confirm('delete this group? hosts stay, just the group is removed.')) return;
         await fetch('/api/fleet/groups/' + btn.dataset.grpDel, { method: 'DELETE', headers: { authorization: 'Bearer ' + state.token } });
         await loadGroups();
@@ -1270,7 +1276,13 @@
     if (!state.token) { showAuth(); return; }
     showApp();
     wireSpawn();
-    $('reload').onclick = refresh;
+    $('reload').onclick = () => {
+      const btn = $('reload');
+      btn.classList.remove('spin');
+      void btn.offsetWidth;
+      btn.classList.add('spin');
+      refresh();
+    };
     $('nav-dashboard').onclick = () => navigate('/dashboard');
     $('nav-archive').onclick = () => navigate('/archive');
     $('nav-cost').onclick = () => navigate('/cost');

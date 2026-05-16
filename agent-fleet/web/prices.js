@@ -42,7 +42,7 @@
     }
     body.innerHTML = rows.map(r => {
       const dimmed = r.deleted_at ? 'opacity:0.4' : '';
-      return `<tr style="${dimmed}">
+      return `<tr class="row-clickable" data-edit="${r.id}" style="${dimmed}">
         <td><strong>${esc(r.match_pattern)}</strong></td>
         <td>${r.priority}</td>
         <td>${new Date(r.valid_from).toISOString().slice(0,10)}</td>
@@ -52,16 +52,18 @@
         <td>${Number(r.cache_read_per_mtok).toFixed(2)}</td>
         <td>${r.flagged ? '<span class="chip chip-warn">⚠ fallback</span>' : ''}</td>
         <td>
-          <button class="btn-row" data-edit="${r.id}">edit</button>
-          ${r.deleted_at ? '' : `<button class="btn-row" data-del="${r.id}">×</button>`}
+          ${r.deleted_at ? '' : `<button class="btn-row" data-del="${r.id}" title="delete">×</button>`}
         </td>
       </tr>`;
     }).join('');
-    body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
-      const row = rows.find(x => String(x.id) === b.dataset.edit);
+    body.querySelectorAll('tr[data-edit]').forEach(tr => tr.onclick = (ev) => {
+      // ignore clicks on inner controls (delete button)
+      if (ev.target.closest('[data-del]')) return;
+      const row = rows.find(x => String(x.id) === tr.dataset.edit);
       openEditModal(row);
     });
-    body.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    body.querySelectorAll('[data-del]').forEach(b => b.onclick = async (ev) => {
+      ev.stopPropagation();
       if (!confirm('soft-delete this price row?')) return;
       try { await api(`/prices/${b.dataset.del}`, { method: 'DELETE' }); }
       catch (e) { alert(e.message); }

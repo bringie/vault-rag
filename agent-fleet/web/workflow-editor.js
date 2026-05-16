@@ -25,28 +25,29 @@
     return (s == null ? '' : String(s)).replace(/[&<>"]/g,
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   }
+  function t(k, vars) { return window.fleetI18n ? window.fleetI18n.t(k, vars) : k; }
 
   async function openWorkflowsList() {
     const view = document.getElementById('workflowsview');
     if (!view) return;
     const body = document.getElementById('wf-list-body');
-    body.textContent = 'Loading…';
+    body.textContent = t('workflows.loading');
     try {
       const list = await api('/workflows');
       if (!list || !list.length) {
-        body.innerHTML = '<p style="padding:1em;color:var(--text-dim)">No workflows yet. Click <b>+ new workflow</b>.</p>';
+        body.innerHTML = `<p style="padding:1em;color:var(--text-dim)">${esc(t('workflows.empty'))}</p>`;
       } else {
         body.innerHTML = `<table class="wf-runs-table">
-          <thead><tr><th>Name</th><th>Nodes</th><th>Updated</th><th>Actions</th></tr></thead>
+          <thead><tr><th>${esc(t('workflows.col.name'))}</th><th>${esc(t('workflows.col.nodes'))}</th><th>${esc(t('workflows.col.updated'))}</th><th>${esc(t('workflows.col.actions'))}</th></tr></thead>
           <tbody>${list.map(w => `
             <tr>
               <td>${esc(w.name)}</td>
               <td>${w.n_nodes || 0}</td>
               <td>${new Date(w.updated_at).toLocaleString()}</td>
               <td>
-                <button data-edit="${w.id}">edit</button>
-                <button data-run="${w.id}">run</button>
-                <button data-del="${w.id}">delete</button>
+                <button data-edit="${w.id}">${esc(t('workflows.btn.edit'))}</button>
+                <button data-run="${w.id}">${esc(t('workflows.btn.run'))}</button>
+                <button data-del="${w.id}">${esc(t('workflows.btn.delete'))}</button>
               </td>
             </tr>`).join('')}</tbody></table>`;
         body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => location.hash = `#/workflows/${b.dataset.edit}/edit`);
@@ -57,13 +58,13 @@
           } catch (e) { alert(e.message); }
         });
         body.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-          if (!confirm('Delete workflow?')) return;
+          if (!confirm(t('workflows.delete_confirm'))) return;
           try { await api(`/workflows/${b.dataset.del}`, { method: 'DELETE' }); openWorkflowsList(); }
           catch (e) { alert(e.message); }
         });
       }
     } catch (e) {
-      body.textContent = `Error: ${e.message}`;
+      body.textContent = t('workflows.error_prefix', { msg: e.message });
     }
   }
 
@@ -72,7 +73,7 @@
     errEl.textContent = '';
     let wf;
     if (id === 'new') {
-      const name = prompt('Workflow name?', `wf-${Date.now()}`);
+      const name = prompt(t('workflows.name_prompt'), `wf-${Date.now()}`);
       if (!name) { location.hash = '#/workflows'; return; }
       try {
         wf = await api('/workflows', {
@@ -115,7 +116,7 @@
       if (!definition.start && definition.nodes.length) definition.start = definition.nodes[0].id;
       try {
         await api(`/workflows/${id}`, { method: 'PATCH', body: JSON.stringify({ definition }) });
-        errEl.textContent = 'Saved.';
+        errEl.textContent = t('workflows.saved');
         errEl.style.color = 'var(--ok)';
         setTimeout(() => { errEl.textContent = ''; errEl.style.color = 'var(--danger)'; }, 1500);
       } catch (e) {
@@ -151,34 +152,34 @@
 
     function renderInspector(node) {
       const insp = document.getElementById('wf-inspector');
-      if (!node) { insp.innerHTML = 'Select a node…'; return; }
+      if (!node) { insp.textContent = t('workflows.select_node'); return; }
       const d = canvas.getDefinition();
       const cur = d.nodes.find(n => n.id === node.id);
       if (!cur) return;
       if (cur.type === 'claude') {
         insp.innerHTML = `
           <h3>${esc(cur.id)} (claude)</h3>
-          <label>group</label><input id="i-group" value="${esc((cur.target||{}).group || '')}" placeholder="e.g. backend">
-          <label>host_name</label><input id="i-host" value="${esc((cur.target||{}).host_name || '')}">
-          <label>capability</label><input id="i-cap" value="${esc((cur.target||{}).capability || '')}">
-          <label>prompt (supports {{n1.output}} {{inputs.x}})</label>
+          <label>${esc(t('wf_inspect.group'))}</label><input id="i-group" value="${esc((cur.target||{}).group || '')}" placeholder="e.g. backend">
+          <label>${esc(t('wf_inspect.host_name'))}</label><input id="i-host" value="${esc((cur.target||{}).host_name || '')}">
+          <label>${esc(t('wf_inspect.capability'))}</label><input id="i-cap" value="${esc((cur.target||{}).capability || '')}">
+          <label>${esc(t('wf_inspect.prompt_hint'))}</label>
           <textarea id="i-prompt">${esc(cur.prompt || '')}</textarea>
-          <label>timeout_s</label><input id="i-timeout" type="number" value="${cur.timeout_s || 300}">
-          <label><input id="i-headless" type="checkbox" ${cur.headless !== false ? 'checked' : ''}> headless</label>
+          <label>${esc(t('wf_inspect.timeout_s'))}</label><input id="i-timeout" type="number" value="${cur.timeout_s || 300}">
+          <label><input id="i-headless" type="checkbox" ${cur.headless !== false ? 'checked' : ''}> ${esc(t('wf_inspect.headless'))}</label>
         `;
         wireInputs(cur.id, ['group','host','cap','prompt','timeout','headless']);
       } else if (cur.type === 'branch') {
         insp.innerHTML = `
           <h3>${esc(cur.id)} (branch)</h3>
-          <label>condition (JS expr; vars: nX.output, nX.exit_code, inputs.X)</label>
+          <label>${esc(t('wf_inspect.condition_hint'))}</label>
           <textarea id="i-cond">${esc(cur.condition || '')}</textarea>
-          <p style="color:var(--text-dim); font-size:11px">Two outgoing edges required: one labelled "then", one labelled "else".</p>
+          <p style="color:var(--text-dim); font-size:11px">${esc(t('wf_inspect.condition_two_edges'))}</p>
         `;
         wireInputs(cur.id, ['cond']);
       } else if (cur.type === 'delay') {
         insp.innerHTML = `
           <h3>${esc(cur.id)} (delay)</h3>
-          <label>seconds</label><input id="i-sec" type="number" value="${cur.seconds || 0}">
+          <label>${esc(t('wf_inspect.seconds'))}</label><input id="i-sec" type="number" value="${cur.seconds || 0}">
         `;
         wireInputs(cur.id, ['sec']);
       }

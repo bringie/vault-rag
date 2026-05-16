@@ -14,14 +14,15 @@
 
   function snap(v) { return Math.round(v / GRID) * GRID; }
 
+  function tt(k, vars) { return window.fleetI18n ? window.fleetI18n.t(k, vars) : k; }
   function nodeLabel(node) {
     if (node.type === 'claude') {
       const t = node.target || {};
       const target = t.group ? `gr:${t.group}` : t.host_name ? t.host_name : t.capability ? `cap:${t.capability}` : '?';
       return `${node.id} → ${target}`;
     }
-    if (node.type === 'branch') return `if ${(node.condition || '').slice(0, 22)}`;
-    if (node.type === 'delay')  return `wait ${node.seconds || 0}s`;
+    if (node.type === 'branch') return tt('workflows.node.if_prefix', { cond: (node.condition || '').slice(0, 22) });
+    if (node.type === 'delay')  return tt('workflows.node.wait_seconds', { sec: node.seconds || 0 });
     return node.id;
   }
 

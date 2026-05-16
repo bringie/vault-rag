@@ -25,6 +25,7 @@
     return (s == null ? '' : String(s)).replace(/[&<>"]/g,
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   }
+  function t(k, vars) { return window.fleetI18n ? window.fleetI18n.t(k, vars) : k; }
 
   let activeWs = null;
 
@@ -53,7 +54,7 @@
       catch (e) { alert(e.message); }
     };
     document.getElementById('wf-run-rerun').onclick = async () => {
-      if (!run.workflow_id) return alert('workflow deleted; cannot re-run');
+      if (!run.workflow_id) return alert(t('workflows.wf_deleted_cant_rerun'));
       try {
         const r = await api(`/workflows/${run.workflow_id}/run`, { method: 'POST', body: '{}' });
         location.hash = `#/workflow-runs/${r.run_id}`;
@@ -88,7 +89,7 @@
   function setStatus(s) {
     const el = document.getElementById('wf-run-status');
     if (!el) return;
-    el.textContent = s;
+    el.textContent = t('workflows.run_status.' + s);
     el.className = `wf-run-status-${s}`;
     const cancelBtn = document.getElementById('wf-run-cancel');
     const rerunBtn  = document.getElementById('wf-run-rerun');
@@ -110,33 +111,37 @@
 
   function renderDetail(node, run) {
     const d = document.getElementById('wf-run-detail');
-    if (!node) { d.innerHTML = 'Click a node for details.'; return; }
+    if (!node) { d.textContent = t('workflows.click_node'); return; }
     const out = (run.state && run.state.outputs && run.state.outputs[node.id]) || null;
     let body = `<h3>${esc(node.id)} (${esc(node.type)})</h3>`;
     if (node.type === 'claude') {
-      const t = node.target || {};
-      const target = t.group ? `group: ${t.group}` : t.host_name ? `host: ${t.host_name}` : t.capability ? `cap: ${t.capability}` : '(no target)';
-      body += `<label>target</label><pre>${esc(target)}</pre>`;
-      body += `<label>prompt</label><pre>${esc(node.prompt || '')}</pre>`;
+      const tg = node.target || {};
+      const target =
+        tg.group     ? t('wf_inspect.target_group', { name: tg.group }) :
+        tg.host_name ? t('wf_inspect.target_host',  { name: tg.host_name }) :
+        tg.capability? t('wf_inspect.target_cap',   { name: tg.capability }) :
+        t('wf_inspect.no_target');
+      body += `<label>${esc(t('wf_inspect.target'))}</label><pre>${esc(target)}</pre>`;
+      body += `<label>${esc(t('wf_inspect.prompt'))}</label><pre>${esc(node.prompt || '')}</pre>`;
     } else if (node.type === 'branch') {
-      body += `<label>condition</label><pre>${esc(node.condition || '')}</pre>`;
+      body += `<label>${esc(t('wf_inspect.condition'))}</label><pre>${esc(node.condition || '')}</pre>`;
     } else if (node.type === 'delay') {
-      body += `<label>seconds</label><pre>${node.seconds || 0}</pre>`;
+      body += `<label>${esc(t('wf_inspect.seconds'))}</label><pre>${node.seconds || 0}</pre>`;
     }
     if (out) {
       if (out.error) {
-        body += `<label>error</label><pre style="color:var(--danger)">${esc(out.error)}</pre>`;
+        body += `<label>${esc(t('wf_inspect.error'))}</label><pre style="color:var(--danger)">${esc(out.error)}</pre>`;
       } else {
-        body += `<label>output</label><pre style="max-height:300px; overflow:auto">${esc((out.output || '').slice(0, 5000))}</pre>`;
+        body += `<label>${esc(t('wf_inspect.output'))}</label><pre style="max-height:300px; overflow:auto">${esc((out.output || '').slice(0, 5000))}</pre>`;
         if (out.exit_code !== undefined && out.exit_code !== null) {
-          body += `<label>exit_code</label><pre>${out.exit_code}</pre>`;
+          body += `<label>${esc(t('wf_inspect.exit_code'))}</label><pre>${out.exit_code}</pre>`;
         }
         if (out.session_id) {
-          body += `<a href="#/sessions/${out.session_id}">Open session →</a>`;
+          body += `<a href="#/sessions/${out.session_id}">${esc(t('workflows.open_session'))}</a>`;
         }
       }
     } else {
-      body += `<p style="color:var(--text-dim)"><i>not yet executed</i></p>`;
+      body += `<p style="color:var(--text-dim)"><i>${esc(t('workflows.not_yet_executed'))}</i></p>`;
     }
     d.innerHTML = body;
   }
