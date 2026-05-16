@@ -701,3 +701,189 @@ test('fan_out children abort on parent cancel', async () => {
     assert.strictEqual(aborts.length, 3, 'all 3 fan_out children received abort');
   });
 });
+
+// vt-0131: focused tests for previously-untested node types and edge cases.
+
+const http = require('node:http');
+
+async function startEchoServer(handler) {
+  const srv = http.createServer(handler);
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  return { srv, port: srv.address().port, close: () => new Promise(r => srv.close(r)) };
+}
+
+test('vt-0131: http_request returns response text + status (2xx → exit_code 0)', async () => {
+  const { srv, port, close } = await startEchoServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  try {
+    await withClient(async (c) => {
+      await reset(c);
+      const def = { start: 'n1', nodes: [{ id: 'n1', type: 'http_request', url: `http://127.0.0.1:${port}/x`, method: 'GET' }], edges: [] };
+      const w = await wfDb.createWorkflow(c, { name: 'wf-http', definition: def });
+      const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+      const deps = makeDeps(async () => assert.fail('claude not used'));
+      deps.db = c;
+      await createRunner(deps).runToCompletion(r.id);
+      const final = await wfDb.getRun(c, r.id);
+      assert.strictEqual(final.status, 'done');
+      assert.strictEqual(final.state.outputs.n1.exit_code, 0);
+      assert.strictEqual(final.state.outputs.n1.status, 200);
+      assert.match(final.state.outputs.n1.output, /"ok":true/);
+    });
+  } finally { await close(); }
+});
+
+test('vt-0131: http_request non-2xx → exit_code 1', async () => {
+  const { srv, port, close } = await startEchoServer((req, res) => {
+    res.writeHead(500); res.end('boom');
+  });
+  try {
+    await withClient(async (c) => {
+      await reset(c);
+      const def = { start: 'n1', nodes: [{ id: 'n1', type: 'http_request', url: `http://127.0.0.1:${port}/`, method: 'GET' }], edges: [] };
+      const w = await wfDb.createWorkflow(c, { name: 'wf-http-fail', definition: def });
+      const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+      const deps = makeDeps(async () => assert.fail('claude not used'));
+      deps.db = c;
+      await createRunner(deps).runToCompletion(r.id);
+      const final = await wfDb.getRun(c, r.id);
+      assert.strictEqual(final.state.outputs.n1.exit_code, 1);
+      assert.strictEqual(final.state.outputs.n1.status, 500);
+    });
+  } finally { await close(); }
+});
+
+test('vt-0131: http_request aborts on cancel', async () => {
+  // Server that never responds — request waits forever.
+  const { port, close } = await startEchoServer(() => { /* hang */ });
+  try {
+    await withClient(async (c) => {
+      await reset(c);
+      const def = { start: 'n1', nodes: [{ id: 'n1', type: 'http_request', url: `http://127.0.0.1:${port}/`, method: 'GET', timeout_ms: 60000 }], edges: [] };
+      const w = await wfDb.createWorkflow(c, { name: 'wf-http-cancel', definition: def });
+      const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+      const deps = makeDeps(async () => assert.fail('claude not used'));
+      deps.db = c;
+      const runner = createRunner(deps);
+      const p = runner.runToCompletion(r.id);
+      setTimeout(() => runner.cancel(r.id), 100);
+      await p;
+      const final = await wfDb.getRun(c, r.id);
+      assert.strictEqual(final.status, 'cancelled');
+    });
+  } finally { await close(); }
+});
+
+test('vt-0131: notify is best-effort — non-2xx still exit_code 0', async () => {
+  const { port, close } = await startEchoServer((req, res) => { res.writeHead(500); res.end(); });
+  try {
+    await withClient(async (c) => {
+      await reset(c);
+      const def = { start: 'n1', nodes: [{ id: 'n1', type: 'notify', webhook_url: `http://127.0.0.1:${port}/hook`, message_template: 'hi' }], edges: [] };
+      const w = await wfDb.createWorkflow(c, { name: 'wf-notify', definition: def });
+      const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+      const deps = makeDeps(async () => assert.fail('claude not used'));
+      deps.db = c;
+      await createRunner(deps).runToCompletion(r.id);
+      const final = await wfDb.getRun(c, r.id);
+      assert.strictEqual(final.status, 'done');
+      assert.strictEqual(final.state.outputs.n1.exit_code, 0);
+      assert.strictEqual(final.state.outputs.n1.status, 500);
+    });
+  } finally { await close(); }
+});
+
+test('vt-0131: notify swallows network error (exit_code 0)', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = { start: 'n1', nodes: [{ id: 'n1', type: 'notify', webhook_url: 'http://127.0.0.1:1/none', message_template: 'hi' }], edges: [] };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-notify-down', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => assert.fail('claude not used'));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n1.exit_code, 0);
+    assert.match(final.state.outputs.n1.output, /notify failed/);
+  });
+});
+
+test('vt-0131: wait_for_event timeout fails the run', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = { start: 'n1', nodes: [{ id: 'n1', type: 'wait_for_event', event_name: 'never_fires', timeout_s: 1 }], edges: [] };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-wfe-timeout', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => assert.fail('claude not used'));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'failed');
+    assert.match(JSON.stringify(final.state), /timeout|never_fires/);
+  });
+});
+
+test('vt-0131: retry cancel mid-backoff propagates abort', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // Inner is a claude node that always fails; retry will backoff between attempts.
+    const def = {
+      start: 'n1',
+      nodes: [{
+        id: 'n1', type: 'retry', max_attempts: 5, backoff_ms: 2000,
+        inner: { type: 'claude', target: { host_name: 'h' }, prompt: 'p' },
+      }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-retry-cancel', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    let attempts = 0;
+    const deps = makeDeps(async () => { attempts++; throw new Error('fail'); });
+    deps.db = c;
+    const runner = createRunner(deps);
+    const p = runner.runToCompletion(r.id);
+    // Let one attempt fail, then cancel during the 2s backoff.
+    setTimeout(() => runner.cancel(r.id), 200);
+    await p;
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'cancelled');
+    assert.ok(attempts < 5, `cancel should short-circuit retries; got ${attempts}/5`);
+  });
+});
+
+test('vt-0131: MAX_SUB_WORKFLOW_DEPTH stops infinite self-nesting', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // Self-recursive sub_workflow: each level dispatches the same workflow as
+    // a child. Depth limit (10) should kick in before MAX_DISPATCHES_PER_RUN (500).
+    const w = await wfDb.createWorkflow(c, {
+      name: 'wf-self', definition: {
+        start: 'n1',
+        nodes: [{ id: 'n1', type: 'delay', seconds: 0 }],
+        edges: [],
+      },
+    });
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'sub_workflow', workflow_id: w.id }],
+      edges: [],
+    };
+    await wfDb.updateWorkflow(c, w.id, { definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => assert.fail('claude not used'));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'failed');
+    // Depth-exhaustion error is captured in the deepest child run; parent's
+    // state carries the generic propagation message. Verify the chain by
+    // counting runs created and finding the depth-limit error somewhere.
+    const { rows } = await c.query("SELECT id, status, state FROM fleet_workflow_runs WHERE workflow_id = $1", [w.id]);
+    assert.ok(rows.length >= 5, `expected nested run rows, got ${rows.length}`);
+    const hasDepthErr = rows.some(rr => /max.*depth|nesting/i.test(JSON.stringify(rr.state || {})));
+    assert.ok(hasDepthErr, 'at least one nested run should carry the depth-limit error');
+  });
+});

@@ -183,6 +183,10 @@ function createRunner(deps) {
       const text = await res.text();
       return { output: text.slice(0, 65536), exit_code: res.ok ? 0 : 1, status: res.status };
     } catch (e) {
+      // vt-0131: if the runner was cancelled the fetch rejects with AbortError;
+      // surface 'cancelled' so the main loop routes the run to cancelled rather
+      // than failed (matches sub_workflow/fan_out semantics).
+      if (cancelled.has(runId)) throw new Error('cancelled');
       throw new Error(`http_request error: ${e.message}`);
     } finally {
       clearTimeout(t);
