@@ -138,6 +138,14 @@
             <button id="bcast-btn" class="btn-ghost" style="width:100%; margin-top:.3em" data-i18n="spawn.bcast_btn">📡 broadcast</button>
           </details>
         </section>
+
+        <section class="panel" id="approvals-panel" hidden>
+          <div class="panel-head">
+            <h3 data-i18n="approvals.section">PENDING APPROVALS</h3>
+            <span id="approvals-count" class="pill">0</span>
+          </div>
+          <ul id="approvals-list" class="list"></ul>
+        </section>
       </aside>
 
       <section class="host-detail" hidden>
@@ -463,6 +471,8 @@
         <button id="wf-add-retry"        data-i18n="workflows.add_retry">+ retry</button>
         <button id="wf-add-for-each"     data-i18n="workflows.add_for_each">+ for_each</button>
         <button id="wf-add-sub-workflow" data-i18n="workflows.add_sub_wf">+ sub_workflow</button>
+        <button id="wf-add-wait-approval" data-i18n="workflows.add_wait_approval">+ wait_for_approval</button>
+        <button id="wf-add-wait-event"    data-i18n="workflows.add_wait_event">+ wait_for_event</button>
         <hr>
         <button id="wf-save" data-i18n="workflows.save">save</button>
         <button id="wf-run" data-i18n="workflows.run">run</button>

@@ -34,6 +34,8 @@
     if (node.type === 'retry')        return `${node.id}: retry × ${node.max_attempts || 3}`;
     if (node.type === 'for_each')     return `${node.id}: for_each ${node.input_ref || '?'}`;
     if (node.type === 'sub_workflow') return `${node.id}: sub_workflow`;
+    if (node.type === 'wait_for_approval') return `${node.id}: ⏸ approval`;
+    if (node.type === 'wait_for_event') return `${node.id}: ⏸ ${node.event_name || 'event'}`;
     return node.id;
   }
 
@@ -120,6 +122,8 @@
                        n.type === 'retry'         ? '#b85f5f' :
                        n.type === 'for_each'      ? '#a05fb8' :
                        n.type === 'sub_workflow'  ? '#5f7ab8' :
+                       n.type === 'wait_for_approval' ? '#d4a04a' :
+                       n.type === 'wait_for_event'    ? '#a06fb8' :
                        '#6b7a8a';
         el('rect', {
           x: 0, y: 0, width: NODE_W, height: NODE_H,

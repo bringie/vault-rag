@@ -402,6 +402,34 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         console.error(`[rag-api] fleet purge failed: ${e.message}`);
       }
     }, PURGE_INTERVAL_MS).unref?.();
+
+    // vt-0110: workflow trigger scheduler. Scans fleet_workflows where
+    // trigger is set; if `now - last_run_at >= every_ms`, kicks a new run.
+    // Coarse 60s tick. every_ms minimum 60_000 (enforced at API layer).
+    const wfDb = require('./lib/fleet-workflow-db');
+    setInterval(async () => {
+      try {
+        const triggered = await wfDb.listTriggeredWorkflows(pg);
+        if (!triggered.length) return;
+        const now = Date.now();
+        for (const w of triggered) {
+          if (!w.trigger || typeof w.trigger.every_ms !== 'number') continue;
+          const last = w.last_run_at ? new Date(w.last_run_at).getTime() : 0;
+          if (now - last < w.trigger.every_ms) continue;
+          // Fire: create run + start the runner (same path as POST /workflows/:id/run).
+          try {
+            const run = await wfDb.createRun(pg, { workflowId: w.id, snapshot: w.definition });
+            const runner = await fleetRoutes.ensureWorkflowRunner(fleetCtx);
+            if (runner) runner.start(run.id);
+            console.log(`[rag-api] trigger fired: workflow=${w.name} run=${run.id}`);
+          } catch (e) {
+            console.error(`[rag-api] trigger fire failed for ${w.name}: ${e.message}`);
+          }
+        }
+      } catch (e) {
+        console.error(`[rag-api] workflow trigger scan failed: ${e.message}`);
+      }
+    }, 60 * 1000).unref?.();
   }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${SKIP_PG ? 'skipped' : `${PG.host}/${PG.database}`}, auth=Bearer)`);

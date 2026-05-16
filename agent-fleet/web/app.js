@@ -212,9 +212,46 @@
         $('stat-cost').textContent = '—';
       }
       render();
+      // vt-0110: pending approvals — best-effort, hidden if none.
+      try { renderApprovals(await api('GET', '/workflow-pending-approvals')); }
+      catch {}
     } catch (e) {
       if (e.message !== 'auth') console.warn('refresh', e);
     }
+  }
+  function renderApprovals(rows) {
+    const panel = $('approvals-panel');
+    const list = $('approvals-list');
+    const countEl = $('approvals-count');
+    if (!panel || !list) return;
+    if (!rows || !rows.length) { panel.hidden = true; return; }
+    panel.hidden = false;
+    countEl.textContent = String(rows.length);
+    list.innerHTML = rows.map(r => `
+      <li class="approval-row" data-run="${esc(r.run_id)}" data-node="${esc(r.node_id)}">
+        <div class="approval-head">
+          <strong>${esc(r.workflow_name || r.run_id.slice(0, 8))}</strong>
+          <span class="lbl">/${esc(r.node_id)}</span>
+        </div>
+        ${r.reason ? `<div class="approval-reason">${esc(r.reason)}</div>` : ''}
+        <div class="approval-btns">
+          <button class="btn-row" data-action="approve">approve</button>
+          <button class="btn-row" data-action="reject">reject</button>
+        </div>
+      </li>`).join('');
+    list.querySelectorAll('li.approval-row').forEach(li => {
+      li.querySelectorAll('[data-action]').forEach(btn => {
+        btn.onclick = async (ev) => {
+          ev.stopPropagation();
+          const decision = btn.dataset.action;
+          try {
+            await api('POST', `/workflow-runs/${li.dataset.run}/approvals/${li.dataset.node}`,
+              { decision, by: 'web' });
+            refresh();
+          } catch (e) { alert(`approval failed: ${e.message}`); }
+        };
+      });
+    });
   }
   function startPolling() {
     refresh();

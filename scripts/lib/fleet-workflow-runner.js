@@ -31,11 +31,20 @@ function validateDefinition(def) {
     if (!byId.has(e.to))   throw new Error(`edge to unknown node: ${e.to}`);
   }
   for (const n of nodes) {
-    if (n.type !== 'branch') continue;
-    const out = (edges || []).filter(e => e.from === n.id);
-    const labels = new Set(out.map(e => e.label));
-    if (out.length !== 2 || !labels.has('then') || !labels.has('else')) {
-      throw new Error(`branch node ${n.id} must have exactly one then and one else outgoing edge`);
+    if (n.type === 'branch') {
+      const out = (edges || []).filter(e => e.from === n.id);
+      const labels = new Set(out.map(e => e.label));
+      if (out.length !== 2 || !labels.has('then') || !labels.has('else')) {
+        throw new Error(`branch node ${n.id} must have exactly one then and one else outgoing edge`);
+      }
+    }
+    if (n.type === 'wait_for_approval') {
+      const out = (edges || []).filter(e => e.from === n.id);
+      const labels = new Set(out.map(e => e.label));
+      // Allow 0 out (terminal) or exactly { approve, reject }.
+      if (out.length > 0 && (out.length !== 2 || !labels.has('approve') || !labels.has('reject'))) {
+        throw new Error(`wait_for_approval node ${n.id} must have either no outgoing edges or exactly one approve + one reject`);
+      }
     }
   }
   const visiting = new Set();
@@ -74,12 +83,11 @@ function evalCondition(expr, sandboxData) {
   }
 }
 
-function nextNode(currentId, def, branchResult) {
+function nextNode(currentId, def, labelHint) {
   const out = (def.edges || []).filter(e => e.from === currentId);
   if (!out.length) return null;
-  if (branchResult !== undefined) {
-    const want = branchResult ? 'then' : 'else';
-    const e = out.find(x => x.label === want);
+  if (labelHint !== undefined && labelHint !== null) {
+    const e = out.find(x => x.label === labelHint);
     return e ? e.to : null;
   }
   return out[0].to;
@@ -397,6 +405,55 @@ function createRunner(deps) {
     };
   }
 
+  // wait_for_approval: suspends the run until POST /workflow-runs/:id/
+  // approvals/:node_id decides. Persisted in fleet_workflow_pending_approvals
+  // so a hub restart can resume on next poll. Edges out of this node MUST be
+  // labelled 'approve' and 'reject'.
+  async function execWaitForApproval(node, ctx, runId) {
+    const reason = substituteTemplates(node.reason || '', ctx);
+    await wfDb.createPendingApproval(deps.db, { runId, nodeId: node.id, reason });
+    deps.broadcast(runId, { type: 'approval_requested', run_id: runId, node_id: node.id, reason });
+    const timeoutMs = Math.max(0, (node.timeout_s || 86400) * 1000);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (cancelled.has(runId)) throw new Error('cancelled');
+      const row = await wfDb.getPendingApproval(deps.db, runId, node.id);
+      if (row && row.decision) {
+        return {
+          output: row.decision,
+          exit_code: row.decision === 'approve' ? 0 : 1,
+          decision: row.decision,
+          decided_by: row.decided_by,
+          note: row.note,
+        };
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    throw new Error(`wait_for_approval: timeout after ${node.timeout_s || 86400}s`);
+  }
+
+  // wait_for_event: suspends until POST /workflow-events fires the named event.
+  async function execWaitForEvent(node, ctx, runId) {
+    if (!node.event_name) throw new Error('wait_for_event: event_name required');
+    await wfDb.createPendingEvent(deps.db, { runId, nodeId: node.id, eventName: node.event_name });
+    deps.broadcast(runId, { type: 'event_waiting', run_id: runId, node_id: node.id, event_name: node.event_name });
+    const timeoutMs = Math.max(0, (node.timeout_s || 86400) * 1000);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (cancelled.has(runId)) throw new Error('cancelled');
+      const row = await wfDb.getPendingEvent(deps.db, runId, node.id);
+      if (row && row.fired_at) {
+        return {
+          output: `event ${node.event_name} fired`,
+          exit_code: 0,
+          payload: row.payload,
+        };
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    throw new Error(`wait_for_event: timeout waiting for ${node.event_name}`);
+  }
+
   // Unified dispatcher — used by both the main while-loop and by retry/for_each
   // when they execute their inner node. Recursion is depth-limited via
   // dispatchCount; cancellation is checked at every dispatch.
@@ -422,6 +479,8 @@ function createRunner(deps) {
       case 'retry':        return await execRetry(node, ctx, runId);
       case 'for_each':     return await execForEach(node, ctx, runId);
       case 'sub_workflow': return await execSubWorkflow(node, ctx, runId);
+      case 'wait_for_approval': return await execWaitForApproval(node, ctx, runId);
+      case 'wait_for_event':    return await execWaitForEvent(node, ctx, runId);
       default: throw new Error(`unknown node type: ${node.type}`);
     }
   }
@@ -503,7 +562,10 @@ function createRunner(deps) {
         output: result.output, exit_code: result.exit_code, session_id: result.session_id,
       });
 
-      current = nextNode(current, def, node.type === 'branch' ? result.result : undefined);
+      let labelHint;
+      if (node.type === 'branch')             labelHint = result.result ? 'then' : 'else';
+      else if (node.type === 'wait_for_approval') labelHint = result.decision; // 'approve' | 'reject'
+      current = nextNode(current, def, labelHint);
     }
 
     await wfDb.updateRunStatus(deps.db, runId, 'done');

@@ -551,3 +551,82 @@ test('recursion guard: dispatch cap kicks in on infinite-loop sub_workflow', asy
     assert.match(allErrors, /recursion|dispatches|nesting|depth/i);
   });
 });
+
+// --- vt-0110: wait_for_approval + wait_for_event ---
+
+test('wait_for_approval: resumes on decision; takes approve edge', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'wait_for_approval', reason: 'go?', timeout_s: 30 },
+        { id: 'nA', type: 'transform', expr: '"approved"' },
+        { id: 'nR', type: 'transform', expr: '"rejected"' },
+      ],
+      edges: [
+        { from: 'n1', to: 'nA', label: 'approve' },
+        { from: 'n1', to: 'nR', label: 'reject' },
+      ],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-approval', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    const runner = createRunner(deps);
+    const runPromise = runner.runToCompletion(r.id);
+    // Simulate operator approving after 100ms.
+    setTimeout(async () => {
+      try {
+        await wfDb.recordApprovalDecision(c, r.id, 'n1', { decision: 'approve', decided_by: 'test' });
+      } catch (e) { console.error('test approve failed:', e.message); }
+    }, 100);
+    await runPromise;
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n1.decision, 'approve');
+    assert.strictEqual(final.state.outputs.nA.output, 'approved');
+    assert.ok(!final.state.outputs.nR, 'reject branch did not run');
+  });
+});
+
+test('wait_for_event: resumes when fireEvent matches name', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'wait_for_event', event_name: 'ci.done', timeout_s: 30 },
+        { id: 'n2', type: 'transform', expr: '"saw " + n1.payload.run_id' },
+      ],
+      edges: [{ from: 'n1', to: 'n2' }],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-event', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    const runner = createRunner(deps);
+    const runPromise = runner.runToCompletion(r.id);
+    setTimeout(async () => {
+      try { await wfDb.fireEvent(c, 'ci.done', { run_id: 42 }); }
+      catch (e) { console.error('test fire failed:', e.message); }
+    }, 100);
+    await runPromise;
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.deepStrictEqual(final.state.outputs.n1.payload, { run_id: 42 });
+    assert.strictEqual(final.state.outputs.n2.output, 'saw 42');
+  });
+});
+
+test('wait_for_approval: validateDefinition requires approve+reject edges', () => {
+  const { validateDefinition } = require('./fleet-workflow-runner');
+  assert.throws(() => validateDefinition({
+    start: 'n1',
+    nodes: [
+      { id: 'n1', type: 'wait_for_approval' },
+      { id: 'n2', type: 'transform', expr: '1' },
+    ],
+    edges: [{ from: 'n1', to: 'n2', label: 'approve' }], // missing reject
+  }), /approve.*reject/);
+});

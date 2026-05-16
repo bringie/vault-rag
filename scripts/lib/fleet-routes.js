@@ -864,6 +864,47 @@ async function handleCancelRun({ req, res, ctx }) {
   send(res, 200, { ok: true });
 }
 
+async function handleListPendingApprovals({ res, ctx }) {
+  const rows = await wfDb.listPendingApprovals(ctx.db);
+  send(res, 200, rows);
+}
+
+async function handleApprovalDecision({ req, res, body, ctx }) {
+  // POST /fleet/workflow-runs/:runId/approvals/:nodeId  {decision, by, note}
+  const m = req.url.match(new RegExp(`^/fleet/workflow-runs/(${SID_RE})/approvals/([\\w.-]+)$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  if (!body || !['approve', 'reject'].includes(body.decision)) {
+    return send(res, 422, { error: 'decision must be approve or reject' });
+  }
+  const row = await wfDb.recordApprovalDecision(ctx.db, m[1], m[2], {
+    decision: body.decision, decided_by: body.by, note: body.note,
+  });
+  if (!row) return send(res, 409, { error: 'no pending approval matches (already decided?)' });
+  send(res, 200, row);
+}
+
+async function handleFireWorkflowEvent({ res, body, ctx }) {
+  // POST /fleet/workflow-events  {name, payload}
+  if (!body || !body.name) return send(res, 422, { error: 'name required' });
+  const n = await wfDb.fireEvent(ctx.db, body.name, body.payload);
+  send(res, 200, { fired: n });
+}
+
+async function handleSetWorkflowTrigger({ req, res, body, ctx }) {
+  // PUT /fleet/workflows/:id/trigger  {every_ms?: number} or {} to clear
+  const m = req.url.match(new RegExp(`^/fleet/workflows/(${SID_RE})/trigger$`, 'i'));
+  if (!m) return send(res, 404, { error: 'not found' });
+  const trigger = body && Object.keys(body).length ? body : null;
+  if (trigger && trigger.every_ms != null) {
+    const ms = Number(trigger.every_ms);
+    if (!Number.isFinite(ms) || ms < 60000) {
+      return send(res, 422, { error: 'every_ms must be a number ≥ 60000' });
+    }
+  }
+  await wfDb.setWorkflowTrigger(ctx.db, m[1], trigger);
+  send(res, 200, { ok: true, trigger });
+}
+
 // Spawn a claude session and wait for completion, returning {output, exit_code, session_id}.
 // Used by workflow runner as deps.spawnClaude. signal (optional AbortSignal) lets
 // runner.cancel() short-circuit the poll loop instead of waiting full timeout_s.
@@ -1043,11 +1084,23 @@ function dispatchHttp(req, res, ctx) {
     return readBody(req).then(b => handlePatchWorkflow({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
   if (method === 'DELETE' && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleDeleteWorkflow({ req, res, ctx });
+  if (method === 'PUT'    && new RegExp(`^/fleet/workflows/${SID_RE}/trigger$`, 'i').test(path)) {
+    return readBody(req).then(b => handleSetWorkflowTrigger({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
 
   // Workflow runs
   if (method === 'GET'    && path === '/fleet/workflow-runs') return handleListRuns({ req, res, ctx });
   if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/cancel$`, 'i').test(path)) return handleCancelRun({ req, res, ctx });
+  if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/approvals/[\\w.-]+$`, 'i').test(path)) {
+    return readBody(req).then(b => handleApprovalDecision({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
   if (method === 'GET'    && new RegExp(`^/fleet/workflow-runs/${SID_RE}$`, 'i').test(path)) return handleGetRun({ req, res, ctx });
+
+  // Pending approvals + events
+  if (method === 'GET'  && path === '/fleet/workflow-pending-approvals') return handleListPendingApprovals({ res, ctx });
+  if (method === 'POST' && path === '/fleet/workflow-events') {
+    return readBody(req).then(b => handleFireWorkflowEvent({ res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
 
   send(res, 404, { error: 'not found' });
 }
@@ -1434,4 +1487,4 @@ function makeContext({ token, db, version }) {
   return ctx;
 }
 
-module.exports = { attach, tryDispatch, attachUpgrade, makeContext, send, readBody, checkAuth };
+module.exports = { attach, tryDispatch, attachUpgrade, makeContext, send, readBody, checkAuth, ensureWorkflowRunner };

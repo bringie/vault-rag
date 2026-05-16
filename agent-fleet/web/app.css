@@ -464,6 +464,15 @@ body::after {
 .archive-table tr:hover td { background: rgba(255,255,255,0.025); color: var(--text); }
 .archive-table tr.row-clickable { cursor: pointer; }
 .archive-table tr.row-clickable:hover td { background: rgba(255,255,255,0.06); }
+
+.approval-row {
+  padding: .5em .6em; border-bottom: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: .35em;
+}
+.approval-row:last-child { border-bottom: 0; }
+.approval-head { display: flex; gap: .4em; align-items: baseline; }
+.approval-reason { font-size: .85em; color: var(--text-dim); }
+.approval-btns { display: flex; gap: .4em; }
 .archive-table .sess-id-cell { font-family: var(--font-mono); color: var(--accent); cursor: pointer; }
 .archive-table .sess-id-cell:hover { text-decoration: underline; }
 .archive-table .nowrap { white-space: nowrap; }

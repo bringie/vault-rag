@@ -145,6 +145,8 @@
     document.getElementById('wf-add-retry')       ?.addEventListener('click', () => canvas.addNode(newNode('retry')));
     document.getElementById('wf-add-for-each')    ?.addEventListener('click', () => canvas.addNode(newNode('for_each')));
     document.getElementById('wf-add-sub-workflow')?.addEventListener('click', () => canvas.addNode(newNode('sub_workflow')));
+    document.getElementById('wf-add-wait-approval')?.addEventListener('click', () => canvas.addNode(newNode('wait_for_approval')));
+    document.getElementById('wf-add-wait-event')   ?.addEventListener('click', () => canvas.addNode(newNode('wait_for_event')));
     document.getElementById('wf-back').onclick       = () => location.hash = '#/workflows';
 
     document.getElementById('wf-save').onclick = async () => {
@@ -195,6 +197,8 @@
       if (type === 'retry')        return { ...base, max_attempts: 3, backoff_ms: 1000, inner: { type: 'http_request', method: 'GET', url: 'https://' } };
       if (type === 'for_each')     return { ...base, input_ref: '', item_var: 'item', inner: { type: 'transform', expr: 'item' } };
       if (type === 'sub_workflow') return { ...base, workflow_id: '', inputs_map: {} };
+      if (type === 'wait_for_approval') return { ...base, reason: '', timeout_s: 86400 };
+      if (type === 'wait_for_event')    return { ...base, event_name: '', timeout_s: 86400 };
       return base;
     }
 
@@ -344,6 +348,25 @@
           <textarea id="i-sub-inputs" rows="4">${esc(JSON.stringify(cur.inputs_map || {}, null, 2))}</textarea>
         `;
         wireInputs(cur.id, ['sub-wf','sub-inputs']);
+      } else if (cur.type === 'wait_for_approval') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (wait_for_approval)</h3>
+          <label>reason (shown to operator in pending list)</label>
+          <textarea id="i-approval-reason" rows="2">${esc(cur.reason || '')}</textarea>
+          <label>timeout_s (default 86400 = 24h)</label>
+          <input id="i-approval-timeout" type="number" value="${cur.timeout_s || 86400}">
+          <p style="color:var(--text-dim); font-size:11px">Two outgoing edges required: one labelled "approve", one "reject".</p>
+        `;
+        wireInputs(cur.id, ['approval-reason','approval-timeout']);
+      } else if (cur.type === 'wait_for_event') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (wait_for_event)</h3>
+          <label>event_name (POST /fleet/workflow-events {name, payload} fires this)</label>
+          <input id="i-event-name" value="${esc(cur.event_name || '')}">
+          <label>timeout_s</label>
+          <input id="i-event-timeout" type="number" value="${cur.timeout_s || 86400}">
+        `;
+        wireInputs(cur.id, ['event-name','event-timeout']);
       }
     }
 
@@ -403,6 +426,12 @@
           // sub_workflow
           if (k === 'sub-wf')       cur.workflow_id = elInp.value;
           if (k === 'sub-inputs')   { try { cur.inputs_map = JSON.parse(elInp.value || '{}'); } catch {} }
+          // wait_for_approval
+          if (k === 'approval-reason')  cur.reason = elInp.value;
+          if (k === 'approval-timeout') cur.timeout_s = Math.max(60, parseInt(elInp.value, 10) || 86400);
+          // wait_for_event
+          if (k === 'event-name')     cur.event_name = elInp.value;
+          if (k === 'event-timeout')  cur.timeout_s = Math.max(60, parseInt(elInp.value, 10) || 86400);
           canvas.replaceDefinition(d);
           definition = d;
         };

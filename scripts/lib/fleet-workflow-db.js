@@ -109,7 +109,94 @@ async function orphanRunningRuns(c) {
   return rowCount;
 }
 
+// --- vt-0110: triggers + suspension primitives ---
+
+async function listTriggeredWorkflows(c) {
+  const { rows } = await c.query(
+    `SELECT id, name, definition, trigger,
+            (SELECT MAX(created_at) FROM fleet_workflow_runs WHERE workflow_id = w.id) AS last_run_at
+     FROM fleet_workflows w
+     WHERE trigger IS NOT NULL`);
+  return rows;
+}
+
+async function setWorkflowTrigger(c, id, trigger) {
+  await c.query('UPDATE fleet_workflows SET trigger = $2::jsonb, updated_at = now() WHERE id = $1',
+    [id, trigger == null ? null : JSON.stringify(trigger)]);
+}
+
+async function createPendingApproval(c, { runId, nodeId, reason }) {
+  const { rows } = await c.query(
+    `INSERT INTO fleet_workflow_pending_approvals (run_id, node_id, reason)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (run_id, node_id) DO UPDATE SET reason = EXCLUDED.reason
+     RETURNING *`,
+    [runId, nodeId, reason || null]);
+  return rows[0];
+}
+
+async function getPendingApproval(c, runId, nodeId) {
+  const { rows } = await c.query(
+    `SELECT * FROM fleet_workflow_pending_approvals WHERE run_id = $1 AND node_id = $2`,
+    [runId, nodeId]);
+  return rows[0] || null;
+}
+
+async function listPendingApprovals(c) {
+  const { rows } = await c.query(
+    `SELECT a.*, r.workflow_id, w.name AS workflow_name
+     FROM fleet_workflow_pending_approvals a
+     LEFT JOIN fleet_workflow_runs r ON r.id = a.run_id
+     LEFT JOIN fleet_workflows w ON w.id = r.workflow_id
+     WHERE a.decided_at IS NULL
+     ORDER BY a.requested_at DESC`);
+  return rows;
+}
+
+async function recordApprovalDecision(c, runId, nodeId, { decision, decided_by, note }) {
+  if (!['approve', 'reject'].includes(decision)) {
+    throw new Error('decision must be approve or reject');
+  }
+  const { rows } = await c.query(
+    `UPDATE fleet_workflow_pending_approvals
+     SET decision = $3, decided_at = now(), decided_by = $4, note = $5
+     WHERE run_id = $1 AND node_id = $2 AND decided_at IS NULL
+     RETURNING *`,
+    [runId, nodeId, decision, decided_by || null, note || null]);
+  return rows[0] || null;
+}
+
+async function createPendingEvent(c, { runId, nodeId, eventName }) {
+  const { rows } = await c.query(
+    `INSERT INTO fleet_workflow_pending_events (run_id, node_id, event_name)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (run_id, node_id) DO UPDATE SET event_name = EXCLUDED.event_name
+     RETURNING *`,
+    [runId, nodeId, eventName]);
+  return rows[0];
+}
+
+async function getPendingEvent(c, runId, nodeId) {
+  const { rows } = await c.query(
+    `SELECT * FROM fleet_workflow_pending_events WHERE run_id = $1 AND node_id = $2`,
+    [runId, nodeId]);
+  return rows[0] || null;
+}
+
+async function fireEvent(c, eventName, payload) {
+  const { rowCount } = await c.query(
+    `UPDATE fleet_workflow_pending_events
+     SET fired_at = now(), payload = $2::jsonb
+     WHERE event_name = $1 AND fired_at IS NULL`,
+    [eventName, JSON.stringify(payload || null)]);
+  return rowCount;
+}
+
 module.exports = {
   listWorkflows, getWorkflow, createWorkflow, updateWorkflow, deleteWorkflow,
   listRuns, getRun, createRun, updateRunStatus, updateRunState, orphanRunningRuns,
+  // vt-0110
+  listTriggeredWorkflows, setWorkflowTrigger,
+  createPendingApproval, getPendingApproval, listPendingApprovals, recordApprovalDecision,
+  createPendingEvent, getPendingEvent, fireEvent,
 };
