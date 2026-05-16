@@ -66,6 +66,26 @@ date: 2026-05-16
 
 Pages — no `position:fixed`. Layout = normal flow. `applyRoute()` toggles `hidden` on `.page` siblings + updates `#app-title` + populates `#page-actions`.
 
+**Footer policy:** global `footbar` shows only **stable** fleet stats (`#fleet-stats`, version, daemon counts). Per-page bottom strips (archive pagination, workflow run status, session detail toolbar) stay **inside** the `.page` div as last child — that way each page brings its own bottom controls and the global footer remains static across navigation.
+
+**Route → page-id mapping table.** Routes don't 1:1 map to page-ids (e.g. `#/sessions/<id>` is the session-detail page, `#/workflows/<id>` is the workflow-editor page). Explicit table:
+
+```js
+function routeToPage(r) {
+  if (r.name === 'workflows' && !r.arg)            return 'workflows';
+  if (r.name === 'workflows' && r.arg)             return 'workflow-editor';
+  if (r.name === 'workflow-runs' && r.arg)         return 'workflow-run';
+  if (r.name === 'sessions' && r.arg)              return 'session-detail';
+  if (r.name === 'cost')                           return 'cost';
+  if (r.name === 'groups')                         return 'groups';
+  if (r.name === 'archive')                        return 'archive';
+  if (r.name === 'prices')                         return 'prices';
+  return 'dashboard';
+}
+```
+
+Bookmarks стабильны (URL routes не меняются) — page-ids только внутренний DOM concern.
+
 ## 4. Phase 1 (foundation)
 
 ### 4.1 HTML restructure
@@ -115,9 +135,10 @@ function setPage(name, opts = {}) {
   --term-bg: #0a0a0c; --term-fg: #e8e6e1;  /* terminal stays dark — readability */
 }
 :root[data-theme="solarized"] {
+  /* WCAG AA: --text on --bg = 12.6:1 (#073642 on #fdf6e3), --text-dim = 7.5:1 */
   --bg: #fdf6e3; --bg-warm: #eee8d5; --panel: #fdf6e3; --panel-2: #eee8d5;
   --line: #cdb78d; --line-2: #93a1a1;
-  --text: #586e75; --text-dim: #839496; --text-faint: #93a1a1;
+  --text: #073642; --text-dim: #586e75; --text-faint: #93a1a1;
   --ok: #859900; --warn: #b58900; --danger: #dc322f; --accent: #268bd2; --magenta: #d33682;
   --term-bg: #002b36; --term-fg: #93a1a1;
 }
@@ -137,24 +158,41 @@ function setPage(name, opts = {}) {
 }
 ```
 
-JS:
+**Terminal ANSI palette per theme.** Current `new Terminal({...})` in app.js sets a full 16-color ANSI palette hard-coded for dark theme. Theme switch needs to update ALL 16 ANSI colors, not just background/foreground — otherwise red/green/yellow/blue text in claude output looks wrong on light/solarized/nord/hi-contrast themes.
 
+Extend each theme block with terminal-specific vars:
+```css
+:root[data-theme="dark"] {
+  --term-bg: #0a0a0c; --term-fg: #e8e6e1;
+  --term-black: #16161e; --term-red: #ff4d5e; --term-green: #5cf08c; --term-yellow: #ffb547;
+  --term-blue: #6fd5ff; --term-magenta: #ff79c6; --term-cyan: #88c0d0; --term-white: #c0c0c0;
+  --term-br-black: #555555; --term-br-red: #ff8088; --term-br-green: #88ffaa; --term-br-yellow: #ffd07a;
+  --term-br-blue: #aae6ff; --term-br-magenta: #ffaadd; --term-br-cyan: #aaeedd; --term-br-white: #ffffff;
+}
+/* light/solarized/nord/hi-contrast — same 16 keys, theme-appropriate values */
+```
+
+JS theme apply:
 ```js
 function applyTheme(name) {
   document.documentElement.setAttribute('data-theme', name);
   localStorage.fleetTheme = name;
-  // Update xterm if instantiated
   if (window.term && window.term.options) {
     const style = getComputedStyle(document.documentElement);
+    const v = (k) => style.getPropertyValue(k).trim();
     window.term.options.theme = {
-      background: style.getPropertyValue('--term-bg').trim(),
-      foreground: style.getPropertyValue('--term-fg').trim(),
+      background: v('--term-bg'), foreground: v('--term-fg'),
+      black: v('--term-black'), red: v('--term-red'), green: v('--term-green'), yellow: v('--term-yellow'),
+      blue: v('--term-blue'), magenta: v('--term-magenta'), cyan: v('--term-cyan'), white: v('--term-white'),
+      brightBlack: v('--term-br-black'), brightRed: v('--term-br-red'), brightGreen: v('--term-br-green'),
+      brightYellow: v('--term-br-yellow'), brightBlue: v('--term-br-blue'),
+      brightMagenta: v('--term-br-magenta'), brightCyan: v('--term-br-cyan'), brightWhite: v('--term-br-white'),
     };
   }
 }
 ```
 
-**xterm caveat:** changing `term.options.theme` works in xterm.js 5+ for re-rendered frames; current cells aren't repainted retroactively. Spec accepts: theme applies to next pty_data — for clean visual reset, user can re-attach session. Document this in user-facing hint.
+**xterm caveat (documented, accepted):** even with full palette swap, xterm.js 5+ canvas renderer caches rasterized cells per current colors. Theme change applies to NEXT rendered output, not retroactively for already-painted cells. UI hint: "theme applied — detach/reattach session for clean palette". This is the lesser-evil tradeoff vs full Terminal re-init (which loses scrollback).
 
 Switcher: dropdown в header → `<select id="theme-select">` calls `applyTheme(value)` on change.
 
@@ -222,18 +260,27 @@ HTML markup pattern:
 
 Switcher: `<select id="lang-select"><option>en</option><option>ru</option><option>es</option></select>` → calls `loadLang(value)`.
 
-**On boot:** `loadLang(localStorage.fleetLang || 'en')`.
+**On boot:** `await loadLang(localStorage.fleetLang || 'en')` BEFORE first `applyI18n()` and before any page render — otherwise raw keys flash visible. Theme applies synchronously (CSS only) so no ordering concern there.
 
 ### 4.5 Dictionaries
 
-Initial keys (~150 expected):
+Initial keys (~220-280 expected — realistic count from HTML audit):
 - `nav.*` — 6 buttons
 - `<page>.title` — 8 pages
-- `<page>.*` — per-page labels (column headers, button text, empty states)
-- `common.*` — yes/no, save/cancel, loading, error, edit, delete, ×, ...
-- `meta.*` — host metadata labels (os, arch, ram, etc.)
+- `<page>.*` — per-page labels, column headers, button text, empty states (~100 keys)
+- `common.*` — save/cancel/edit/delete/close/loading/error/yes/no (~20 keys)
+- `meta.*` — host metadata labels (os, arch, ram, cores, uptime, etc.) (~15)
+- `status.*` — session statuses (running/pending/exited/killed/orphaned/idle) (~6)
+- `error.*` — common error toasts (load_failed/save_failed/spawn_failed/auth_failed) (~10)
+- `auth.*` — auth panel strings (engage/abort/unauthenticated/token-stored-note) (~6)
+- `broadcast.*` — broadcast panel ("by tag instead") (~4)
+- `workflow.node.*` — claude/branch/delay (~3)
+- `prices.*` — pattern/priority/valid_from/input/output/cache_create/cache_read/flag (~10)
+- `inventory.*` — Skills/MCP servers/Settings tab labels + table headers (~10)
+- `session_detail.*` — transcript/timeline tab labels (~6)
+- `cost.*` — group by/days/legend/overlaps-note (~8)
 
-Will inventory exact list during implementation.
+Will inventory exact list during Phase 1 step 3.
 
 ## 5. Phase 2 (UX fixes)
 
@@ -269,7 +316,7 @@ Current `openGroupDetail` allows label add/remove + host add/remove. Add:
 - **Color** edit: `<input type="color" id="gd-color">` next to name
 - **Description** edit: `<input id="gd-desc">` below
 
-Server endpoint `PATCH /fleet/groups/:id` already supports name/description/color/labels (verified in fleet-routes.js handlePatchGroup) — no backend changes.
+Server endpoint `PATCH /fleet/groups/:id` already supports name/description/color/labels (verified in fleet-routes.js handlePatchGroup). **Bug to fix in same task**: `handlePatchGroup` (fleet-routes.js:518-524) catches errors generically — `e.code === '23505'` (duplicate name) leaks raw pg error. Add explicit branch returning 409 `{error:'name already exists'}` matching `handleCreateGroup`'s pattern.
 
 UI validation: name uniqueness — check `state.groups.some(g => g.name === val && g.id !== current.id)` → if conflict, show error message + don't submit.
 
@@ -291,7 +338,9 @@ UI `index.html`:
 
 Backend `scripts/lib/fleet-cost.js timeline()`:
 - Add branch `if (groupBy === 'group' && vaultPg) return timelineByGroup(...)`
-- New `timelineByGroup(tokmonPg, vaultPg, days)` — similar to `timelineByLabel`, but resolves session_id → fleet_sessions.host_id → fleet_host_groups → group names. One session can belong to N groups → emit N rows (one per group). UI shows note "hosts may appear in multiple groups → totals don't sum to grand total".
+- New `timelineByGroup(tokmonPg, vaultPg, days)` — similar to `timelineByLabel`, но resolves session_id → fleet_sessions.host_id → LEFT JOIN fleet_host_groups → group names. Use **LEFT JOIN** so hosts without group memberships emit a row with dim=`(ungrouped)` bucket — explicit and observable, NOT silently dropped. One session ran on host in N groups → emit N rows (one per group). Double-counting accepted.
+
+PK on `fleet_host_groups(host_id, group_id)` covers the join — no extra index needed.
 
 UI footer note in cost view when groupBy=group: `<span class="lbl">overlaps: hosts in multiple groups counted in each</span>`.
 
@@ -324,7 +373,7 @@ Mostly CSS audit + small markup tweaks. ~30 LOC CSS delta.
 | `scripts/lib/fleet-routes.js` | Wire groupBy=group through to timeline | modify (~5 LOC) |
 | `scripts/lib/fleet-static.js` | Serve `.json` mime + i18n directory | modify (~3 LOC) |
 
-Total ~750 LOC new + ~250 LOC modified.
+Realistic total ~1500 LOC new + ~600 modified ≈ **~2100 LOC**. i18n migration alone is ~250 keys × 3 langs = ~750 JSON entries + ~250 `data-i18n` HTML attribute touches + applyI18n call sites in 15+ render functions. HTML restructure essentially rewrites index.html (468 lines). Each theme block extended for full ANSI = 25 LOC × 5 = 125 LOC themes.css.
 
 ## 7. Phase ordering
 
@@ -357,7 +406,10 @@ Each phase deploys independently. Phase 2 can ship without 12-13 if translations
 | Color picker outputs invalid hex | Server validates `/^#[0-9a-f]{6}$/i`, returns 422 on PATCH |
 | Group name uniqueness conflict | Client-side check before PATCH; if server still rejects (race) → toast error |
 | xterm theme switch on running session | Accept "partial repaint" — old cells keep old colors. Document. |
-| Cost groupBy=group with no hosts in any group | Empty result + UI shows "no grouped sessions in window" |
+| Cost groupBy=group with no hosts in any group | Sessions appear in `(ungrouped)` bucket (LEFT JOIN), never silent drop |
+| Theme/lang mismatch at boot (lang fetch in flight when render starts) | `await loadLang` before first paint — accept ~100ms boot delay |
+| Stale `localStorage.fleetTheme = 'tactical'` (old name) | applyTheme validates name against allowed list; unknown → fallback 'dark' |
+| Existing terminal session, user switches theme | Theme applies to next pty_data only; old cells keep old palette. UI hint shown |
 
 ## 9. Out-of-scope (v2)
 
