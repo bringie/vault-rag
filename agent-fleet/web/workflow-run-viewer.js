@@ -77,7 +77,10 @@
     const connectStream = () => {
       if (flag.stopped || gen !== myGen) return;
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${proto}//${location.host}/fleet/ws?role=workflow_viewer&run_id=${runId}`;
+      // Use /api/fleet prefix consistently with the session viewer (see app.js).
+      // The server's attachUpgrade handler accepts both, but reverse-proxy
+      // deployments may only forward /api/* upstream.
+      const url = `${proto}//${location.host}/api/fleet/ws?role=workflow_viewer&run_id=${runId}`;
       const ws = new WebSocket(url, [`bearer.${token()}`]);
       activeWs = ws;
       ws.onopen = () => { backoff = 800; };
@@ -99,7 +102,7 @@
           }
         }
       };
-      ws.onerror = () => {};
+      ws.onerror = (e) => { console.warn('[workflow-viewer] ws error:', e?.message || e); };
       ws.onclose = (ev) => {
         if (flag.stopped || gen !== myGen || ev.code === 4001) return;
         const wait = Math.min(backoff *= 1.7, 8000);

@@ -571,9 +571,21 @@ async function handleGroupRemoveHost({ req, res, ctx }) {
   res.writeHead(204); res.end();
 }
 
+// Allowlist for older_than: avoids users bypassing intent (e.g. '0 seconds'
+// would delete every closed session). Also blocks confusing Postgres errors
+// from malformed interval strings leaking out of the 500 handler.
+const CLEANUP_OLDER_THAN_ALLOWED = new Set([
+  '1 hour', '6 hours', '12 hours', '1 day', '3 days', '7 days', '30 days',
+]);
 async function handleCleanupSessions({ req, res, body, ctx }) {
   const url = new URL(req.url, 'http://x');
   const olderThan = (body && body.older_than) || url.searchParams.get('older_than') || '1 hour';
+  if (!CLEANUP_OLDER_THAN_ALLOWED.has(olderThan)) {
+    return send(res, 422, {
+      error: 'invalid older_than',
+      allowed: [...CLEANUP_OLDER_THAN_ALLOWED],
+    });
+  }
   const n = await fleetDb.deleteClosedSessions(ctx.db, olderThan);
   send(res, 200, { deleted: n, older_than: olderThan });
 }

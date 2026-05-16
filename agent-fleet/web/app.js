@@ -1003,7 +1003,7 @@
       const tag = c.attribution === 'approximate' ? ' ~' : '';
       $('sd-cost').innerHTML = `$${(c.usd || 0).toFixed(4)}${tag} · ${c.msgs} msgs` +
         (c.by_model ? '<br><small style="color:var(--text-dim)">' +
-          Object.entries(c.by_model).map(([m, v]) => `${m}: $${v.usd.toFixed(4)} (in=${v.input_tokens}, out=${v.output_tokens})`).join('<br>') +
+          Object.entries(c.by_model).map(([m, v]) => `${esc(m)}: $${v.usd.toFixed(4)} (in=${v.input_tokens}, out=${v.output_tokens})`).join('<br>') +
           '</small>' : '');
     } catch {}
   }

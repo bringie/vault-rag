@@ -5,13 +5,15 @@ const path = require('node:path');
 const os = require('node:os');
 const { collectMetrics } = require('./metrics-collector');
 const { collectInventory, inventoryChanged, resetInventoryCache } = require('./inventory-collector');
-const { execSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
 
 function detectClaudeVersion(bin) {
   try {
-    const out = execSync(`${bin} --version`, { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+    // execFileSync: bin is passed as the executable path, NOT through a shell.
+    // Prevents shell word-splitting if claudeBin contains spaces or metachars.
+    const out = execFileSync(bin, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
     return String(out).trim().split('\n')[0] || null;
   } catch { return null; }
 }
@@ -30,15 +32,8 @@ function collectHostInfo() {
   };
 }
 
-// Allowed roots for hub-driven file r/w (CLAUDE.md edit feature).
-// Daemon NEVER reads/writes outside these prefixes regardless of what hub asks.
-function allowedFilePaths() {
-  const home = process.env.HOME || os.homedir() || '/root';
-  return [
-    path.join(home, '.claude', 'CLAUDE.md'),
-    path.join(home, '.claude', 'settings.json'),
-  ];
-}
+// Daemon NEVER reads/writes outside the symbolic-name allowlist below
+// (CLAUDE.md edit feature). resolveAllowedPath is the only gatekeeper.
 function resolveAllowedPath(reqPath) {
   // Map symbolic names → real path. Reject anything else.
   const home = process.env.HOME || os.homedir() || '/root';
@@ -196,7 +191,10 @@ async function runDaemon(opts) {
           clearInterval(invHeartbeatTimer);
         };
         ws.on('close', () => { clearTimers(); resolve(); });
-        ws.on('error', () => { clearTimers(); resolve(); });
+        ws.on('error', (e) => {
+          console.error('[daemon] ws error:', e?.message || e);
+          clearTimers(); resolve();
+        });
         opts.abortSignal?.addEventListener('abort', () => {
           clearTimers();
           try { ws.close(); } catch {}
