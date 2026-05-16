@@ -644,20 +644,26 @@
         renderHostGroups(h);
       };
     });
-    const sel = $('hd-group-select');
-    sel.innerHTML = '<option value="">-- add to group --</option>' +
-      nonMember.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
-    sel.onchange = async () => {
-      if (!sel.value) return;
-      await fetch(`/api/fleet/groups/${sel.value}/hosts`, {
-        method: 'POST',
-        headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
-        body: JSON.stringify({ host_id: h.id }),
-      });
-      state.groups = await api('GET', '/groups');
-      sel.value = '';
-      renderHostGroups(h);
-    };
+    // Inherited tags from groups (read-only display)
+    const ihEl = $('hd-inherited');
+    if (ihEl) {
+      ihEl.innerHTML = '';
+      const inherited = h.inherited_labels || {};
+      let count = 0;
+      for (const [groupName, labels] of Object.entries(inherited)) {
+        for (const l of (labels || [])) {
+          count++;
+          const chip = document.createElement('span');
+          chip.className = 'chip chip-inherited';
+          const fromText = window.fleetI18n
+            ? window.fleetI18n.t('host.inherited.from', { group: groupName })
+            : `from: ${groupName}`;
+          chip.innerHTML = `${esc(l)} <span class="chip-source">[${esc(fromText)}]</span>`;
+          ihEl.appendChild(chip);
+        }
+      }
+      if (!count) ihEl.innerHTML = `<span class="lbl" style="color:var(--text-faint)">none</span>`;
+    }
   }
 
   async function patchHost(hostId, patch) {

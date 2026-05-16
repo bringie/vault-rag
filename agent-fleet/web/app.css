@@ -366,6 +366,10 @@ body::after {
 
 /* Modals get higher z-index than page overlays so they sit above topbar/footer */
 #group-detail-modal, #price-modal, #editor { z-index: 200 !important; }
+
+.chip-inherited { background: var(--panel-2); border-style: dashed; cursor: default; }
+.chip-source { color: var(--text-faint); font-size: .85em; margin-left: .3em; }
+.chip-row-readonly { opacity: 0.9; }
 #price-modal {
   position: fixed; inset: 0; z-index: 90;
   background: rgba(0,0,0,0.7);
