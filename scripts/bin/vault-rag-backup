@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# vault-rag-backup: bundle age.key + recipients + vault.age into a single
+# encrypted .tar.age and write it to local path or s3:// URL.
+#
+# Two encryption modes:
+#   1. passphrase (default, INTERACTIVE)        — `age -p`, prompt on /dev/tty
+#   2. recipient public key (--recipient ...)   — `age -r`, non-interactive
+#
+# Restore mirrors: passphrase (interactive) OR --identity <key-file>.
+#
+# Loss of age.key = entire vault unreadable forever. Keep this backup offline.
+#
+# Examples:
+#   # interactive passphrase backup → local file
+#   vault-rag-backup --to /mnt/usb/vault-`date +%F`.tar.age
+#
+#   # scripted: encrypt to a separately-managed age recipient
+#   vault-rag-backup --to s3://my-bucket/vault.tar.age --recipient age1xyz...
+#
+#   # restore (passphrase prompt)
+#   vault-rag-backup --restore --from /mnt/usb/vault.tar.age
+#
+#   # restore (key file)
+#   vault-rag-backup --restore --from s3://.../v.tar.age --identity backup-id.key
+
+usage() {
+  cat <<'EOF'
+vault-rag-backup [flags]
+  --to <path|s3://bucket/key>    where to write the .tar.age bundle
+  --restore                      restore mode (use with --from)
+  --from <path|s3://...>         source for restore
+  --recipient <age1...>          encrypt to this age public key (non-interactive)
+  --identity <path>              age private key file for --restore (non-interactive)
+  --age-key <path>               age private key (default: /opt/vault-rag/.secrets/age.key)
+  --vault-repo <path>            obsidian-vault repo (default: /root/obsidian-vault)
+  --dry-run                      print actions, don't write
+  -h, --help
+
+If neither --recipient nor --identity is given, age uses passphrase mode
+and prompts on /dev/tty (interactive only — won't work from cron/CI).
+EOF
+}
+
+MODE="backup"
+DEST=""
+SRC=""
+RECIPIENT=""
+IDENTITY=""
+AGE_KEY="/opt/vault-rag/.secrets/age.key"
+VAULT_REPO="/root/obsidian-vault"
+DRY=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --to) DEST="$2"; shift 2;;
+    --restore) MODE="restore"; shift;;
+    --from) SRC="$2"; shift 2;;
+    --recipient) RECIPIENT="$2"; shift 2;;
+    --identity) IDENTITY="$2"; shift 2;;
+    --age-key) AGE_KEY="$2"; shift 2;;
+    --vault-repo) VAULT_REPO="$2"; shift 2;;
+    --dry-run) DRY=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) echo "unknown flag: $1" >&2; usage >&2; exit 2;;
+  esac
+done
+
+command -v age >/dev/null || { echo "age not found" >&2; exit 1; }
+command -v tar >/dev/null || { echo "tar not found" >&2; exit 1; }
+
+# Globals for cleanup (avoid `local` so EXIT trap sees them under set -u).
+BK_TMP=""
+BK_STAGING=""
+cleanup() {
+  [[ -n "$BK_TMP" && -e "$BK_TMP" ]] && rm -f "$BK_TMP"
+  [[ -n "$BK_STAGING" && -d "$BK_STAGING" ]] && rm -rf "$BK_STAGING"
+}
+trap cleanup EXIT
+
+put_remote() {
+  local local_path="$1" target="$2"
+  case "$target" in
+    s3://*)
+      command -v aws >/dev/null || { echo "aws cli required for s3:// targets" >&2; exit 1; }
+      [[ -n "$DRY" ]] && { echo "DRY: aws s3 cp $local_path $target"; return; }
+      aws s3 cp "$local_path" "$target"
+      ;;
+    *)
+      [[ -n "$DRY" ]] && { echo "DRY: mv $local_path $target"; return; }
+      mkdir -p "$(dirname "$target")"
+      mv "$local_path" "$target"
+      ;;
+  esac
+}
+
+get_remote() {
+  local src="$1" local_path="$2"
+  case "$src" in
+    s3://*)
+      command -v aws >/dev/null || { echo "aws cli required for s3:// sources" >&2; exit 1; }
+      aws s3 cp "$src" "$local_path"
+      ;;
+    *)
+      [[ -f "$src" ]] || { echo "source not found: $src" >&2; exit 1; }
+      cp "$src" "$local_path"
+      ;;
+  esac
+}
+
+backup() {
+  [[ -n "$DEST" ]] || { echo "--to <path|s3://> required" >&2; exit 2; }
+  [[ -f "$AGE_KEY" ]] || { echo "age key not found: $AGE_KEY" >&2; exit 1; }
+  [[ -d "$VAULT_REPO/secrets" ]] || { echo "vault repo secrets/ not found: $VAULT_REPO/secrets" >&2; exit 1; }
+
+  BK_TMP="$(mktemp -t vault-bk.XXXXXX.tar.age)"
+  BK_STAGING="$(mktemp -d -t vault-bk.XXXXXX)"
+
+  install -m 0600 "$AGE_KEY" "$BK_STAGING/age.key"
+  cp "$VAULT_REPO/secrets/recipients" "$BK_STAGING/recipients"
+  cp "$VAULT_REPO/secrets/vault.age" "$BK_STAGING/vault.age"
+  printf '{"created":"%s","host":"%s","age_key":"%s","vault_repo":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$(hostname)" "$AGE_KEY" "$VAULT_REPO" > "$BK_STAGING/manifest.json"
+
+  if [[ -n "$DRY" ]]; then
+    if [[ -n "$RECIPIENT" ]]; then
+      echo "DRY: tar c -C $BK_STAGING . | age -r '$RECIPIENT' > $BK_TMP"
+    else
+      echo "DRY: tar c -C $BK_STAGING . | age -p > $BK_TMP  (interactive)"
+    fi
+    echo "DRY: put → $DEST"
+    return
+  fi
+
+  if [[ -n "$RECIPIENT" ]]; then
+    tar c -C "$BK_STAGING" age.key recipients vault.age manifest.json \
+      | age -r "$RECIPIENT" -o "$BK_TMP"
+  else
+    tar c -C "$BK_STAGING" age.key recipients vault.age manifest.json \
+      | age -p -o "$BK_TMP"
+  fi
+
+  chmod 0600 "$BK_TMP"
+  put_remote "$BK_TMP" "$DEST"
+  echo "backup written → $DEST"
+}
+
+restore() {
+  [[ -n "$SRC" ]] || { echo "--from <path|s3://> required for --restore" >&2; exit 2; }
+  [[ -d "$VAULT_REPO/secrets" ]] || { echo "vault repo secrets/ not found: $VAULT_REPO/secrets" >&2; exit 1; }
+
+  BK_STAGING="$(mktemp -d -t vault-rs.XXXXXX)"
+  local bundle="$BK_STAGING/bundle.tar.age"
+  get_remote "$SRC" "$bundle"
+
+  if [[ -n "$DRY" ]]; then
+    if [[ -n "$IDENTITY" ]]; then
+      echo "DRY: age -d -i $IDENTITY $bundle | tar x -C $BK_STAGING"
+    else
+      echo "DRY: age -d $bundle | tar x -C $BK_STAGING  (interactive)"
+    fi
+    echo "DRY: would restore → $AGE_KEY, $VAULT_REPO/secrets/{vault.age,recipients}"
+    return
+  fi
+
+  if [[ -n "$IDENTITY" ]]; then
+    age -d -i "$IDENTITY" "$bundle" | tar x -C "$BK_STAGING"
+  else
+    age -d "$bundle" | tar x -C "$BK_STAGING"
+  fi
+
+  [[ -f "$BK_STAGING/age.key" ]] || { echo "bundle missing age.key" >&2; exit 1; }
+  [[ -f "$BK_STAGING/vault.age" ]] || { echo "bundle missing vault.age" >&2; exit 1; }
+  [[ -f "$BK_STAGING/recipients" ]] || { echo "bundle missing recipients" >&2; exit 1; }
+
+  if [[ -f "$AGE_KEY" ]]; then
+    cp "$AGE_KEY" "$AGE_KEY.bak.$(date +%s)"
+    echo "existing age.key backed up to $AGE_KEY.bak.*"
+  fi
+  install -D -m 0600 "$BK_STAGING/age.key" "$AGE_KEY"
+  cp "$BK_STAGING/vault.age" "$VAULT_REPO/secrets/vault.age"
+  cp "$BK_STAGING/recipients" "$VAULT_REPO/secrets/recipients"
+
+  echo "restored:"
+  echo "  age.key → $AGE_KEY"
+  echo "  vault.age → $VAULT_REPO/secrets/vault.age"
+  echo "  recipients → $VAULT_REPO/secrets/recipients"
+  if [[ -f "$BK_STAGING/manifest.json" ]]; then
+    echo "  manifest:"
+    sed 's/^/    /' "$BK_STAGING/manifest.json"
+  fi
+}
+
+case "$MODE" in
+  backup) backup;;
+  restore) restore;;
+esac
