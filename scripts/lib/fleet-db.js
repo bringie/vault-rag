@@ -21,11 +21,17 @@ async function upsertHost(c, h) {
       END,
       daemon_version = COALESCE(EXCLUDED.daemon_version, fleet_hosts.daemon_version),
       claude_version = COALESCE(EXCLUDED.claude_version, fleet_hosts.claude_version),
-      installed_backends = CASE
-        WHEN EXCLUDED.installed_backends IS NOT NULL AND EXCLUDED.installed_backends <> '{}'::jsonb
-        THEN EXCLUDED.installed_backends
-        ELSE fleet_hosts.installed_backends
-      END,
+      -- Merge instead of replace: a partial probe (e.g. claude detected but
+      -- codex offline this tick) should not erase previously-known backends.
+      -- Drop entries with null values from the incoming side so a clean
+      -- probe of "this backend is not installed" doesn't overwrite a prior
+      -- positive detection. The full-replace happens implicitly when the
+      -- incoming side has all the same keys.
+      installed_backends = COALESCE(fleet_hosts.installed_backends, '{}'::jsonb) || (
+        SELECT COALESCE(jsonb_object_agg(k, v), '{}'::jsonb)
+        FROM jsonb_each(EXCLUDED.installed_backends) AS x(k, v)
+        WHERE v IS NOT NULL AND v <> 'null'::jsonb
+      ),
       status = 'online',
       last_seen = now()
     RETURNING *`;

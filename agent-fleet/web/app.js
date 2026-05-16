@@ -892,11 +892,11 @@
     if (!container) return;
     container.textContent = '';
     const installed = h.installed_backends || {};
+    const installedKeys = Object.keys(installed).filter(k => installed[k]);
     const cfgMap = await getBackendConfigs();
     const seen = new Set();
     const entries = [];
-    for (const [backend, version] of Object.entries(installed)) {
-      if (!version) continue; // probe returned null → not installed
+    for (const backend of installedKeys) {
       const files = cfgMap[backend] || [];
       for (const f of files) {
         if (seen.has(f.name)) continue;
@@ -904,9 +904,11 @@
         entries.push(f);
       }
     }
-    // Fallback for pre-vt-0150 daemons that don't ship installed_backends:
-    // surface the legacy claude pair so existing hosts keep working.
-    if (!entries.length) {
+    // Legacy fallback ONLY for pre-vt-0150 daemons (no installed_backends
+    // sent at all). Hosts that DO speak vt-0150 but have no claude
+    // installed must not fall through to the claude pair — clicking the
+    // legacy button would 403 on the daemon allowlist.
+    if (!entries.length && !installedKeys.length) {
       const claude = cfgMap.claude || [];
       for (const f of claude) entries.push(f);
     }

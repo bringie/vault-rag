@@ -16,11 +16,14 @@ const BACKEND_CONFIGS = Object.freeze({
     { name: 'CLAUDE.md',     rel: '.claude/CLAUDE.md',     label: 'CLAUDE.md' },
     { name: 'settings.json', rel: '.claude/settings.json', label: 'settings.json' },
   ]),
+  // codex/opencode AGENTS.md is repo-scoped (lives at project root, not
+  // $HOME). Editing $HOME/AGENTS.md would have no effect on a per-project
+  // session, so we expose the user-global config files instead.
   codex: Object.freeze([
-    { name: 'AGENTS.md',     rel: 'AGENTS.md',             label: 'AGENTS.md (codex)' },
+    { name: 'codex-config',  rel: '.codex/config.toml',    label: 'codex config.toml' },
   ]),
   opencode: Object.freeze([
-    { name: 'AGENTS.md',     rel: 'AGENTS.md',             label: 'AGENTS.md (opencode)' },
+    { name: 'opencode-config', rel: '.config/opencode/opencode.json', label: 'opencode.json' },
   ]),
   gemini: Object.freeze([
     { name: 'GEMINI.md',     rel: '.gemini/GEMINI.md',     label: 'GEMINI.md' },

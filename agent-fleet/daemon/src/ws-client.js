@@ -82,10 +82,11 @@ function resolveAllowedPath(reqPath) {
     // Daemon doesn't depend on scripts/lib at runtime, so vendor a tiny
     // copy of flatPaths() inline.
     const rel = {
-      'CLAUDE.md':       '.claude/CLAUDE.md',
-      'settings.json':   '.claude/settings.json',
-      'AGENTS.md':       'AGENTS.md',
-      'GEMINI.md':       '.gemini/GEMINI.md',
+      'CLAUDE.md':         '.claude/CLAUDE.md',
+      'settings.json':     '.claude/settings.json',
+      'codex-config':      '.codex/config.toml',
+      'opencode-config':   '.config/opencode/opencode.json',
+      'GEMINI.md':         '.gemini/GEMINI.md',
     };
     _allowMap = Object.fromEntries(
       Object.entries(rel).map(([k, r]) => [k, path.join(home, r)])

@@ -35,6 +35,8 @@ vault-rag-backup [flags]
   --identity <path>              age private key file for --restore (non-interactive)
   --age-key <path>               age private key (default: /opt/vault-rag/.secrets/age.key)
   --vault-repo <path>            obsidian-vault repo (default: /root/obsidian-vault)
+  --force-host-mismatch          allow restore even when bundle manifest.host
+                                 doesn't match this hostname (use for migrations)
   --dry-run                      print actions, don't write
   -h, --help
 
@@ -51,6 +53,7 @@ IDENTITY=""
 AGE_KEY="/opt/vault-rag/.secrets/age.key"
 VAULT_REPO="/root/obsidian-vault"
 DRY=""
+FORCE_HOST_MISMATCH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --identity) IDENTITY="$2"; shift 2;;
     --age-key) AGE_KEY="$2"; shift 2;;
     --vault-repo) VAULT_REPO="$2"; shift 2;;
+    --force-host-mismatch) FORCE_HOST_MISMATCH=1; shift;;
     --dry-run) DRY=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "unknown flag: $1" >&2; usage >&2; exit 2;;
@@ -174,13 +178,27 @@ restore() {
   [[ -f "$BK_STAGING/vault.age" ]] || { echo "bundle missing vault.age" >&2; exit 1; }
   [[ -f "$BK_STAGING/recipients" ]] || { echo "bundle missing recipients" >&2; exit 1; }
 
+  # vt-0153 (followup to vt-0149): validate manifest host before clobbering.
+  # The bundle was created on a specific host; restoring on the wrong host
+  # would replace its age.key with a key whose corresponding ciphertext
+  # (vault.age) is for a different vault — recoverable from the .bak.* file
+  # but a footgun. Require --force-host-mismatch to override.
+  if [[ -f "$BK_STAGING/manifest.json" ]]; then
+    BUNDLE_HOST=$(grep -o '"host":"[^"]*"' "$BK_STAGING/manifest.json" | head -1 | sed 's/.*:"\(.*\)"/\1/')
+    if [[ -n "$BUNDLE_HOST" && "$BUNDLE_HOST" != "$(hostname)" && -z "$FORCE_HOST_MISMATCH" ]]; then
+      echo "refusing restore: bundle was created on host '$BUNDLE_HOST', this is '$(hostname)'." >&2
+      echo "  use --force-host-mismatch if this is intentional (e.g. host migration)" >&2
+      exit 1
+    fi
+  fi
+
   if [[ -f "$AGE_KEY" ]]; then
     cp "$AGE_KEY" "$AGE_KEY.bak.$(date +%s)"
     echo "existing age.key backed up to $AGE_KEY.bak.*"
   fi
   install -D -m 0600 "$BK_STAGING/age.key" "$AGE_KEY"
-  cp "$BK_STAGING/vault.age" "$VAULT_REPO/secrets/vault.age"
-  cp "$BK_STAGING/recipients" "$VAULT_REPO/secrets/recipients"
+  install -m 0644 "$BK_STAGING/vault.age" "$VAULT_REPO/secrets/vault.age"
+  install -m 0644 "$BK_STAGING/recipients" "$VAULT_REPO/secrets/recipients"
 
   echo "restored:"
   echo "  age.key → $AGE_KEY"
