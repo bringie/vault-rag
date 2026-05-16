@@ -16,15 +16,37 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req) {
+// vt-0126: cap incoming body at 1 MiB so a hostile caller can't OOM the API
+// via an unbounded POST (e.g. `body.content` on /fleet/hosts/:id/file used to
+// be forwarded as a single WS frame to the daemon with no size check). Per-
+// route caps are applied in handlers when stricter limits make sense.
+const MAX_BODY_BYTES = 1024 * 1024;
+
+function readBody(req, { maxBytes = MAX_BODY_BYTES } = {}) {
   return new Promise((resolve, reject) => {
     let buf = '';
-    req.on('data', (c) => buf += c);
+    let bytes = 0;
+    let aborted = false;
+    req.on('data', (c) => {
+      if (aborted) return;
+      bytes += c.length;
+      if (bytes > maxBytes) {
+        aborted = true;
+        const err = new Error(`body exceeds ${maxBytes} bytes`);
+        err.statusCode = 413;
+        // Stop buffering; let any remaining bytes drain into /dev/null so the
+        // TCP socket doesn't stall the response we're about to send.
+        buf = '';
+        return reject(err);
+      }
+      buf += c;
+    });
     req.on('end', () => {
+      if (aborted) return;
       if (!buf) return resolve(null);
       try { resolve(JSON.parse(buf)); } catch (e) { reject(e); }
     });
-    req.on('error', reject);
+    req.on('error', (e) => { if (!aborted) reject(e); });
   });
 }
 
@@ -686,6 +708,13 @@ async function handleHostFilePut({ req, res, body, ctx }) {
   if (!body || !body.path || typeof body.content !== 'string') {
     return send(res, 422, { error: 'path and content required' });
   }
+  // vt-0126: content is forwarded as a single WS frame to the daemon — cap
+  // at 128 KiB. The daemon's allowlist (CLAUDE.md, settings.json) is far
+  // smaller in practice; an unbounded body would OOM both sides.
+  const MAX_FILE_BYTES = 128 * 1024;
+  if (Buffer.byteLength(body.content, 'utf8') > MAX_FILE_BYTES) {
+    return send(res, 413, { error: `file content exceeds ${MAX_FILE_BYTES} bytes` });
+  }
   const host = await fleetDb.getHost(ctx.db, m[1]);
   if (!host) return send(res, 404, { error: 'host not found' });
   if (host.status !== 'online') return send(res, 410, { error: 'host offline' });
@@ -1160,40 +1189,42 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleGetHost({ req, res, ctx });
   if (method === 'DELETE' && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleDeleteHost({ req, res, ctx });
   if (method === 'PATCH'  && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchHost({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handlePatchHost({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && path === '/fleet/dispatch') {
-    return readBody(req).then(b => handleDispatch({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleDispatch({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && path === '/fleet/exec') {
-    return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'GET' && new RegExp(`^/fleet/hosts/${SID_RE}/metrics$`, 'i').test(path))    return handleHostMetrics({ req, res, ctx });
   if (method === 'GET' && new RegExp(`^/fleet/hosts/${SID_RE}/inventory$`, 'i').test(path))  return handleHostInventory({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) return handleHostFileGet({ req, res, ctx });
   if (method === 'PUT'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) {
-    return readBody(req).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    // vt-0126: 256 KiB cap at the wire — handler also rejects content > 128 KiB
+    // explicitly so partial reads still produce a clean 413.
+    return readBody(req, { maxBytes: 256 * 1024 }).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
   // sessions
   if (method === 'GET'  && path === '/fleet/sessions') return handleListSessions({ req, res, ctx });
   if (method === 'POST' && path === '/fleet/sessions') {
-    return readBody(req).then(b => handleCreateSession({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleCreateSession({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST' && path === '/fleet/sessions/cleanup') {
-    return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST' && path === '/fleet/sessions/cost-batch') {
-    return readBody(req).then(b => handleSessionCostBatch({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleSessionCostBatch({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'PATCH' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchSession({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handlePatchSession({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/timeline$`, 'i').test(path)) {
     return handleSessionTimeline({ req, res, ctx });
   }
   if (method === 'POST' && path === '/fleet/broadcast') {
-    return readBody(req).then(b => handleBroadcast({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleBroadcast({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
 
@@ -1201,24 +1232,24 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET'    && path === '/fleet/groups') return handleListGroups({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleGetGroup({ req, res, ctx });
   if (method === 'POST'   && path === '/fleet/groups') {
-    return readBody(req).then(b => handleCreateGroup({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleCreateGroup({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'PATCH'  && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchGroup({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handlePatchGroup({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleDeleteGroup({ req, res, ctx });
   if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/hosts$`, 'i').test(path)) {
-    return readBody(req).then(b => handleGroupAddHost({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleGroupAddHost({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}/hosts/${SID_RE}$`, 'i').test(path)) {
     return handleGroupRemoveHost({ req, res, ctx });
   }
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) return handleGetSession({ req, res, ctx });
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/input$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePostInput({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handlePostInput({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/kill$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePostKill({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handlePostKill({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/transcript\\.txt$`, 'i').test(path)) {
     return handleTranscriptTxt(req, res, ctx);
@@ -1236,35 +1267,35 @@ function dispatchHttp(req, res, ctx) {
   // Pricing
   if (method === 'GET'    && path === '/fleet/prices')               return handleListPrices({ req, res, ctx });
   if (method === 'POST'   && path === '/fleet/prices') {
-    return readBody(req).then(b => handleCreatePrice({ res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleCreatePrice({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && path === '/fleet/prices/resolve') {
-    return readBody(req).then(b => handleResolvePrice({ res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleResolvePrice({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'DELETE' && /^\/fleet\/prices\/\d+$/.test(path))    return handleDeletePrice({ req, res, ctx });
 
   // Workflows
   if (method === 'GET'    && path === '/fleet/workflows') return handleListWorkflows({ res, ctx });
   if (method === 'POST'   && path === '/fleet/workflows') {
-    return readBody(req).then(b => handleCreateWorkflow({ res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleCreateWorkflow({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && new RegExp(`^/fleet/workflows/${SID_RE}/run$`, 'i').test(path)) {
-    return readBody(req).then(b => handleRunWorkflow({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleRunWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'GET'    && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleGetWorkflow({ req, res, ctx });
   if (method === 'PATCH'  && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchWorkflow({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handlePatchWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'DELETE' && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleDeleteWorkflow({ req, res, ctx });
   if (method === 'PUT'    && new RegExp(`^/fleet/workflows/${SID_RE}/trigger$`, 'i').test(path)) {
-    return readBody(req).then(b => handleSetWorkflowTrigger({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleSetWorkflowTrigger({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
   // Workflow runs
   if (method === 'GET'    && path === '/fleet/workflow-runs') return handleListRuns({ req, res, ctx });
   if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/cancel$`, 'i').test(path)) return handleCancelRun({ req, res, ctx });
   if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/approvals/[\\w.-]+$`, 'i').test(path)) {
-    return readBody(req).then(b => handleApprovalDecision({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleApprovalDecision({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'GET'    && new RegExp(`^/fleet/workflow-runs/${SID_RE}$`, 'i').test(path)) return handleGetRun({ req, res, ctx });
 
@@ -1278,7 +1309,7 @@ function dispatchHttp(req, res, ctx) {
   // Pending approvals + events
   if (method === 'GET'  && path === '/fleet/workflow-pending-approvals') return handleListPendingApprovals({ res, ctx });
   if (method === 'POST' && path === '/fleet/workflow-events') {
-    return readBody(req).then(b => handleFireWorkflowEvent({ res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+    return readBody(req).then(b => handleFireWorkflowEvent({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
   send(res, 404, { error: 'not found' });

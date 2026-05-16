@@ -125,6 +125,44 @@ test('vt-0124: cost-batch (read-shaped POST) is allowed for viewer', async () =>
   await close();
 });
 
+// vt-0126: body-size caps. PUT /fleet/hosts/:id/file content used to be
+// unbounded — a 100 MiB body would OOM the API + the daemon.
+test('vt-0126: readBody rejects body > 1 MiB with 413', async () => {
+  const { server, close } = await startWithDb();
+  // Use a route that always reads JSON (sessions/cost-batch is read-shape).
+  const port = server.address().port;
+  // 1.1 MiB of JSON
+  const huge = JSON.stringify({ ids: Array(50000).fill('00000000-0000-0000-0000-000000000000') });
+  assert.ok(huge.length > 1024 * 1024);
+  const r = await new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1', port, method: 'POST', path: '/fleet/sessions/cost-batch',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer T', 'content-length': Buffer.byteLength(huge) },
+    }, (res) => {
+      let buf = '';
+      res.on('data', c => buf += c);
+      res.on('end', () => resolve({ status: res.statusCode, body: buf ? JSON.parse(buf) : null }));
+    });
+    req.on('error', reject);
+    req.write(huge);
+    req.end();
+  });
+  assert.equal(r.status, 413);
+  assert.match(r.body.error, /exceeds/);
+  await close();
+});
+
+test('vt-0126: PUT /fleet/hosts/:id/file rejects content > 128 KiB with 413', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h = (await pg.query("INSERT INTO fleet_hosts (name, status) VALUES ('hf', 'online') RETURNING id")).rows[0].id;
+  const oversized = 'x'.repeat(200 * 1024); // 200 KiB
+  const r = await reqJson(server, 'PUT', `/fleet/hosts/${h}/file`, {
+    token: 'T', body: { path: 'CLAUDE.md', content: oversized },
+  });
+  assert.equal(r.status, 413);
+  await close();
+});
+
 test('vt-0124: legacy mode (no admin token) still accepts viewer for writes', async () => {
   const { server, close } = await startWithDb();
   const r = await reqJson(server, 'POST', '/fleet/workflows', {
