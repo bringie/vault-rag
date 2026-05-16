@@ -306,7 +306,10 @@ async function handleExec({ req, res, body, ctx }) {
   // single unsubscribe() closure so the hook is guaranteed freed on every
   // resolution path — including orphan reconciliation and spawn_err (which
   // both now also emit session_exit to viewers, see handleDaemonWs).
-  const TIMEOUT = Math.min(Math.max(parseInt(timeout_ms || 120000, 10), 5000), 600000);
+  // N7 (audit): coerce timeout_ms safely — `parseInt("abc")` → NaN propagates
+  // through Math.min/max as NaN → setTimeout(NaN) ≈ 0ms → instant timeout.
+  const rawTimeout = Number.parseInt(timeout_ms, 10);
+  const TIMEOUT = Math.min(Math.max(Number.isFinite(rawTimeout) ? rawTimeout : 120000, 5000), 600000);
   let unsubscribed = false;
   let timeoutHandle = null;
   let handler = null;
@@ -756,7 +759,10 @@ async function handleSessionCostBatch({ req, res, body, ctx }) {
   if (!body || !Array.isArray(body.ids)) return send(res, 422, { error: 'ids[] required' });
   if (body.ids.length > 200) return send(res, 422, { error: 'max 200 ids per request' });
   if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
-  const ids = body.ids.filter(x => typeof x === 'string' && SID_RE_BARE.test(x));
+  // N9 (audit): dedupe before passing to pg ANY($1) — duplicates are silently
+  // collapsed by Postgres anyway, but trimming saves cycles and makes the
+  // 200-cap apply to unique IDs rather than raw input.
+  const ids = [...new Set(body.ids.filter(x => typeof x === 'string' && SID_RE_BARE.test(x)))];
   const costs = await fleetCost.sessionCostBatch(ctx.tokmonDb, ctx.db, ids);
   send(res, 200, costs);
 }
@@ -1217,6 +1223,13 @@ function dispatchHttp(req, res, ctx) {
   // unauthenticated — the install path is `curl | sudo bash` from a fresh
   // host that doesn't yet have a token. The bearer is supplied to the
   // installed daemon via /etc/agent-fleet/daemon.env, not at download time.
+  //
+  // N10 (audit): rate-limit these endpoints at the reverse proxy. Anyone
+  // can scrape them to fingerprint the deployment + bot the install command
+  // at scale. The Caddyfile in front of vault-rag-api should add a
+  // `rate_limit` directive scoped to /fleet/download/* and /fleet/install*.
+  // (Not enforced at the API layer because the same allowlist gates abuse
+  // server-side already, and rate-limit state is better kept at the proxy.)
   if (method === 'GET' && path.startsWith('/fleet/download/')) {
     if (fleetStatic.serveDownload(req, res)) return;
   }
@@ -1680,26 +1693,33 @@ function attach(server, ctx) {
     const role = u.searchParams.get('role');
     const auth = req.headers.authorization || '';
     wss.handleUpgrade(req, sock, head, (ws) => {
-      const ctx = server._fleetCtx;
-      const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
-      const viewerBearer = `Bearer ${ctx.token}`;
-      if (role === 'daemon') {
-        const needed = adminBearer || viewerBearer;
-        if (auth !== needed) return ws.close(4001, 'unauthorized');
-      } else {
-        if (auth !== viewerBearer && auth !== adminBearer) {
-          return ws.close(4001, 'unauthorized');
-        }
-      }
-      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
-        return ws.close(4003, 'invalid role');
-      }
-      if (role === 'daemon')                handleDaemonWs(ws, u.searchParams, ctx);
-      else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, u.searchParams, ctx);
-      else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, u.searchParams, ctx);
-      else                                  handleViewerWs(ws, u.searchParams, ctx);
+      acceptWsUpgrade(ws, { role, auth, params: u.searchParams, ctx: server._fleetCtx });
     });
   });
+}
+
+// vt-N1 (audit): shared WS-upgrade auth + role dispatch helper. Used by both
+// attach() (test harness) and attachUpgrade() (production) so they can't drift.
+function acceptWsUpgrade(ws, { role, auth, params, ctx }) {
+  const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
+  const viewerBearer = `Bearer ${ctx.token}`;
+  // Daemon WS executes code on a host — requires admin token when configured.
+  // Other viewer roles are read-only; either token works.
+  if (role === 'daemon') {
+    const needed = adminBearer || viewerBearer;
+    if (auth !== needed) return ws.close(4001, 'unauthorized');
+  } else {
+    if (auth !== viewerBearer && auth !== adminBearer) {
+      return ws.close(4001, 'unauthorized');
+    }
+  }
+  if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
+    return ws.close(4003, 'invalid role');
+  }
+  if (role === 'daemon')                handleDaemonWs(ws, params, ctx);
+  else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, params, ctx);
+  else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, params, ctx);
+  else                                  handleViewerWs(ws, params, ctx);
 }
 
 // tryDispatch: synchronous fast-path for rag-api callback integration.
@@ -1747,27 +1767,7 @@ function attachUpgrade(server, getCtx) {
       if (b) auth = `Bearer ${b.slice('bearer.'.length)}`;
     }
     wss.handleUpgrade(req, sock, head, (ws) => {
-      const ctx = getCtx();
-      // vt-0124: daemon WS executes code on a host — gate it behind the admin
-      // token when configured. Viewer/workflow_viewer/metrics_viewer are
-      // read-only, viewer bearer is enough.
-      const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
-      const viewerBearer = `Bearer ${ctx.token}`;
-      if (role === 'daemon') {
-        const needed = adminBearer || viewerBearer;
-        if (auth !== needed) return ws.close(4001, 'unauthorized');
-      } else {
-        if (auth !== viewerBearer && auth !== adminBearer) {
-          return ws.close(4001, 'unauthorized');
-        }
-      }
-      if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
-        return ws.close(4003, 'invalid role');
-      }
-      if (role === 'daemon')                handleDaemonWs(ws, u.searchParams, ctx);
-      else if (role === 'workflow_viewer')  handleWorkflowViewerWs(ws, u.searchParams, ctx);
-      else if (role === 'metrics_viewer')   handleMetricsViewerWs(ws, u.searchParams, ctx);
-      else                                  handleViewerWs(ws, u.searchParams, ctx);
+      acceptWsUpgrade(ws, { role, auth, params: u.searchParams, ctx: getCtx() });
     });
   });
 }

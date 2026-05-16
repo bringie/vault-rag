@@ -16,8 +16,7 @@ const MIME = {
   '.woff2': 'font/woff2',
   '.sh':   'text/x-shellscript; charset=utf-8',
   '.ps1':  'application/x-powershell; charset=utf-8',
-  '.tar':  'application/x-tar',
-  '.gz':   'application/gzip',
+  '.gz':   'application/gzip',                          // serves .tar.gz tarballs
   '.deb':  'application/vnd.debian.binary-package',
   '.rpm':  'application/x-rpm',
 };

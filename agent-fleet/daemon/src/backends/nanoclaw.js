@@ -10,6 +10,13 @@
 // engine surfaces the mode mismatch clearly. To actually drive NanoClaw
 // from the fleet, build the (b) RPC bridge as a follow-up.
 
+// N5 (audit): cache the probe result for the lifetime of the daemon process.
+// If the loopback admin endpoint is blocked (firewalled, port not bound),
+// every reconnect would otherwise burn the full 2s timeout before the hello
+// frame is sent. The probe is best-effort metadata; a cached "unreachable"
+// result is no worse than re-running it on every reconnect.
+let _versionCache = undefined;
+
 module.exports = {
   name: 'nanoclaw',
   bin_env: 'AGENT_FLEET_NANOCLAW_BIN',
@@ -17,15 +24,23 @@ module.exports = {
   mode: 'sidecar',
 
   async detectVersion(/* bin */) {
+    if (_versionCache !== undefined) return _versionCache;
     // Lifecycle-only — version probe checks whether the service is reachable
     // via its loopback admin endpoint. Default endpoint per docs.
     try {
       const res = await fetch('http://127.0.0.1:8765/version', { signal: AbortSignal.timeout(2000) });
-      if (!res.ok) return null;
+      if (!res.ok) { _versionCache = null; return null; }
       const txt = await res.text();
-      return (txt || '').trim().slice(0, 64) || 'reachable';
-    } catch { return null; }
+      _versionCache = (txt || '').trim().slice(0, 64) || 'reachable';
+      return _versionCache;
+    } catch {
+      _versionCache = null;
+      return null;
+    }
   },
+
+  // Test/dev hook to force a fresh probe.
+  _resetVersionCache() { _versionCache = undefined; },
 
   buildSpawnArgs(/* req */) {
     // Spawn requests are not supported on a side-car backend. Return an argv

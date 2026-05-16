@@ -630,11 +630,16 @@ function createRunner(deps) {
     cancelled.add(runId);
     // Walk runParents to mark every descendant run cancelled too — otherwise
     // sub_workflow children keep burning tokens after a parent abort (P1).
+    // N3 (audit): use a visited Set to break true cycles instead of relying
+    // on the depth invariant — if depth tracking ever drifts the old magic
+    // (MAX_SUB_WORKFLOW_DEPTH + 1) bound would silently cap and stop
+    // propagating without surfacing the bug.
     for (const [child, parent] of runParents) {
+      const visited = new Set();
       let p = parent;
-      // Bounded by MAX_SUB_WORKFLOW_DEPTH to avoid pathological chain loops.
-      for (let i = 0; i < MAX_SUB_WORKFLOW_DEPTH + 1 && p; i++) {
+      while (p && !visited.has(p)) {
         if (p === runId) { cancelled.add(child); break; }
+        visited.add(p);
         p = runParents.get(p);
       }
     }
