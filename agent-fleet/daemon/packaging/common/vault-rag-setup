@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# vault-rag-setup: configure an agent host to talk to a vault-rag hub.
+# All URLs and tokens are flags or env — no hardcoded domain.
+#
+# Reads token from stdin (or flag) to keep secrets out of shell history.
+# Writes ~/.config/vault-rag/config.json (operator's hub + tokens) and/or
+# ~/.claude.json (mcpServers.vault-rag entry).
+
+usage() {
+  cat <<'EOF'
+vault-rag-setup [flags]
+  --hub <url>             vault-rag base URL (required, e.g. https://brain.example.com)
+  --api-token <t>         viewer/admin bearer (or use --api-token-stdin)
+  --api-token-stdin       read API token from stdin (won't appear in shell history)
+  --admin-token <t>       admin bearer (optional)
+  --mcp-token <t>         MCP X-Vault-Token (if set, mcp.json is merged)
+  --mcp-token-stdin       read MCP token from stdin
+  --mcp-url <url>         MCP endpoint URL (default: <hub>/mcp)
+  --vault-name <s>        mcpServers.<name> key (default: vault-rag)
+  --config-dir <p>        config dir (default: $HOME/.config/vault-rag)
+  --mcp-config <p>        MCP config path (default: $HOME/.claude.json)
+  --config-only           skip mcp.json
+  --mcp-only              skip ~/.config/vault-rag
+  --dry-run               print actions, don't write
+  -h, --help              this help
+EOF
+}
+
+HUB=""
+API_TOKEN=""
+ADMIN_TOKEN=""
+MCP_TOKEN=""
+MCP_URL=""
+VAULT_NAME="vault-rag"
+CONFIG_DIR=""
+MCP_CONFIG=""
+CONFIG_ONLY=""
+MCP_ONLY=""
+DRY=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --hub) HUB="$2"; shift 2;;
+    --api-token) API_TOKEN="$2"; shift 2;;
+    --api-token-stdin) read -r API_TOKEN; shift;;
+    --admin-token) ADMIN_TOKEN="$2"; shift 2;;
+    --mcp-token) MCP_TOKEN="$2"; shift 2;;
+    --mcp-token-stdin) read -r MCP_TOKEN; shift;;
+    --mcp-url) MCP_URL="$2"; shift 2;;
+    --vault-name) VAULT_NAME="$2"; shift 2;;
+    --config-dir) CONFIG_DIR="$2"; shift 2;;
+    --mcp-config) MCP_CONFIG="$2"; shift 2;;
+    --config-only) CONFIG_ONLY=1; shift;;
+    --mcp-only) MCP_ONLY=1; shift;;
+    --dry-run) DRY=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) echo "unknown flag: $1" >&2; usage >&2; exit 2;;
+  esac
+done
+
+[[ -n "$HUB" ]] || { echo "vault-rag-setup: --hub required" >&2; exit 2; }
+: "${CONFIG_DIR:=${HOME}/.config/vault-rag}"
+: "${MCP_CONFIG:=${HOME}/.claude.json}"
+: "${MCP_URL:=${HUB%/}/mcp}"
+
+# Locate the node merge helper (sibling lib/ dir for repo install,
+# packaging/common/lib/ for daemon-bundled install).
+HERE="$(cd "$(dirname "$0")" && pwd)"
+MERGE_JS=""
+for cand in "$HERE/lib/mcp-json-merge.js" "$HERE/../common/lib/mcp-json-merge.js"; do
+  if [[ -f "$cand" ]]; then MERGE_JS="$cand"; break; fi
+done
+
+if [[ -z "$MCP_ONLY" ]]; then
+  if [[ -n "$DRY" ]]; then
+    echo "[dry-run] would write $CONFIG_DIR/config.json"
+  else
+    mkdir -p "$CONFIG_DIR"
+    CFG_TMP="$CONFIG_DIR/config.json.tmp.$$"
+    ( umask 077 && cat > "$CFG_TMP" <<EOF
+{
+  "hub": "$HUB",
+  "api_token": "$API_TOKEN",
+  "admin_token": "$ADMIN_TOKEN",
+  "mcp_url": "$MCP_URL",
+  "vault_name": "$VAULT_NAME",
+  "updated_at": "$(date -u +%FT%TZ)"
+}
+EOF
+    )
+    mv "$CFG_TMP" "$CONFIG_DIR/config.json"
+    chmod 0600 "$CONFIG_DIR/config.json"
+    echo "config: $CONFIG_DIR/config.json"
+  fi
+fi
+
+if [[ -z "$CONFIG_ONLY" && -n "$MCP_TOKEN" ]]; then
+  if [[ -z "$MERGE_JS" ]]; then
+    echo "vault-rag-setup: mcp-json-merge.js not found — skipping MCP config" >&2
+    exit 1
+  fi
+  if [[ -n "$DRY" ]]; then
+    echo "[dry-run] would merge mcpServers.$VAULT_NAME into $MCP_CONFIG"
+  else
+    node "$MERGE_JS" --target "$MCP_CONFIG" --name "$VAULT_NAME" --url "$MCP_URL" --token "$MCP_TOKEN"
+  fi
+fi
+
+echo "vault-rag-setup: ok"

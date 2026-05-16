@@ -107,6 +107,53 @@ fi
 chmod 0640 "$CONF_DIR/daemon.env"
 chown root:"$SVC_USER" "$CONF_DIR/daemon.env"
 
+# vt-0144: optional --with-mcp flag → invoke bundled vault-rag-setup CLI to
+# wire ~/.claude.json (or equivalent) of the OPERATOR user. Runs as that user
+# so file ownership is right. All URLs/tokens are flag/env — no hardcoded
+# domain so self-hosted fleets can install their own.
+WITH_MCP=""
+MCP_TOKEN_ARG="${AGENT_FLEET_MCP_TOKEN:-}"
+MCP_URL_ARG="${AGENT_FLEET_MCP_URL:-}"
+VAULT_NAME_ARG="${AGENT_FLEET_VAULT_NAME:-vault-rag}"
+MCP_CONFIG_USER="${SUDO_USER:-${USER:-}}"
+for arg in "$@"; do
+  case "$arg" in
+    --with-mcp)              WITH_MCP=1 ;;
+    --mcp-token=*)           MCP_TOKEN_ARG="${arg#*=}" ;;
+    --mcp-url=*)             MCP_URL_ARG="${arg#*=}" ;;
+    --vault-name=*)          VAULT_NAME_ARG="${arg#*=}" ;;
+    --mcp-config-for-user=*) MCP_CONFIG_USER="${arg#*=}" ;;
+  esac
+done
+
+if [[ -n "$WITH_MCP" ]]; then
+  if [[ -z "$MCP_CONFIG_USER" ]]; then
+    echo "[install] --with-mcp requires SUDO_USER or --mcp-config-for-user=<name>" >&2
+    exit 2
+  fi
+  USER_HOME=$(getent passwd "$MCP_CONFIG_USER" | cut -d: -f6)
+  [[ -n "$USER_HOME" && -d "$USER_HOME" ]] || { echo "[install] no home for $MCP_CONFIG_USER" >&2; exit 2; }
+  HUB_FOR_MCP=$(grep '^AGENT_FLEET_HUB=' "$CONF_DIR/daemon.env" | cut -d= -f2-)
+  : "${MCP_URL_ARG:=${HUB_FOR_MCP%/api/fleet/ws*}/mcp}"
+  MCP_URL_ARG="${MCP_URL_ARG#wss://}"
+  MCP_URL_ARG="${MCP_URL_ARG#ws://}"
+  MCP_URL_ARG="https://${MCP_URL_ARG#https://}"
+  MCP_URL_ARG="${MCP_URL_ARG#https://https://}"
+  if [[ -z "$MCP_TOKEN_ARG" ]]; then
+    read -r -s -p "MCP token (X-Vault-Token): " MCP_TOKEN_ARG; echo
+  fi
+  echo "[install] configuring MCP for user $MCP_CONFIG_USER (home=$USER_HOME)"
+  sudo -u "$MCP_CONFIG_USER" \
+    HOME="$USER_HOME" \
+    bash "$INSTALL_DIR/packaging/common/vault-rag-setup" \
+      --hub "$HUB_FOR_MCP" \
+      --mcp-token-stdin \
+      --mcp-url "$MCP_URL_ARG" \
+      --vault-name "$VAULT_NAME_ARG" \
+      --mcp-config "$USER_HOME/.claude.json" \
+      --mcp-only <<< "$MCP_TOKEN_ARG"
+fi
+
 echo "[install] installing systemd unit"
 cp "$INSTALL_DIR/packaging/linux/$UNIT_NAME" "/etc/systemd/system/$UNIT_NAME"
 systemctl daemon-reload

@@ -131,6 +131,38 @@ mv "$PLIST_TMP" "$PLIST_DST"
 chmod 0600 "$PLIST_DST"
 PLIST_TMP=""
 
+# vt-0144: optional --with-mcp flag → bundled vault-rag-setup CLI writes
+# ~/.claude.json. macOS installer already runs as the target user, so
+# $HOME is correct without sudo gymnastics.
+WITH_MCP=""
+MCP_TOKEN_ARG="${AGENT_FLEET_MCP_TOKEN:-}"
+MCP_URL_ARG="${AGENT_FLEET_MCP_URL:-}"
+VAULT_NAME_ARG="${AGENT_FLEET_VAULT_NAME:-vault-rag}"
+for arg in "$@"; do
+  case "$arg" in
+    --with-mcp)     WITH_MCP=1 ;;
+    --mcp-token=*)  MCP_TOKEN_ARG="${arg#*=}" ;;
+    --mcp-url=*)    MCP_URL_ARG="${arg#*=}" ;;
+    --vault-name=*) VAULT_NAME_ARG="${arg#*=}" ;;
+  esac
+done
+if [[ -n "$WITH_MCP" ]]; then
+  HUB_FOR_MCP=$(grep '^AGENT_FLEET_HUB=' "$CONF_DIR/daemon.env" | cut -d= -f2-)
+  : "${MCP_URL_ARG:=${HUB_FOR_MCP%/api/fleet/ws*}/mcp}"
+  MCP_URL_ARG="https://${MCP_URL_ARG#wss://}"
+  MCP_URL_ARG="${MCP_URL_ARG#https://https://}"
+  if [[ -z "$MCP_TOKEN_ARG" ]]; then
+    read -r -s -p "MCP token (X-Vault-Token): " MCP_TOKEN_ARG; echo
+  fi
+  bash "$INSTALL_DIR/packaging/common/vault-rag-setup" \
+    --hub "$HUB_FOR_MCP" \
+    --mcp-token-stdin \
+    --mcp-url "$MCP_URL_ARG" \
+    --vault-name "$VAULT_NAME_ARG" \
+    --mcp-config "$HOME/.claude.json" \
+    --mcp-only <<< "$MCP_TOKEN_ARG"
+fi
+
 echo "[install] loading LaunchAgent"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load -w "$PLIST_DST"

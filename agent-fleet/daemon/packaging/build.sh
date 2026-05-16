@@ -20,6 +20,17 @@ VERSION=$(node -p "require('$ROOT/package.json').version")
 WHAT="${1:---all}"
 mkdir -p "$DIST"
 
+# vt-0144: bundle the vault-rag-setup CLI + mcp-json-merge into packaging/common/
+# so daemon installers can call `bash packaging/common/vault-rag-setup ...` to
+# configure the operator's ~/.claude.json. The repo source-of-truth lives at
+# scripts/bin/{vault-rag-setup,lib/mcp-json-merge.js}; here we just copy it
+# into the packaging payload before staging.
+REPO_BIN="$(cd "$ROOT/../../scripts/bin" && pwd)"
+mkdir -p "$PKG/common/lib"
+cp -p "$REPO_BIN/vault-rag-setup" "$PKG/common/vault-rag-setup"
+cp -p "$REPO_BIN/lib/mcp-json-merge.js" "$PKG/common/lib/mcp-json-merge.js"
+chmod +x "$PKG/common/vault-rag-setup"
+
 build_tarball() {
   echo "[build] tarball v$VERSION"
   local STAGE

@@ -14,7 +14,12 @@ param(
   [string]$HostName     = "$env:AGENT_FLEET_HOST_NAME",
   [string]$InstallDir   = "$env:ProgramFiles\agent-fleet",
   [string]$ConfDir      = "$env:ProgramData\agent-fleet",
-  [string]$ServiceName  = "agent-fleet-daemon"
+  [string]$ServiceName  = "agent-fleet-daemon",
+  # vt-0144: optional MCP config wiring
+  [switch]$WithMcp,
+  [string]$McpToken     = "$env:AGENT_FLEET_MCP_TOKEN",
+  [string]$McpUrl       = "$env:AGENT_FLEET_MCP_URL",
+  [string]$VaultName    = "vault-rag"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,6 +71,18 @@ $installerJs = Join-Path $InstallDir 'packaging\windows\install-service.js'
   --service-name $ServiceName `
   --install-dir  $InstallDir `
   --env-file     $envFile
+
+# vt-0144: optional MCP config merge for the operator user.
+if ($WithMcp) {
+  if (-not $McpToken) {
+    $McpToken = Read-Host 'MCP token (X-Vault-Token)' -AsSecureString | ConvertFrom-SecureString -AsPlainText
+  }
+  if (-not $McpUrl) { $McpUrl = ($Hub -replace '/api/fleet/ws.*$', '') + '/mcp' }
+  $mergeJs = Join-Path $InstallDir 'packaging\common\lib\mcp-json-merge.js'
+  $claudeJson = Join-Path $env:USERPROFILE '.claude.json'
+  & node $mergeJs --target $claudeJson --name $VaultName --url $McpUrl --token $McpToken
+  Write-Host "[install] MCP config merged → $claudeJson (mcpServers.$VaultName)"
+}
 
 Write-Host "`n[install] done."
 Write-Host "  Service:    Get-Service '$ServiceName'"
