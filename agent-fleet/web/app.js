@@ -1292,8 +1292,10 @@
     modal.querySelector('[data-close]').onclick = () => { modal.hidden = true; };
     try {
       const r = await api('GET', `/sessions/by-bucket?day=${encodeURIComponent(day)}&dim=${encodeURIComponent(dim)}&value=${encodeURIComponent(value)}`);
+      // vt-0125: server now narrows for all dims; dim_unfiltered is always
+      // false. Keep the note path as a fallback for legacy servers.
       const note = r.dim_unfiltered
-        ? `<p style="color:var(--text-dim); font-size:11px">Showing all sessions on this day — per-${esc(dim)} filtering not yet supported server-side.</p>`
+        ? `<p style="color:var(--text-dim); font-size:11px">Showing all sessions on this day — per-${esc(dim)} filtering not supported by this server.</p>`
         : '';
       const rows = (r.sessions || []).map(s => {
         const host = s.host_display || s.host_name || (s.host_id || '').slice(0,8);

@@ -1000,18 +1000,62 @@ async function handleSessionsByBucket({ req, res, ctx }) {
   const dim = url.searchParams.get('dim') || '';
   const value = url.searchParams.get('value') || '';
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10), 500);
+
+  // vt-0125: drill-down used to silently return ALL sessions for the day when
+  // dim was model/group/label (set dim_unfiltered:true). The UI rendered these
+  // as "sessions behind the bar" → operator confusion + cross-bucket leaks.
+  // Now: each dim narrows correctly, or 422 on invalid dim.
   const args = [day, limit];
   let where = `date_trunc('day', s.started_at) = $1::date`;
-  // For dim=host we filter by host_id (value is the host uuid from the
-  // chart). Other dims (model/group/label) need a tokmon join we don't
-  // do here yet — return un-narrowed results with `dim_unfiltered: true`.
-  let dimUnfiltered = false;
-  if (dim === 'host' && /^[0-9a-f-]{36}$/i.test(value)) {
+
+  if (dim === 'host') {
+    if (!/^[0-9a-f-]{36}$/i.test(value)) {
+      return send(res, 422, { error: 'dim=host requires value=<host-uuid>' });
+    }
     args.push(value);
     where += ` AND s.host_id = $${args.length}`;
-  } else if (dim && dim !== 'host') {
-    dimUnfiltered = true;
+  } else if (dim === 'label') {
+    // Cost chart labels sessions by `fleet_sessions.label`, falling back to
+    // sentinels "(unlabeled)" / "(external/unlabeled)" for null / non-fleet
+    // sessions. Map sentinels back to IS NULL; external rows aren't in
+    // fleet_sessions so the bucket is naturally empty.
+    if (value === '(unlabeled)' || value === '(external/unlabeled)') {
+      where += ` AND s.label IS NULL`;
+    } else {
+      args.push(value);
+      where += ` AND s.label = $${args.length}`;
+    }
+  } else if (dim === 'group') {
+    if (value === '(ungrouped)') {
+      where += ` AND NOT EXISTS (SELECT 1 FROM fleet_host_groups hg WHERE hg.host_id = s.host_id)`;
+    } else {
+      args.push(value);
+      where += ` AND EXISTS (
+        SELECT 1 FROM fleet_host_groups hg JOIN fleet_groups g ON g.id = hg.group_id
+        WHERE hg.host_id = s.host_id AND g.name = $${args.length}
+      )`;
+    }
+  } else if (dim === 'model') {
+    if (!ctx.tokmonDb) {
+      return send(res, 503, { error: 'dim=model requires tokmon db' });
+    }
+    // Find session_ids on `day` with at least one event for the model.
+    const { rows: matchingIds } = await ctx.tokmonDb.query(
+      `SELECT DISTINCT session_id
+       FROM events
+       WHERE date_trunc('day', ts) = $1::date AND model = $2
+         AND session_id ~ '^[0-9a-f-]{36}$'`,
+      [day, value]);
+    const ids = matchingIds.map(r => r.session_id);
+    if (!ids.length) {
+      return send(res, 200, { day, dim, value, dim_unfiltered: false, sessions: [] });
+    }
+    args.push(ids);
+    where += ` AND s.id::text = ANY($${args.length})`;
+  } else if (dim) {
+    return send(res, 422, { error: `unsupported dim: ${dim} (expected host|label|group|model)` });
   }
+
   const { rows } = await ctx.db.query(
     `SELECT s.id, s.label, s.started_at, s.ended_at, s.status, s.exit_code,
             s.host_id, h.name AS host_name, h.display_name AS host_display
@@ -1020,7 +1064,7 @@ async function handleSessionsByBucket({ req, res, ctx }) {
      WHERE ${where}
      ORDER BY s.started_at DESC
      LIMIT $2`, args);
-  send(res, 200, { day, dim, value, dim_unfiltered: dimUnfiltered, sessions: rows });
+  send(res, 200, { day, dim, value, dim_unfiltered: false, sessions: rows });
 }
 
 async function handleStackStatus({ res, ctx }) {

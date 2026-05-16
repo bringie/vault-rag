@@ -77,6 +77,67 @@ test('healthz is reachable without auth', async () => {
   await close();
 });
 
+// vt-0125: /fleet/sessions/by-bucket used to silently return all sessions on
+// a day for dim=model|group|label (set dim_unfiltered:true). Drill-down now
+// narrows correctly, or returns 422 for unknown dims.
+test('vt-0125: by-bucket dim=label narrows to matching sessions', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('hb') RETURNING id")).rows[0].id;
+  await pg.query(`INSERT INTO fleet_sessions (host_id, cwd, status, started_at, label)
+                  VALUES ($1, '/', 'exited', now(), 'alpha'),
+                         ($1, '/', 'exited', now(), 'beta'),
+                         ($1, '/', 'exited', now(), null)`, [h]);
+  const day = new Date().toISOString().slice(0, 10);
+
+  const alpha = await reqJson(server, 'GET', `/fleet/sessions/by-bucket?day=${day}&dim=label&value=alpha`, { token: 'T' });
+  assert.equal(alpha.status, 200);
+  assert.equal(alpha.body.sessions.length, 1);
+  assert.equal(alpha.body.sessions[0].label, 'alpha');
+  assert.equal(alpha.body.dim_unfiltered, false);
+
+  const unlabeled = await reqJson(server, 'GET', `/fleet/sessions/by-bucket?day=${day}&dim=label&value=${encodeURIComponent('(unlabeled)')}`, { token: 'T' });
+  assert.equal(unlabeled.body.sessions.length, 1);
+  assert.equal(unlabeled.body.sessions[0].label, null);
+  await close();
+});
+
+test('vt-0125: by-bucket dim=group narrows via host group membership', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h1 = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('hg1') RETURNING id")).rows[0].id;
+  const h2 = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('hg2') RETURNING id")).rows[0].id;
+  const g = (await pg.query("INSERT INTO fleet_groups (name) VALUES ('grp-x') RETURNING id")).rows[0].id;
+  await pg.query("INSERT INTO fleet_host_groups (host_id, group_id) VALUES ($1, $2)", [h1, g]);
+  await pg.query(`INSERT INTO fleet_sessions (host_id, cwd, status, started_at, label)
+                  VALUES ($1, '/', 'exited', now(), 's-in-grp'),
+                         ($2, '/', 'exited', now(), 's-orphan')`, [h1, h2]);
+  const day = new Date().toISOString().slice(0, 10);
+
+  const inGrp = await reqJson(server, 'GET', `/fleet/sessions/by-bucket?day=${day}&dim=group&value=grp-x`, { token: 'T' });
+  assert.equal(inGrp.body.sessions.length, 1);
+  assert.equal(inGrp.body.sessions[0].label, 's-in-grp');
+
+  const unGrp = await reqJson(server, 'GET', `/fleet/sessions/by-bucket?day=${day}&dim=group&value=${encodeURIComponent('(ungrouped)')}`, { token: 'T' });
+  assert.equal(unGrp.body.sessions.length, 1);
+  assert.equal(unGrp.body.sessions[0].label, 's-orphan');
+  await close();
+});
+
+test('vt-0125: by-bucket unknown dim returns 422', async () => {
+  const { server, close } = await startWithDb();
+  const day = new Date().toISOString().slice(0, 10);
+  const r = await reqJson(server, 'GET', `/fleet/sessions/by-bucket?day=${day}&dim=zorglub&value=x`, { token: 'T' });
+  assert.equal(r.status, 422);
+  await close();
+});
+
+test('vt-0125: by-bucket dim=host with non-uuid value returns 422', async () => {
+  const { server, close } = await startWithDb();
+  const day = new Date().toISOString().slice(0, 10);
+  const r = await reqJson(server, 'GET', `/fleet/sessions/by-bucket?day=${day}&dim=host&value=not-a-uuid`, { token: 'T' });
+  assert.equal(r.status, 422);
+  await close();
+});
+
 // vt-0124: admin/viewer token split for fleet API. The viewer token can only
 // read; mutating + execution endpoints require the admin token when configured.
 async function startWithAdminSplit() {
