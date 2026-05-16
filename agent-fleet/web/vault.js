@@ -225,9 +225,57 @@
       state.currentText = r.text || r.content || '';
       state.currentSha = r.sha || null;
       renderNote();
+      // vt-0161: reveal in tree — expand parent dirs, scroll into view,
+      // highlight active row. Best-effort: silently no-ops if the tree
+      // isn't visible (e.g. user is in search results mode).
+      revealInTree(p).catch(() => {});
     } catch (e) {
       viewer.textContent = 'error: ' + e.message;
     }
+  }
+
+  async function revealInTree(filePath) {
+    if (!filePath) return;
+    const treeEl = $('vault-tree');
+    if (!treeEl) return;
+    // If the tree is currently showing search results, restore the real
+    // tree so we can drill into it.
+    const inSearch = !!treeEl.querySelector('.vault-search-results');
+    const inp = $('vault-search-input');
+    if (inSearch) {
+      if (inp) inp.value = '';
+      reopenTree();
+    }
+    // Walk the path segments, expanding each ancestor dir on the way.
+    const parts = filePath.split('/');
+    let acc = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      acc = acc ? `${acc}/${parts[i]}` : parts[i];
+      const dirPath = acc + '/';
+      const li = treeEl.querySelector(`li.vault-dir[data-path="${cssEscape(dirPath)}"]`);
+      if (!li) return; // parent not in current tree view — give up quietly
+      const cache = dirCache()[acc];
+      if (!cache || !cache.expanded) {
+        // toggleDir loads + expands (or toggles — but if not expanded yet,
+        // first call expands).
+        await toggleDir(li, dirPath);
+      }
+    }
+    // Highlight the file row.
+    treeEl.querySelectorAll('.vault-row.active').forEach(r => r.classList.remove('active'));
+    const fileLi = treeEl.querySelector(`li.vault-file[data-path="${cssEscape(filePath)}"]`);
+    if (fileLi) {
+      fileLi.classList.add('active');
+      fileLi.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  // Minimal CSS.escape polyfill — querySelector with paths containing '/'
+  // works but '"' or escape-sensitive chars would break. Vault paths are
+  // already safe (no quotes, no brackets), but escape defensively.
+  function cssEscape(s) {
+    if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_\-\/.]/g, ch => '\\' + ch);
   }
 
   function renderNote() {
@@ -238,7 +286,10 @@
     const pathSpan = document.createElement('span');
     pathSpan.textContent = state.currentPath;
     head.appendChild(pathSpan);
-    if (state.isAdmin && isWritable(state.currentPath) && !state.editing) {
+    // vt-0161: admin can edit any file. WRITABLE_PREFIXES still apply for
+    // non-admin agents (rag-api enforces server-side); for the human in the
+    // Fleet UI, having an admin bearer is enough.
+    if (state.isAdmin && !state.editing) {
       const btn = document.createElement('button');
       btn.className = 'btn-ghost';
       btn.style.marginLeft = '1em';
@@ -266,12 +317,38 @@
       viewer.appendChild(ta);
       const bar = document.createElement('div');
       bar.className = 'vault-edit-bar';
+      // vt-0161: autosave checkbox — when on, debounces a PUT 2 s after the
+      // last keystroke. Each PUT also auto-commits via vault-rag-api's git
+      // hook, so toggling this on effectively makes every pause a commit.
+      // Default off so accidental edits don't ship without an explicit save.
+      const autosaveOn = localStorage.fleetVaultAutosave === '1';
       bar.innerHTML = `<button id="vault-save" class="btn-primary">save</button>
                        <button id="vault-cancel" class="btn-ghost">cancel</button>
+                       <label class="vault-autosave">
+                         <input type="checkbox" id="vault-autosave" ${autosaveOn ? 'checked' : ''}/>
+                         autosave (2s)
+                       </label>
                        <span id="vault-save-status" class="lbl"></span>`;
       viewer.appendChild(bar);
       $('vault-save').onclick = () => saveNote(ta.value);
-      $('vault-cancel').onclick = () => { state.editing = false; renderNote(); };
+      $('vault-cancel').onclick = () => {
+        if (_autosaveTimer) { clearTimeout(_autosaveTimer); _autosaveTimer = null; }
+        state.editing = false;
+        renderNote();
+      };
+      $('vault-autosave').onchange = (ev) => {
+        localStorage.fleetVaultAutosave = ev.target.checked ? '1' : '0';
+      };
+      ta.addEventListener('input', () => {
+        if (!$('vault-autosave').checked) return;
+        if (_autosaveTimer) clearTimeout(_autosaveTimer);
+        const status = $('vault-save-status');
+        if (status) status.textContent = 'autosave pending…';
+        _autosaveTimer = setTimeout(() => {
+          _autosaveTimer = null;
+          autosaveSnapshot(ta);
+        }, 2000);
+      });
     } else {
       const body = document.createElement('div');
       body.className = 'vault-md';
@@ -426,14 +503,27 @@
   }
 
   function startEdit() {
-    if (!state.isAdmin || !isWritable(state.currentPath)) return;
+    // vt-0161: admin gate only — server enforces the rest.
+    if (!state.isAdmin) return;
     state.editing = true;
     renderNote();
   }
 
-  async function saveNote(text, force = false) {
+  // vt-0161: autosave timer is module-scoped so cancel/openNote/render
+  // can reset it from anywhere.
+  let _autosaveTimer = null;
+  async function autosaveSnapshot(ta) {
+    // Skip if the textarea is somehow gone (re-render mid-flight).
+    if (!ta || !document.contains(ta)) return;
+    // Snapshot of in-flight text so a slow PUT doesn't get overwritten by
+    // a still-typing user (saveNote re-fetches sha after success).
+    const txt = ta.value;
+    await saveNote(txt, false, /*autosave=*/true);
+  }
+
+  async function saveNote(text, force = false, autosave = false) {
     const status = $('vault-save-status');
-    if (status) status.textContent = 'saving…';
+    if (status) status.textContent = autosave ? 'autosaving…' : 'saving…';
     const body = {
       path: state.currentPath,
       content: text,
@@ -447,6 +537,11 @@
       const r = await api('POST', '/get', { path: state.currentPath });
       state.currentText = r.text || r.content || '';
       state.currentSha = r.sha || null;
+      if (autosave) {
+        // Stay in edit mode — just refresh status. User keeps typing.
+        if (status) status.textContent = `autosaved · ${new Date().toLocaleTimeString()}`;
+        return;
+      }
       state.editing = false;
       renderNote();
     } catch (e) {

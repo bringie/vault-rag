@@ -572,10 +572,10 @@ async function withPathLock(key, fn) {
   }
 }
 
-async function handlePut(body) {
-  return await withPathLock(String(body.path || ''), () => handlePutLocked(body));
+async function handlePut(body, req) {
+  return await withPathLock(String(body.path || ''), () => handlePutLocked(body, req));
 }
-async function handlePutLocked(body) {
+async function handlePutLocked(body, req) {
   const agent_id = body.agent_id ? String(body.agent_id).trim() : null;
   const relPath  = String(body.path || '').trim();
   const content  = String(body.content || '');
@@ -585,7 +585,12 @@ async function handlePutLocked(body) {
 
   if (!relPath.endsWith('.md')) throw new Error('path must end with .md');
 
-  const finalRel = resolveWritePath(agent_id, relPath);
+  // vt-0161: admin bearer bypasses WRITABLE_PREFIXES — the prefix list was
+  // a safety rail for unsupervised agents, but a human admin in the Fleet
+  // UI should be able to edit any vault file. agent_id is ignored in this
+  // path; the audit trail comes from the secret_audit table (caller fp).
+  const isAdmin = req && fleetRoutes.checkAdminAuth(req, fleetCtx);
+  const finalRel = isAdmin ? safeRel(relPath) : resolveWritePath(agent_id, relPath);
   const full = path.join(VAULT, finalRel);
   if (!full.startsWith(VAULT + path.sep)) throw new Error('bad path');
   // I8 (audit pass 2): a pre-existing symlink anywhere in the chain (planted
