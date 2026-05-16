@@ -246,12 +246,19 @@
     state.viewMode = mode;
     document.querySelector('.viewer').hidden = (mode !== 'session');
     document.querySelector('.host-detail').hidden = (mode !== 'host');
+    // R10: when leaving session view, stop polling cost for the now-hidden
+    // session — otherwise it runs forever until next attachSession() call.
+    if (mode !== 'session' && state.sessionCostTimer) {
+      clearInterval(state.sessionCostTimer);
+      state.sessionCostTimer = null;
+    }
   }
 
   function attachSession(id) {
     if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
     if (state.term) { try { state.term.dispose(); } catch {} state.term = null; }
     if (state.sessionCostTimer) { clearInterval(state.sessionCostTimer); state.sessionCostTimer = null; }
+    if (state.ro) { try { state.ro.disconnect(); } catch {} state.ro = null; }
     state.selected = id;
     state.selectedHost = null;
     setViewMode('session');
@@ -356,6 +363,7 @@
       }, 120);
     });
     ro.observe($('term'));
+    state.ro = ro;
 
     term.onData(d => {
       if (state.ws && state.ws.readyState === 1) {
@@ -522,11 +530,14 @@
     return args.concat(extras);
   }
   async function spawn() {
+    const btn = $('spawn-btn');
+    if (btn.disabled) return; // R5: ignore rapid re-fires while a spawn is in flight
     const host_id = $('spawn-host').value;
     if (!host_id) { alert('no host selected'); return; }
     const cwd = $('spawn-cwd').value || '~';
     const prompt = $('spawn-prompt').value;
     const args = buildSpawnArgs(parseArgs($('spawn-args').value));
+    btn.disabled = true;
     try {
       const r = await api('POST', '/sessions', { host_id, cwd, args });
       await refresh();
@@ -534,7 +545,11 @@
       // If a prompt was set, send it as input once the daemon reports the
       // session is running. Poll session status briefly; bail after 5s.
       if (prompt) sendPromptOnReady(r.session_id, prompt);
-    } catch (e) { alert('spawn failed: ' + e.message); }
+    } catch (e) {
+      alert('spawn failed: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
   }
   async function sendPromptOnReady(sessionId, prompt) {
     const deadline = Date.now() + 5000;
@@ -558,14 +573,20 @@
     });
     $('show-closed').addEventListener('change', render);
     $('cleanup-btn').onclick = async () => {
+      const cb = $('cleanup-btn');
+      if (cb.disabled) return;
       if (!confirm('delete all exited/killed sessions older than 1h? this is permanent.')) return;
+      cb.disabled = true;
       try {
         const r = await api('POST', '/sessions/cleanup', { older_than: '1 hour' });
         await refresh();
         alert(`deleted ${r.deleted} session(s)`);
       } catch (e) { alert('cleanup failed: ' + e.message); }
+      finally { cb.disabled = false; }
     };
     $('bcast-btn').onclick = async () => {
+      const bb = $('bcast-btn');
+      if (bb.disabled) return;
       const tag = $('spawn-tag').value.trim();
       const groupId = $('spawn-group').value;
       const groupName = groupId ? state.groups.find(g => g.id === groupId)?.name : null;
@@ -574,12 +595,14 @@
       const args = parseArgs($('spawn-args').value);
       const body = { cwd, args, label: 'bcast:' + (groupName || tag) };
       if (groupName) body.group = groupName; else body.tag = tag;
+      bb.disabled = true;
       try {
         const r = await api('POST', '/broadcast', body);
         await refresh();
         alert(`spawned ${r.count} sessions${r.results.some(x => !x.ok) ? ' (some failed, see console)' : ''}`);
         console.log('broadcast results:', r.results);
       } catch (e) { alert('broadcast failed: ' + e.message); }
+      finally { bb.disabled = false; }
     };
   }
 
