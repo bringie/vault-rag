@@ -839,14 +839,10 @@
             <td class="cwd-cell" title="${esc(s.cwd || '')}">${esc(s.cwd || '—')}</td>
             <td class="label-cell" title="${esc(labelText)}">${esc(labelText || '—')}</td>
             <td class="nowrap" id="cost-${s.id.slice(0,8)}">—</td>
-            <td><button class="btn-ghost" data-rerun="${s.id}" style="font-size:.75em; padding:.2em .6em">↻</button></td>
           </tr>`;
         }).join('');
     body.querySelectorAll('.sess-id-cell').forEach(td => {
       td.onclick = () => navigate('/sessions/' + td.dataset.sid);
-    });
-    body.querySelectorAll('button[data-rerun]').forEach(b => {
-      b.onclick = (e) => { e.stopPropagation(); rerunSession(b.dataset.rerun); };
     });
     // lazy-load cost per row
     for (const s of rows) {
