@@ -1,0 +1,12 @@
+[Unit]
+Description=Run stack-status writer every 30s
+Requires=stack-status.service
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=stack-status.service
+
+[Install]
+WantedBy=timers.target

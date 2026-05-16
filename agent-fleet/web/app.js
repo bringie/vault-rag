@@ -215,10 +215,85 @@
       // vt-0110: pending approvals — best-effort, hidden if none.
       try { renderApprovals(await api('GET', '/workflow-pending-approvals')); }
       catch {}
+      // vt-0115: docker stack health dot.
+      try { renderStackStatus(await api('GET', '/stack-status')); }
+      catch (e) { renderStackStatus({ services: [], error: e.message }); }
     } catch (e) {
       if (e.message !== 'auth') console.warn('refresh', e);
     }
   }
+  // vt-0115: compute green/yellow/red from per-service health.
+  function summarizeStack(payload) {
+    if (payload.error || !payload.services) return 'unknown';
+    if (payload.stale) return 'yellow';
+    let badCount = 0, healthy = 0;
+    for (const s of payload.services) {
+      // Skip the api container itself — it always reports healthy when we can
+      // read the file, otherwise the route already 503'd above.
+      if (s.name === 'vault-rag-api') continue;
+      if (s.status === 'running' && (s.health === 'healthy' || s.health === 'none')) healthy++;
+      else badCount++;
+    }
+    if (badCount === 0) return 'green';
+    if (badCount === 1) return 'yellow';
+    return 'red';
+  }
+  function renderStackStatus(payload) {
+    const dot = $('stack-dot');
+    if (!dot) return;
+    const state = summarizeStack(payload);
+    dot.dataset.state = state;
+    dot.title = state === 'green'   ? 'all containers healthy'
+              : state === 'yellow'  ? 'one container degraded or status stale'
+              : state === 'red'     ? 'multiple containers unhealthy'
+              : 'stack status unavailable';
+    state._cached = payload;
+    dot.onclick = () => openStackModal(payload);
+  }
+  function openStackModal(payload) {
+    const modal = $('stack-modal');
+    if (!modal) return;
+    modal.hidden = false;
+    const rows = (payload.services || []).map(s => {
+      const ok = s.status === 'running' && (s.health === 'healthy' || s.health === 'none');
+      const ago = s.started_at ? relAgo(new Date(s.started_at).getTime()) : '—';
+      return `<tr>
+        <td>${esc(s.name)}</td>
+        <td class="${ok ? 'val-ok' : 'val-danger'}">${esc(s.status)}${s.health && s.health !== 'none' ? ' / ' + esc(s.health) : ''}</td>
+        <td>${ago}</td>
+        <td>${s.restarts}</td>
+      </tr>`;
+    }).join('');
+    const updated = payload.updated_at ? relAgo(new Date(payload.updated_at).getTime()) : '—';
+    modal.innerHTML = `
+      <div class="gd-frame" style="width:560px">
+        <div class="gd-head">
+          <span class="display" style="font-size:1.1em">DOCKER STACK</span>
+          <span class="lbl" style="margin-left:1em">updated ${esc(updated)}${payload.stale ? ' · STALE' : ''}</span>
+          <span style="flex:1"></span>
+          <button class="btn-ghost" data-close>× close</button>
+        </div>
+        <div class="gd-body">
+          ${payload.error ? `<p class="val-danger">${esc(payload.error)}</p>` : ''}
+          <table class="archive-table">
+            <thead><tr><th>name</th><th>status</th><th>uptime</th><th>restarts</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="4" style="text-align:center; color:var(--text-faint)">no services reported</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    modal.querySelector('[data-close]').onclick = () => { modal.hidden = true; };
+  }
+  function relAgo(ts) {
+    const ms = Date.now() - ts;
+    if (ms < 0) return new Date(ts).toLocaleString();
+    const s = Math.floor(ms / 1000);
+    if (s < 60)    return s + 's ago';
+    if (s < 3600)  return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
+
   function renderApprovals(rows) {
     const panel = $('approvals-panel');
     const list = $('approvals-list');

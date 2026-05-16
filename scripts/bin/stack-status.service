@@ -1,0 +1,8 @@
+[Unit]
+Description=agent-fleet stack-status writer (one-shot — invoked by stack-status.timer)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/vault-rag/scripts/bin/stack-status-writer.sh

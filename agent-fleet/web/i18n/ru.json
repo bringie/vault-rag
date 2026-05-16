@@ -103,6 +103,7 @@
   "workflows.add_wait_approval": "+ ждать одобрения",
   "workflows.add_wait_event": "+ ждать события",
   "approvals.section": "ОЖИДАЮТ ОДОБРЕНИЯ",
+  "stack.dot_tip": "статус docker-стека (клик — детали)",
   "wf_inspect.expr_hint": "expr (JS; видит ctx: n1, n2, inputs)",
   "workflows.save": "сохранить",
   "workflows.run": "запустить",

@@ -103,6 +103,7 @@
   "workflows.add_wait_approval": "+ esperar aprobación",
   "workflows.add_wait_event": "+ esperar evento",
   "approvals.section": "APROBACIONES PENDIENTES",
+  "stack.dot_tip": "estado del stack docker (clic para detalles)",
   "wf_inspect.expr_hint": "expr (JS; ve ctx: n1, n2, inputs)",
   "workflows.save": "guardar",
   "workflows.run": "ejecutar",

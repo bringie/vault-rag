@@ -103,6 +103,7 @@
   "workflows.add_wait_approval": "+ wait_for_approval",
   "workflows.add_wait_event": "+ wait_for_event",
   "approvals.section": "PENDING APPROVALS",
+  "stack.dot_tip": "docker stack status (click for details)",
   "wf_inspect.expr_hint": "expr (JS; sees ctx vars: n1, n2, inputs)",
   "workflows.save": "save",
   "workflows.run": "run",

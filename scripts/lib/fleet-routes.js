@@ -897,6 +897,27 @@ async function handleCancelRun({ req, res, ctx }) {
   send(res, 200, { ok: true });
 }
 
+// vt-0115: docker stack self-status. The host writes a JSON file every 30s
+// via systemd timer (scripts/bin/stack-status-writer.sh); we just serve it.
+// Auth-gated — operator-only data, no need to expose container names publicly.
+async function handleStackStatus({ res, ctx }) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const p = process.env.VAULT_RAG_STACK_STATUS_FILE
+    || path.resolve(__dirname, '..', '..', 'agent-fleet', 'stack-status.json');
+  try {
+    const stat = fs.statSync(p);
+    const ageMs = Date.now() - stat.mtimeMs;
+    const raw = fs.readFileSync(p, 'utf-8');
+    const parsed = JSON.parse(raw);
+    parsed.age_ms = ageMs;
+    parsed.stale = ageMs > 90_000;   // writer ticks every 30s; 90s = missed 3
+    send(res, 200, parsed);
+  } catch (e) {
+    send(res, 503, { error: 'stack status unavailable', detail: e.message });
+  }
+}
+
 async function handleListPendingApprovals({ res, ctx }) {
   const rows = await wfDb.listPendingApprovals(ctx.db);
   send(res, 200, rows);
@@ -1142,6 +1163,9 @@ function dispatchHttp(req, res, ctx) {
     return readBody(req).then(b => handleApprovalDecision({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
   if (method === 'GET'    && new RegExp(`^/fleet/workflow-runs/${SID_RE}$`, 'i').test(path)) return handleGetRun({ req, res, ctx });
+
+  // Stack status (docker compose health for the operator)
+  if (method === 'GET' && path === '/fleet/stack-status') return handleStackStatus({ res, ctx });
 
   // Pending approvals + events
   if (method === 'GET'  && path === '/fleet/workflow-pending-approvals') return handleListPendingApprovals({ res, ctx });

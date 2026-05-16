@@ -465,6 +465,19 @@ body::after {
 .archive-table tr.row-clickable { cursor: pointer; }
 .archive-table tr.row-clickable:hover td { background: rgba(255,255,255,0.06); }
 
+.stack-dot {
+  width: 1.6em; height: 1.6em; padding: 0; line-height: 1;
+  font-size: 1.1em; cursor: pointer;
+}
+.stack-dot[data-state="green"]   { color: var(--ok); }
+.stack-dot[data-state="yellow"]  { color: var(--warn); }
+.stack-dot[data-state="red"]     { color: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+.stack-dot[data-state="unknown"] { color: var(--text-faint); }
+
+#stack-modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.5); z-index: 200; }
+#stack-modal[hidden] { display: none; }
+
 .approval-row {
   padding: .5em .6em; border-bottom: 1px dashed var(--line);
   display: flex; flex-direction: column; gap: .35em;
