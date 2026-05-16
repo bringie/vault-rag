@@ -54,8 +54,11 @@ function invalidate() {
   inFlightLoad = null;
 }
 
-async function priceFor(db, model, ts) {
-  await ensure(db);
+// vt-0130: synchronous variant — requires cache to be warm. Callers in a
+// hot batch loop should `await ensure(db)` once, then call priceForSync()
+// per row instead of `await priceFor()` per row (the awaits add a microtask
+// hop per iteration even when the cache is already loaded).
+function priceForSync(model, ts) {
   if (!cache.rows.length) return ZERO_PRICE;
   const m = (model || '').toLowerCase();
   const at = ts instanceof Date ? ts : new Date(ts || Date.now());
@@ -74,4 +77,9 @@ async function priceFor(db, model, ts) {
   return ZERO_PRICE;
 }
 
-module.exports = { priceFor, invalidate, load, likeMatch, ZERO_PRICE };
+async function priceFor(db, model, ts) {
+  await ensure(db);
+  return priceForSync(model, ts);
+}
+
+module.exports = { priceFor, priceForSync, ensure, invalidate, load, likeMatch, ZERO_PRICE };

@@ -125,3 +125,17 @@ test('unknown model uses fallback (zero cost, flagged)', async () => {
     assert.strictEqual(out.h1.msgs, 1);
   });
 });
+
+// vt-0130: rowCostSync requires prices.ensure() to be awaited first; after
+// that, hot-loop callers price rows synchronously (no per-row await hop).
+test('vt-0130: rowCostSync matches async rowCost after prices.ensure', async () => {
+  await withBoth(async (tok, vault) => {
+    await seedPrices(vault);
+    await prices.load(vault);
+    const r = { model: 'claude-sonnet-4-6', input_tokens: 1_000_000, output_tokens: 1_000_000, cache_creation_5m: 0, cache_read: 0 };
+    const ts = new Date();
+    const asyncUsd = await fleetCost.rowCost(r, ts, vault);
+    const syncUsd  = fleetCost.rowCostSync(r, ts);
+    assert.equal(syncUsd, asyncUsd);
+  });
+});

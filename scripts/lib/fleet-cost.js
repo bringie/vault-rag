@@ -6,6 +6,18 @@ const prices = require('./fleet-prices');
 
 async function rowCost(r, ts, vaultPg) {
   const p = await prices.priceFor(vaultPg, r.model, ts);
+  return priceTimesRow(r, p);
+}
+
+// vt-0130: sync variant — requires `prices.ensure(vaultPg)` to have been awaited
+// first. Hot batch loops should pre-warm once + call rowCostSync per row to
+// avoid an await microtask hop per iteration.
+function rowCostSync(r, ts) {
+  const p = prices.priceForSync(r.model, ts);
+  return priceTimesRow(r, p);
+}
+
+function priceTimesRow(r, p) {
   return (
     Number(r.input_tokens)      / 1e6 * p.input +
     Number(r.output_tokens)     / 1e6 * p.output +
@@ -26,10 +38,12 @@ async function aggregateRows(tokmonPg, vaultPg, where, args) {
      FROM events
      WHERE ${where}
      GROUP BY model`, args);
+  // vt-0130: warm cache once, then tally synchronously (no per-row await hop).
+  await prices.ensure(vaultPg);
   let usd = 0, msgs = 0;
   const byModel = {};
   for (const r of rows) {
-    const c = await rowCost(r, r.last_ts, vaultPg);
+    const c = rowCostSync(r, r.last_ts);
     usd += c; msgs += Number(r.msgs);
     byModel[r.model] = {
       usd: c, msgs: Number(r.msgs),
@@ -64,10 +78,11 @@ async function hostSummary(tokmonPg, vaultPg, hostNames, days = 7) {
      WHERE host_id = ANY($1) AND ts > now() - ($2 || ' days')::interval
      GROUP BY host_id, model`,
     [hostNames, String(days)]);
+  await prices.ensure(vaultPg);
   const out = {};
   for (const r of rows) {
     if (!out[r.host_id]) out[r.host_id] = { usd: 0, msgs: 0, by_model: {} };
-    const c = await rowCost(r, r.last_ts, vaultPg);
+    const c = rowCostSync(r, r.last_ts);
     out[r.host_id].usd += c;
     out[r.host_id].msgs += Number(r.msgs);
     out[r.host_id].by_model[r.model] = { usd: c, msgs: Number(r.msgs) };
@@ -95,11 +110,12 @@ async function timeline(tokmonPg, vaultPg, hostNames, days = 7, groupBy = 'model
      WHERE ${where.join(' AND ')}
      GROUP BY day, ${dim}, model
      ORDER BY day`, args);
+  await prices.ensure(vaultPg);
   const out = [];
   for (const r of rows) {
     out.push({
       day: r.day, dim: r.dim, model: r.model, msgs: Number(r.msgs),
-      usd: await rowCost(r, r.day, vaultPg),
+      usd: rowCostSync(r, r.day),
       input_tokens: Number(r.input_tokens),
       output_tokens: Number(r.output_tokens),
       cache_creation_5m: Number(r.cache_creation_5m),
@@ -142,9 +158,10 @@ async function timelineByLabel(tokmonPg, vaultPg, days = 7) {
     g.cache_creation_5m += Number(r.cache_creation_5m);
     g.cache_read += Number(r.cache_read);
   }
+  await prices.ensure(vaultPg);
   const out = [];
   for (const g of grouped.values()) {
-    out.push({ ...g, usd: await rowCost(g, g.day, vaultPg) });
+    out.push({ ...g, usd: rowCostSync(g, g.day) });
   }
   return out.sort((a, b) => a.day - b.day);
 }
@@ -193,8 +210,9 @@ async function timelineByGroup(tokmonPg, vaultPg, days = 7) {
       g.cache_read += Number(r.cache_read);
     }
   }
+  await prices.ensure(vaultPg);
   const out = [];
-  for (const g of grouped.values()) out.push({ ...g, usd: await rowCost(g, g.day, vaultPg) });
+  for (const g of grouped.values()) out.push({ ...g, usd: rowCostSync(g, g.day) });
   return out.sort((a, b) => a.day - b.day);
 }
 
@@ -213,10 +231,11 @@ async function sessionCostBatch(tokmonPg, vaultPg, sessionIds) {
      WHERE session_id = ANY($1)
      GROUP BY session_id, model`,
     [sessionIds]);
+  await prices.ensure(vaultPg);
   const out = {};
   for (const r of rows) {
     if (!out[r.session_id]) out[r.session_id] = { usd: 0, msgs: 0, attribution: 'exact', by_model: {} };
-    const c = await rowCost(r, r.last_ts, vaultPg);
+    const c = rowCostSync(r, r.last_ts);
     out[r.session_id].usd += c;
     out[r.session_id].msgs += Number(r.msgs);
     out[r.session_id].by_model[r.model] = { usd: c, msgs: Number(r.msgs) };
@@ -251,12 +270,14 @@ async function aggregateDayRollup(tokmonPg, vaultPg, day /* 'YYYY-MM-DD' */) {
   // Aggregate by dim ('model' | 'host') so the rollup answers both pivots.
   // Each hour resolves its own price; tally accumulates priced usd + token
   // counts into the (model)/(host) buckets for the whole day.
+  // vt-0130: warm price cache once, then resolve synchronously per row.
+  await prices.ensure(vaultPg);
   const byModel = new Map(), byHost = new Map();
   for (const r of rows) {
     // Use the start of the hour bucket as the price-resolution timestamp.
     // If a price changes mid-hour, that hour is priced at the start-of-hour
     // rate — bounded 1h error, not 24h.
-    const usd = await rowCost(r, r.hour, vaultPg);
+    const usd = rowCostSync(r, r.hour);
     const tally = (m, key) => {
       if (!m.has(key)) m.set(key, { usd: 0, msgs: 0, input_tokens: 0n, output_tokens: 0n, cache_creation_5m: 0n, cache_read: 0n });
       const t = m.get(key);
@@ -309,6 +330,6 @@ async function timelineFromRollup(vaultPg, days = 365, dim = 'model') {
 }
 
 module.exports = {
-  sessionCost, sessionCostBatch, hostSummary, timeline, rowCost,
+  sessionCost, sessionCostBatch, hostSummary, timeline, rowCost, rowCostSync,
   aggregateDayRollup, timelineFromRollup,
 };
