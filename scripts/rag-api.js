@@ -19,12 +19,20 @@ const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 const VAULT = process.env.VAULT_PATH || '/vault';
 const TOKEN = process.env.VAULT_RAG_API_TOKEN;
+// vt-0124: separate token for fleet's mutating/RCE-capable endpoints. If unset,
+// the fleet API runs in legacy single-token mode (viewer bearer gates writes).
+const FLEET_ADMIN_TOKEN = process.env.VAULT_RAG_FLEET_ADMIN_TOKEN || null;
 const PORT  = parseInt(process.env.RAG_PORT || process.env.PORT || '5679', 10);
 const SKIP_PG = process.env.VAULT_SECRETS_SKIP_PG === '1';
 
 if (!TOKEN) {
   console.error('[rag-api] FATAL: VAULT_RAG_API_TOKEN not set');
   process.exit(1);
+}
+if (!FLEET_ADMIN_TOKEN) {
+  console.warn('[rag-api] WARN: VAULT_RAG_FLEET_ADMIN_TOKEN not set — fleet writes/exec/workflow-CRUD share the viewer bearer (RCE-capable). Set this token to require separate admin credentials for mutating ops.');
+} else if (FLEET_ADMIN_TOKEN === TOKEN) {
+  console.warn('[rag-api] WARN: VAULT_RAG_FLEET_ADMIN_TOKEN equals VAULT_RAG_API_TOKEN — admin/viewer split is not meaningful. Rotate one of them.');
 }
 
 const PG = {
@@ -308,7 +316,7 @@ const TASK_ROUTES = {
   '/task/dep_rm':  'dep_rm',
 };
 
-const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, db: null, version: '0.1.0' });
+const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, adminToken: FLEET_ADMIN_TOKEN, db: null, version: '0.1.0' });
 
 const server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);

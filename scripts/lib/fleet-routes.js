@@ -33,6 +33,35 @@ function checkAuth(req, token) {
   return auth === `Bearer ${token}`;
 }
 
+// vt-0124: split admin from viewer. When VAULT_RAG_FLEET_ADMIN_TOKEN is set,
+// non-GET endpoints (mutate state, execute code on hosts, edit workflows) require
+// the admin token. When NOT set, fall back to the viewer token for backwards
+// compatibility — existing deployments keep working until the operator chooses
+// to lock it down.
+function checkAdminAuth(req, ctx) {
+  const auth = req.headers.authorization || '';
+  if (ctx.adminToken) return auth === `Bearer ${ctx.adminToken}`;
+  return auth === `Bearer ${ctx.token}`;
+}
+
+// Endpoints that mutate state, execute code on a host, edit workflows, or
+// otherwise produce side effects beyond reading. Workflow CRUD specifically
+// is RCE-capable via vm.runInContext on expression nodes — see audit vt-0124.
+function isAdminPath(method, path) {
+  if (method === 'GET') return false;
+  // POST shape but read-only: cost batch is POST due to body size.
+  if (path === '/fleet/sessions/cost-batch') return false;
+  // POST workflow-pending-approvals fan-out — currently GET only, but guard
+  // by allowing only known read-shaped POSTs above.
+  return true;
+}
+
+function requireAdmin(req, res, ctx) {
+  if (checkAdminAuth(req, ctx)) return true;
+  send(res, 403, { error: 'admin token required for this operation' });
+  return false;
+}
+
 function pathMatch(url, prefix) {
   const path = url.split('?')[0];
   if (!path.startsWith(prefix + '/')) return null;
@@ -1117,7 +1146,14 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path === '/fleet/healthz') {
     return send(res, 200, { ok: true });
   }
-  if (!checkAuth(req, ctx.token)) return send(res, 401, { error: 'unauthorized' });
+  if (!checkAuth(req, ctx.token) && !(ctx.adminToken && checkAdminAuth(req, ctx))) {
+    return send(res, 401, { error: 'unauthorized' });
+  }
+  // vt-0124: gate mutating + execution endpoints behind the admin token (when
+  // configured). Viewer bearer alone gets reads only.
+  if (isAdminPath(method, path) && !checkAdminAuth(req, ctx)) {
+    return send(res, 403, { error: 'admin token required for this operation' });
+  }
 
   // hosts
   if (method === 'GET'    && path === '/fleet/hosts')   return handleGetHosts({ req, res, ctx });
@@ -1548,7 +1584,16 @@ function attach(server, ctx) {
     const auth = req.headers.authorization || '';
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = server._fleetCtx;
-      if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
+      const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
+      const viewerBearer = `Bearer ${ctx.token}`;
+      if (role === 'daemon') {
+        const needed = adminBearer || viewerBearer;
+        if (auth !== needed) return ws.close(4001, 'unauthorized');
+      } else {
+        if (auth !== viewerBearer && auth !== adminBearer) {
+          return ws.close(4001, 'unauthorized');
+        }
+      }
       if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
         return ws.close(4003, 'invalid role');
       }
@@ -1606,7 +1651,19 @@ function attachUpgrade(server, getCtx) {
     }
     wss.handleUpgrade(req, sock, head, (ws) => {
       const ctx = getCtx();
-      if (auth !== `Bearer ${ctx.token}`) return ws.close(4001, 'unauthorized');
+      // vt-0124: daemon WS executes code on a host — gate it behind the admin
+      // token when configured. Viewer/workflow_viewer/metrics_viewer are
+      // read-only, viewer bearer is enough.
+      const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
+      const viewerBearer = `Bearer ${ctx.token}`;
+      if (role === 'daemon') {
+        const needed = adminBearer || viewerBearer;
+        if (auth !== needed) return ws.close(4001, 'unauthorized');
+      } else {
+        if (auth !== viewerBearer && auth !== adminBearer) {
+          return ws.close(4001, 'unauthorized');
+        }
+      }
       if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
         return ws.close(4003, 'invalid role');
       }
@@ -1618,8 +1675,8 @@ function attachUpgrade(server, getCtx) {
   });
 }
 
-function makeContext({ token, db, version }) {
-  const ctx = { token, db, version };
+function makeContext({ token, adminToken, db, version }) {
+  const ctx = { token, adminToken: adminToken || null, db, version };
   ctx.bus = makeBus();
   ctx.rings = new Map();
   ctx.batcher = new EventBatcher({

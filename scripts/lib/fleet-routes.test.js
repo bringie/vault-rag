@@ -77,6 +77,64 @@ test('healthz is reachable without auth', async () => {
   await close();
 });
 
+// vt-0124: admin/viewer token split for fleet API. The viewer token can only
+// read; mutating + execution endpoints require the admin token when configured.
+async function startWithAdminSplit() {
+  const pg = new Client(PG);
+  await pg.connect();
+  await pg.query('TRUNCATE fleet_workflow_runs, fleet_workflows RESTART IDENTITY CASCADE');
+  await pg.query('TRUNCATE fleet_hosts, fleet_sessions, fleet_events RESTART IDENTITY CASCADE');
+  const server = http.createServer();
+  fleetRoutes.attach(server, { token: 'VIEWER', adminToken: 'ADMIN', db: pg });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  return { server, pg, close: async () => { server.close(); await pg.end(); } };
+}
+
+test('vt-0124: viewer token can GET but NOT POST workflows', async () => {
+  const { server, close } = await startWithAdminSplit();
+  const getR = await reqJson(server, 'GET', '/fleet/workflows', { token: 'VIEWER' });
+  assert.equal(getR.status, 200);
+  const postR = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'VIEWER',
+    body: { name: 'attempt', definition: { nodes: [{ id: 'n1', type: 'delay', seconds: 0, position: { x: 0, y: 0 } }], edges: [], start: 'n1' } },
+  });
+  assert.equal(postR.status, 403);
+  assert.match(postR.body?.error || '', /admin token required/);
+  await close();
+});
+
+test('vt-0124: admin token can POST workflows', async () => {
+  const { server, close } = await startWithAdminSplit();
+  const r = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'ADMIN',
+    body: { name: 'ok', definition: { nodes: [{ id: 'n1', type: 'delay', seconds: 0, position: { x: 0, y: 0 } }], edges: [], start: 'n1' } },
+  });
+  assert.equal(r.status, 201);
+  assert.ok(r.body?.id);
+  await close();
+});
+
+test('vt-0124: cost-batch (read-shaped POST) is allowed for viewer', async () => {
+  const { server, close } = await startWithAdminSplit();
+  const r = await reqJson(server, 'POST', '/fleet/sessions/cost-batch', {
+    token: 'VIEWER',
+    body: { ids: [] },
+  });
+  // 200 with empty list (or 422 if validation says ids non-empty) — but NOT 403.
+  assert.notEqual(r.status, 403);
+  await close();
+});
+
+test('vt-0124: legacy mode (no admin token) still accepts viewer for writes', async () => {
+  const { server, close } = await startWithDb();
+  const r = await reqJson(server, 'POST', '/fleet/workflows', {
+    token: 'T',
+    body: { name: 'legacy', definition: { nodes: [{ id: 'n1', type: 'delay', seconds: 0, position: { x: 0, y: 0 } }], edges: [], start: 'n1' } },
+  });
+  assert.equal(r.status, 201);
+  await close();
+});
+
 // --- Task 8: hosts REST ---
 
 test('GET /fleet/hosts returns empty list initially', async () => {
