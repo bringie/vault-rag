@@ -505,16 +505,51 @@
     let m; while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
     return out;
   }
+  // Build claude CLI argv from the spawn form.
+  // Order: explicit flags first, then user-provided extras (so extras can override).
+  function buildSpawnArgs(extras) {
+    const model    = $('spawn-model').value.trim();
+    const system   = $('spawn-system').value.trim();
+    const tools    = $('spawn-tools').value.trim();
+    const resume   = $('spawn-resume').value.trim();
+    const danger   = $('spawn-dangerous').checked;
+    const args = [];
+    if (model)  args.push('--model', model);
+    if (system) args.push('--append-system-prompt', system);
+    if (tools)  args.push('--allowed-tools', tools);
+    if (resume) args.push('--resume', resume);
+    if (danger) args.push('--dangerously-skip-permissions');
+    return args.concat(extras);
+  }
   async function spawn() {
     const host_id = $('spawn-host').value;
     if (!host_id) { alert('no host selected'); return; }
     const cwd = $('spawn-cwd').value || '~';
-    const args = parseArgs($('spawn-args').value);
+    const prompt = $('spawn-prompt').value;
+    const args = buildSpawnArgs(parseArgs($('spawn-args').value));
     try {
       const r = await api('POST', '/sessions', { host_id, cwd, args });
       await refresh();
       attachSession(r.session_id);
+      // If a prompt was set, send it as input once the daemon reports the
+      // session is running. Poll session status briefly; bail after 5s.
+      if (prompt) sendPromptOnReady(r.session_id, prompt);
     } catch (e) { alert('spawn failed: ' + e.message); }
+  }
+  async function sendPromptOnReady(sessionId, prompt) {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      try {
+        const s = await api('GET', '/sessions/' + sessionId);
+        if (s.status === 'running') {
+          // Append newline so claude submits the prompt as a complete line.
+          await api('POST', `/sessions/${sessionId}/input`, { data: prompt + '\n' });
+          return;
+        }
+        if (s.status === 'exited' || s.status === 'killed') return;
+      } catch {}
+      await new Promise(r => setTimeout(r, 200));
+    }
   }
   function wireSpawn() {
     $('spawn-btn').onclick = spawn;

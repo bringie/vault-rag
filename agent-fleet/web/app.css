@@ -233,15 +233,18 @@ body::after {
 
 .panel-spawn label { display: block; margin-bottom: .55em; }
 .panel-spawn label .lbl { display: block; margin-bottom: .25em; }
-.panel-spawn input, .panel-spawn select {
+.panel-spawn input, .panel-spawn select, .panel-spawn textarea {
   width: 100%; padding: .42em .6em; background: var(--bg);
   color: var(--text); border: 1px solid var(--line);
   font-family: var(--font-mono); font-size: .88em;
-  outline: 0;
+  outline: 0; box-sizing: border-box;
 }
-.panel-spawn input:focus, .panel-spawn select:focus {
+.panel-spawn textarea { resize: vertical; min-height: 2.4em; }
+.panel-spawn input:focus, .panel-spawn select:focus, .panel-spawn textarea:focus {
   border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
 }
+.panel-spawn .toggle-row { display: flex; align-items: center; gap: .4em; }
+.panel-spawn .toggle-row input[type=checkbox] { width: auto; }
 .panel-spawn button { margin-top: .6em; padding: .65em; font-size: .85em; }
 
 /* ============ HOST DETAIL ============ */

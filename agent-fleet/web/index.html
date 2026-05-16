@@ -98,8 +98,35 @@
           <div class="panel-head"><h3 data-i18n="panel.spawn">SPAWN</h3></div>
           <label><span class="lbl" data-i18n="spawn.host">HOST</span><select id="spawn-host"></select></label>
           <label><span class="lbl" data-i18n="spawn.cwd">CWD</span><input id="spawn-cwd" value="~" spellcheck="false" data-i18n-placeholder="spawn.cwd_placeholder" placeholder="~ (resolved to host $HOME)"></label>
-          <label><span class="lbl" data-i18n="spawn.args">ARGS</span><input id="spawn-args" data-i18n-placeholder="spawn.args_placeholder" placeholder="--print 'hi'" spellcheck="false"></label>
-          <button id="spawn-btn" class="btn-primary" data-i18n="spawn.execute">▶ EXECUTE</button>
+          <label><span class="lbl" data-i18n="spawn.prompt">PROMPT</span>
+            <textarea id="spawn-prompt" rows="3" spellcheck="false" data-i18n-placeholder="spawn.prompt_placeholder" placeholder="(optional — sent as first input after attach)"></textarea>
+          </label>
+          <label><span class="lbl" data-i18n="spawn.model">MODEL</span>
+            <select id="spawn-model">
+              <option value="">(default)</option>
+              <option value="claude-opus-4-7">opus 4.7</option>
+              <option value="claude-sonnet-4-6">sonnet 4.6</option>
+              <option value="claude-haiku-4-5-20251001">haiku 4.5</option>
+            </select>
+          </label>
+          <label><span class="lbl" data-i18n="spawn.args">ARGS</span><input id="spawn-args" data-i18n-placeholder="spawn.args_placeholder" placeholder="extra flags" spellcheck="false"></label>
+          <details style="margin-top:.4em">
+            <summary class="lbl" style="cursor:pointer" data-i18n="spawn.advanced">advanced…</summary>
+            <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.system_prompt">SYSTEM PROMPT</span>
+              <textarea id="spawn-system" rows="2" spellcheck="false" data-i18n-placeholder="spawn.system_placeholder" placeholder="--append-system-prompt"></textarea>
+            </label>
+            <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.allowed_tools">ALLOWED TOOLS</span>
+              <input id="spawn-tools" spellcheck="false" data-i18n-placeholder="spawn.tools_placeholder" placeholder="Bash,Edit,Read">
+            </label>
+            <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.resume">RESUME SESSION</span>
+              <input id="spawn-resume" spellcheck="false" data-i18n-placeholder="spawn.resume_placeholder" placeholder="(session id or blank)">
+            </label>
+            <label class="toggle-row" style="margin-top:.4em">
+              <input type="checkbox" id="spawn-dangerous">
+              <span class="lbl" data-i18n="spawn.dangerous">dangerously skip permissions</span>
+            </label>
+          </details>
+          <button id="spawn-btn" class="btn-primary" style="margin-top:.4em" data-i18n="spawn.execute">▶ EXECUTE</button>
           <details style="margin-top:.6em">
             <summary class="lbl" style="cursor:pointer" data-i18n="spawn.broadcast">broadcast…</summary>
             <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.group">GROUP</span>
