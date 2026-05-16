@@ -761,20 +761,24 @@ async function handleDeleteWorkflow({ req, res, ctx }) {
 }
 
 async function ensureWorkflowRunner(ctx) {
-  if (ctx.workflowRunner || !ctx.db) return ctx.workflowRunner;
-  // First: orphan stranded runs from previous hub lifetime. Must happen BEFORE
-  // we create new runs in this lifetime; otherwise they'd be caught too.
-  if (!ctx._workflowOrphanDone) {
-    ctx._workflowOrphanDone = true;
-    try { await wfDb.orphanRunningRuns(ctx.db); }
-    catch (e) { console.error('[fleet] orphan workflow runs:', e.message); }
+  if (ctx.workflowRunner) return ctx.workflowRunner;
+  if (!ctx.db) return null;
+  // Concurrency guard: cache the in-flight init promise synchronously so
+  // parallel calls await the same single-init, never racing past the guard.
+  if (!ctx._workflowRunnerInit) {
+    ctx._workflowRunnerInit = (async () => {
+      // Orphan stranded runs from previous hub lifetime BEFORE creating new ones
+      try { await wfDb.orphanRunningRuns(ctx.db); }
+      catch (e) { console.error('[fleet] orphan workflow runs:', e.message); }
+      ctx.workflowRunner = createRunner({
+        db: ctx.db,
+        spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(ctx, node, prompt, runId),
+        broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
+      });
+      return ctx.workflowRunner;
+    })();
   }
-  ctx.workflowRunner = createRunner({
-    db: ctx.db,
-    spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(ctx, node, prompt, runId),
-    broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
-  });
-  return ctx.workflowRunner;
+  return ctx._workflowRunnerInit;
 }
 
 async function handleRunWorkflow({ req, res, body, ctx }) {
