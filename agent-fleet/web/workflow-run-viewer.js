@@ -61,28 +61,49 @@
       } catch (e) { alert(e.message); }
     };
 
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}/fleet/ws?role=workflow_viewer&run_id=${runId}`;
-    activeWs = new WebSocket(url, [`bearer.${token()}`]);
-    activeWs.onmessage = (ev) => {
-      let f;
-      try { f = JSON.parse(ev.data); } catch { return; }
-      if (f.type === 'run_state') {
-        setStatus(f.status);
-        run.status = f.status;
-      } else if (f.type === 'node_progress') {
-        canvas.setNodeStatus(f.node_id, f.status);
-        if (!run.state.outputs) run.state.outputs = {};
-        if (f.status === 'done') {
-          run.state.outputs[f.node_id] = { output: f.output, exit_code: f.exit_code, session_id: f.session_id };
+    let stopped = false;
+    let backoff = 800;
+    const connectStream = () => {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${location.host}/fleet/ws?role=workflow_viewer&run_id=${runId}`;
+      activeWs = new WebSocket(url, [`bearer.${token()}`]);
+      activeWs.onopen = () => { backoff = 800; };
+      activeWs.onmessage = (ev) => {
+        let f;
+        try { f = JSON.parse(ev.data); } catch { return; }
+        if (f.type === 'run_state') {
+          setStatus(f.status);
+          run.status = f.status;
+        } else if (f.type === 'node_progress') {
+          canvas.setNodeStatus(f.node_id, f.status);
+          if (!run.state.outputs) run.state.outputs = {};
+          if (f.status === 'done') {
+            run.state.outputs[f.node_id] = { output: f.output, exit_code: f.exit_code, session_id: f.session_id };
+          }
+          if (f.status === 'failed') {
+            run.state.outputs[f.node_id] = { error: f.error };
+          }
         }
-        if (f.status === 'failed') {
-          run.state.outputs[f.node_id] = { error: f.error };
-        }
-      }
+      };
+      activeWs.onerror = () => {};
+      activeWs.onclose = (ev) => {
+        if (stopped || ev.code === 4001) return;
+        // Re-fetch run on reconnect so terminal status is correct even if we
+        // missed the final run_state frame.
+        const wait = Math.min(backoff *= 1.7, 8000);
+        setTimeout(async () => {
+          if (stopped) return;
+          try {
+            const fresh = await api(`/workflow-runs/${runId}`);
+            run = fresh;
+            setStatus(run.status);
+          } catch {}
+          if (!stopped) connectStream();
+        }, wait);
+      };
     };
-    activeWs.onerror = () => {};
-    const closeWs = () => { try { activeWs && activeWs.close(); } catch {} activeWs = null; };
+    connectStream();
+    const closeWs = () => { stopped = true; try { activeWs && activeWs.close(); } catch {} activeWs = null; };
     window.addEventListener('hashchange', closeWs, { once: true });
   }
 

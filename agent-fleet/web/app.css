@@ -333,6 +333,17 @@ body::after {
   border-top: 1px solid var(--line); min-height: 0; height: 100%;
   overflow: hidden;
 }
+.term-frame.term-reconnecting #term { opacity: .35; filter: grayscale(.6); transition: opacity .2s; }
+.term-frame.term-reconnecting::after {
+  content: '⟳ reconnecting…';
+  position: absolute; top: 12px; right: 22px;
+  background: var(--warn); color: var(--bg);
+  font-family: var(--font-mono); font-size: .75em;
+  padding: .25em .6em; border-radius: 2px;
+  animation: pulse 1.4s ease-in-out infinite;
+  z-index: 10;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 .term-corner { position: absolute; width: 18px; height: 18px; border: 1px solid var(--accent); opacity: .5; }
 .term-corner.tl { top: 6px; left: 6px; border-right: 0; border-bottom: 0; }
 .term-corner.tr { top: 6px; right: 6px; border-left: 0; border-bottom: 0; }

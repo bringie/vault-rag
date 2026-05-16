@@ -232,11 +232,14 @@
 
   // ============ Terminal + WS ============
   function setViewerStatus(s) {
-    const map = { running: 'val-ok', exited: '', killed: 'val-danger', orphaned: 'val-warn', pending: 'val-warn' };
+    const map = { running: 'val-ok', exited: '', killed: 'val-danger', orphaned: 'val-warn', pending: 'val-warn', reconnecting: 'val-warn' };
     const el = $('v-status');
     el.textContent = s || 'idle';
     el.className = 'val ' + (map[s] || '');
     state.viewerStatusValue = s;
+    // Dim terminal during reconnect so the freeze is visually obvious.
+    const tf = document.querySelector('.term-frame');
+    if (tf) tf.classList.toggle('term-reconnecting', s === 'reconnecting');
   }
   function setOverlay(visible, msg, sub) {
     const o = $('term-overlay');
@@ -402,7 +405,12 @@
     const url = `${proto}//${location.host}/api/fleet/ws?role=viewer&session_id=${id}`;
     const ws = new WebSocket(url, ['bearer.' + state.token]);
     state.ws = ws;
-    ws.onopen = () => { state.backoff = 800; };
+    ws.onopen = () => {
+      state.backoff = 800;
+      // If we were in reconnecting mode, clear the dim. Real status will arrive
+      // via the 'hello' frame; meanwhile show 'attaching' as transient.
+      if (state.viewerStatusValue === 'reconnecting') setViewerStatus('attaching');
+    };
     // Coalesce rapid pty_data frames into one term.write per animation frame.
     // The default per-frame write was the bottleneck on bursty claude output.
     let pendingChunks = [];
@@ -481,6 +489,9 @@
         localStorage.removeItem('fleetToken'); location.reload(); return;
       }
       if (state.selected === id) {
+        // Don't override terminal-state-flagged statuses with 'reconnecting'.
+        const v = state.viewerStatusValue;
+        if (v !== 'exited' && v !== 'killed') setViewerStatus('reconnecting');
         const wait = Math.min(state.backoff *= 1.7, 8000);
         setTimeout(() => connectWs(id), wait);
       } else {
