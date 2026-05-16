@@ -490,11 +490,17 @@ async function handleListGroups({ res, ctx }) {
   send(res, 200, rows);
 }
 
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+function validColor(c) {
+  return c == null || c === '' || HEX_COLOR_RE.test(c);
+}
+
 async function handleCreateGroup({ res, body, ctx }) {
   if (!body || !body.name) return send(res, 422, { error: 'name required' });
+  if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
   try {
     const g = await fleetDb.createGroup(ctx.db, {
-      name: body.name, description: body.description, color: body.color,
+      name: body.name, description: body.description, color: body.color || null,
       labels: Array.isArray(body.labels) ? body.labels : [],
     });
     send(res, 201, g);
@@ -510,7 +516,10 @@ async function handlePatchGroup({ req, res, body, ctx }) {
   const patch = {};
   if ('name' in body)        patch.name = body.name;
   if ('description' in body) patch.description = body.description;
-  if ('color' in body)       patch.color = body.color;
+  if ('color' in body) {
+    if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
+    patch.color = body.color || null;
+  }
   if ('labels' in body) {
     if (!Array.isArray(body.labels)) return send(res, 422, { error: 'labels must be array of strings' });
     patch.labels = body.labels;
@@ -520,6 +529,7 @@ async function handlePatchGroup({ req, res, body, ctx }) {
     if (!g) return send(res, 404, { error: 'not found' });
     send(res, 200, g);
   } catch (e) {
+    if (e.code === '23505') return send(res, 409, { error: 'name already exists' });
     send(res, 400, { error: e.message });
   }
 }

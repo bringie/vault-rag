@@ -1087,13 +1087,19 @@
     modal.innerHTML = `
       <div class="gd-frame">
         <div class="gd-head">
-          <span class="display" style="font-size:1.1em">GROUP // ${esc(g.name)}</span>
+          <span class="display" style="font-size:1.1em">GROUP //</span>
+          <input id="gd-name" class="gd-name-input" value="${esc(g.name)}" maxlength="64">
+          <input id="gd-color" type="color" value="${esc(g.color || '#888888')}" title="color">
           <span style="flex:1"></span>
           <button class="btn-ghost" data-gd-close>× close</button>
         </div>
         <div class="gd-body">
           <section>
-            <label class="lbl">LABELS (теги наследуются всеми хостами группы)</label>
+            <label class="lbl">DESCRIPTION</label>
+            <input id="gd-desc" value="${esc(g.description || '')}" style="width:100%; box-sizing:border-box; padding:.3em .5em; background:var(--bg); color:var(--text); border:1px solid var(--line); font-family:var(--font-mono);">
+          </section>
+          <section style="margin-top:1.4em">
+            <label class="lbl">LABELS (inherited by all member hosts)</label>
             <div id="gd-labels-chip-row"></div>
             <form id="gd-add-label-form" style="margin-top:.4em">
               <input id="gd-new-label" type="text" placeholder="new label…" style="width:200px"/>
@@ -1111,6 +1117,40 @@
         </div>
       </div>
     `;
+    // Editable name/color/desc handlers
+    $('gd-name').onblur = async () => {
+      const v = $('gd-name').value.trim();
+      if (!v || v === g.name) return;
+      if (state.groups.some(other => other.name === v && other.id !== g.id)) {
+        alert('name already exists');
+        $('gd-name').value = g.name;
+        return;
+      }
+      try {
+        await api('PATCH', '/groups/' + g.id, { name: v });
+        g.name = v;
+        loadGroups();
+      } catch (e) {
+        alert(e.message);
+        $('gd-name').value = g.name;
+      }
+    };
+    $('gd-color').onchange = async () => {
+      try {
+        await api('PATCH', '/groups/' + g.id, { color: $('gd-color').value });
+        g.color = $('gd-color').value;
+        loadGroups();
+      } catch (e) { alert(e.message); }
+    };
+    $('gd-desc').onblur = async () => {
+      const v = $('gd-desc').value.trim();
+      if (v === (g.description || '')) return;
+      try {
+        await api('PATCH', '/groups/' + g.id, { description: v || null });
+        g.description = v;
+        loadGroups();
+      } catch (e) { alert(e.message); }
+    };
     function renderLabels() {
       const row = $('gd-labels-chip-row');
       row.innerHTML = (g.labels || []).length

@@ -370,6 +370,14 @@ body::after {
 .chip-inherited { background: var(--panel-2); border-style: dashed; cursor: default; }
 .chip-source { color: var(--text-faint); font-size: .85em; margin-left: .3em; }
 .chip-row-readonly { opacity: 0.9; }
+
+.gd-name-input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  font-family: var(--font-display); font-size: 1.05em;
+  padding: .2em .5em; min-width: 180px;
+}
+.gd-name-input:focus { border-color: var(--accent); outline: none; }
+#gd-color { width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); cursor: pointer; }
 #price-modal {
   position: fixed; inset: 0; z-index: 90;
   background: rgba(0,0,0,0.7);

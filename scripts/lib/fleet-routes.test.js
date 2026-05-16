@@ -620,3 +620,31 @@ test('WS role metrics_viewer streams initial snapshot from metadata', async () =
   ws.close();
   await close();
 });
+
+test('PATCH /fleet/groups/:id rejects duplicate name with 409', async () => {
+  const { server, pg, close } = await startWithDb();
+  await pg.query(`TRUNCATE fleet_groups CASCADE`);
+  const a = await pg.query(`INSERT INTO fleet_groups (name) VALUES ('alpha-r') RETURNING id`);
+  await pg.query(`INSERT INTO fleet_groups (name) VALUES ('beta-r')`);
+  const r = await reqJson(server, 'PATCH', `/fleet/groups/${a.rows[0].id}`, {
+    token: 'T', body: { name: 'beta-r' },
+  });
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /already exists/);
+  await close();
+});
+
+test('PATCH /fleet/groups/:id rejects invalid color hex with 422', async () => {
+  const { server, pg, close } = await startWithDb();
+  await pg.query(`TRUNCATE fleet_groups CASCADE`);
+  const g = await pg.query(`INSERT INTO fleet_groups (name) VALUES ('g-color-test') RETURNING id`);
+  const bad = await reqJson(server, 'PATCH', `/fleet/groups/${g.rows[0].id}`, {
+    token: 'T', body: { color: 'javascript:alert(1)' },
+  });
+  assert.equal(bad.status, 422);
+  const ok = await reqJson(server, 'PATCH', `/fleet/groups/${g.rows[0].id}`, {
+    token: 'T', body: { color: '#abc123' },
+  });
+  assert.equal(ok.status, 200);
+  await close();
+});
