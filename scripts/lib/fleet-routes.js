@@ -980,6 +980,16 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && (path === '/fleet/' || path === '/fleet' || path.startsWith('/fleet/static/'))) {
     if (fleetStatic.serve(req, res)) return;
   }
+  // Daemon download artifacts (tarball/deb/rpm/install scripts) served
+  // unauthenticated — the install path is `curl | sudo bash` from a fresh
+  // host that doesn't yet have a token. The bearer is supplied to the
+  // installed daemon via /etc/agent-fleet/daemon.env, not at download time.
+  if (method === 'GET' && path.startsWith('/fleet/download/')) {
+    if (fleetStatic.serveDownload(req, res)) return;
+  }
+  if (method === 'GET' && (path === '/fleet/install.sh' || path === '/fleet/install-macos.sh')) {
+    if (fleetStatic.serveDownload(req, res)) return;
+  }
   // healthz before auth
   if (method === 'GET' && path === '/fleet/healthz') {
     return send(res, 200, { ok: true });

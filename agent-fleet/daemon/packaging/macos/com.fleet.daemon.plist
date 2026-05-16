@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>node</string>
+    <string>__INSTALL_DIR__/bin/daemon.js</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <!-- The values below are filled in by install.sh from
+         __CONF_DIR__/daemon.env. launchd doesn't natively read env files. -->
+    <key>AGENT_FLEET_HUB</key>          <string>__HUB__</string>
+    <key>AGENT_FLEET_TOKEN</key>        <string>__TOKEN__</string>
+    <key>AGENT_FLEET_HOST_NAME</key>    <string>__HOST_NAME__</string>
+    <key>AGENT_FLEET_STATE_DIR</key>    <string>__STATE_DIR__</string>
+  </dict>
+
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/agent-fleet-daemon.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/agent-fleet-daemon.err.log</string>
+</dict>
+</plist>
