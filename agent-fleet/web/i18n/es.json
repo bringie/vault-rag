@@ -136,6 +136,7 @@
   "spawn.cwd_placeholder": "~ (resuelve al $HOME del host)",
   "spawn.prompt": "PROMPT",
   "spawn.prompt_placeholder": "(opcional — se envía como primer input después de attach)",
+  "spawn.agent": "AGENTE",
   "spawn.model": "MODELO",
   "spawn.system_prompt": "SYSTEM PROMPT",
   "spawn.system_placeholder": "--append-system-prompt",

@@ -136,6 +136,7 @@
   "spawn.cwd_placeholder": "~ (резолвится в $HOME хоста)",
   "spawn.prompt": "ПРОМТ",
   "spawn.prompt_placeholder": "(опц. — отправится как первый ввод после attach)",
+  "spawn.agent": "АГЕНТ",
   "spawn.model": "МОДЕЛЬ",
   "spawn.system_prompt": "СИСТЕМНЫЙ ПРОМТ",
   "spawn.system_placeholder": "--append-system-prompt",

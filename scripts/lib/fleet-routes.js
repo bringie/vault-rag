@@ -445,18 +445,42 @@ async function handleSessionTimeline({ req, res, ctx }) {
   send(res, 200, { session_id: sid, status: s.status, events });
 }
 
+// Spawn schema (vt-0102). Two shapes accepted:
+//   Legacy:  { host_id, cwd, args:[...], env? }
+//   Generic: { host_id, cwd, agent?, prompt?, model?, system_prompt?,
+//              allowed_tools?, resume_session_id?, dangerous?, args?, env? }
+// Server stores raw fields in fleet_sessions.args/metadata; daemon picks
+// backend on its side via vt-0096 contract.
+const STRUCTURED_SPAWN_FIELDS = [
+  'agent', 'prompt', 'model', 'system_prompt',
+  'allowed_tools', 'resume_session_id', 'dangerous',
+];
 async function handleCreateSession({ body, res, ctx }) {
   if (!body || !body.host_id) return send(res, 422, { error: 'host_id required' });
   if (!body.cwd) return send(res, 422, { error: 'cwd required' });
   const host = await fleetDb.getHost(ctx.db, body.host_id);
   if (!host) return send(res, 422, { error: 'host_id not found' });
+  // Carry structured fields into metadata so the row remains the source of
+  // truth for a future re-run (POST /sessions with rerun_of: <sid>).
+  const metadata = { ...(body.metadata || {}) };
+  for (const k of STRUCTURED_SPAWN_FIELDS) {
+    if (body[k] != null) metadata[k] = body[k];
+  }
   const s = await fleetDb.createSession(ctx.db, {
     hostId: body.host_id, cwd: body.cwd,
     args: body.args, env: body.env,
-    createdBy: body.created_by, label: body.label, metadata: body.metadata,
+    createdBy: body.created_by, label: body.label, metadata,
   });
   if (ctx.bus) {
-    ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env });
+    // Forward both legacy args and structured fields. The daemon decides
+    // which path to take via hasStructuredFields() (see ws-client.js).
+    const payload = {
+      session_id: s.id, cwd: s.cwd, args: s.args, env: s.env || {},
+    };
+    for (const k of STRUCTURED_SPAWN_FIELDS) {
+      if (body[k] != null) payload[k] = body[k];
+    }
+    ctx.bus.requestSpawn(host.id, payload);
   }
   send(res, 201, { session_id: s.id });
 }

@@ -581,14 +581,25 @@
     if (!host_id) { alert('no host selected'); return; }
     const cwd = $('spawn-cwd').value || '~';
     const prompt = $('spawn-prompt').value;
-    const args = buildSpawnArgs(parseArgs($('spawn-args').value));
+    // vt-0102: send generic spawn payload. Server forwards structured fields
+    // to the daemon, which picks the backend (vt-0096) and builds argv there.
+    // Falls back to legacy args-passthrough if user typed extras in ARGS.
+    const body = {
+      host_id, cwd,
+      agent: ($('spawn-agent') && $('spawn-agent').value) || 'claude',
+      model:             $('spawn-model').value.trim() || undefined,
+      system_prompt:     $('spawn-system').value.trim() || undefined,
+      allowed_tools:     $('spawn-tools').value.trim()  || undefined,
+      resume_session_id: $('spawn-resume').value.trim() || undefined,
+      dangerous:         $('spawn-dangerous').checked || undefined,
+      args:              parseArgs($('spawn-args').value),
+    };
     btn.disabled = true;
     try {
-      const r = await api('POST', '/sessions', { host_id, cwd, args });
+      const r = await api('POST', '/sessions', body);
       await refresh();
       attachSession(r.session_id);
-      // If a prompt was set, send it as input once the daemon reports the
-      // session is running. Poll session status briefly; bail after 5s.
+      // Prompt is sent over PTY stdin once daemon reports session running.
       if (prompt) sendPromptOnReady(r.session_id, prompt);
     } catch (e) {
       alert('spawn failed: ' + e.message);
