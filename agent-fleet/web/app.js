@@ -60,9 +60,32 @@
     if (r.status === 401) {
       localStorage.removeItem('fleetToken'); location.reload(); throw new Error('auth');
     }
-    if (!r.ok) throw new Error(`${method} ${path}: ${r.status}`);
+    if (!r.ok) {
+      const e = new Error(`${method} ${path}: ${r.status}`);
+      e.status = r.status;
+      try { e.body = await r.json(); } catch {}
+      throw e;
+    }
     if (r.status === 204) return null;
     return r.json();
+  }
+
+  // Optimistic-concurrency wrapper for group PATCH (vt-0087).
+  // Returns updated row on success; on 409 conflict, alerts user, reloads
+  // groups, and returns null so caller skips local mutation.
+  async function patchGroupWithVersion(g, patch) {
+    try {
+      const updated = await api('PATCH', '/groups/' + g.id, { ...patch, expected_version: g.version });
+      g.version = updated.version;
+      return updated;
+    } catch (e) {
+      if (e.status === 409 && e.body && e.body.current) {
+        alert('group was edited in another tab — reloading');
+        loadGroups();
+        return null;
+      }
+      throw e;
+    }
   }
 
   // ============ Render ============
@@ -1131,7 +1154,8 @@
         return;
       }
       try {
-        await api('PATCH', '/groups/' + g.id, { name: v });
+        const updated = await patchGroupWithVersion(g, { name: v });
+        if (!updated) return;
         g.name = v;
         loadGroups();
       } catch (e) {
@@ -1141,7 +1165,8 @@
     };
     $('gd-color').onchange = async () => {
       try {
-        await api('PATCH', '/groups/' + g.id, { color: $('gd-color').value });
+        const updated = await patchGroupWithVersion(g, { color: $('gd-color').value });
+        if (!updated) return;
         g.color = $('gd-color').value;
         loadGroups();
       } catch (e) { alert(e.message); }
@@ -1150,7 +1175,8 @@
       const v = $('gd-desc').value.trim();
       if (v === (g.description || '')) return;
       try {
-        await api('PATCH', '/groups/' + g.id, { description: v || null });
+        const updated = await patchGroupWithVersion(g, { description: v || null });
+        if (!updated) return;
         g.description = v;
         loadGroups();
       } catch (e) { alert(e.message); }
@@ -1166,7 +1192,8 @@
           const idx = parseInt(btn.dataset.rmLabel, 10);
           const newLabels = (g.labels || []).filter((_, i) => i !== idx);
           try {
-            await api('PATCH', '/groups/' + g.id, { labels: newLabels });
+            const updated = await patchGroupWithVersion(g, { labels: newLabels });
+            if (!updated) return;
             g.labels = newLabels;
             renderLabels();
             loadGroups();
@@ -1211,7 +1238,8 @@
       if (!v) return;
       const newLabels = [...(g.labels || []), v];
       try {
-        await api('PATCH', '/groups/' + g.id, { labels: newLabels });
+        const updated = await patchGroupWithVersion(g, { labels: newLabels });
+        if (!updated) return;
         g.labels = newLabels;
         inp.value = '';
         renderLabels();

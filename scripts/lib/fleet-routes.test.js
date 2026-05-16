@@ -664,3 +664,29 @@ test('POST /fleet/broadcast resolves tag via group-label inheritance', async () 
   assert.notEqual(r.status, 404, `broadcast should resolve inherited tag, got ${r.status} ${JSON.stringify(r.body)}`);
   await close();
 });
+
+test('PATCH /fleet/groups/:id with expected_version returns 409 on conflict', async () => {
+  const { server, pg, close } = await startWithDb();
+  await pg.query(`TRUNCATE fleet_groups CASCADE`);
+  const g = await pg.query(`INSERT INTO fleet_groups (name) VALUES ('vc-test') RETURNING id, version`);
+  const gid = g.rows[0].id;
+  // First PATCH with expected_version=1 succeeds → version bumps to 2
+  const r1 = await reqJson(server, 'PATCH', `/fleet/groups/${gid}`, {
+    token: 'T', body: { description: 'first', expected_version: 1 },
+  });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.version, 2, `version should bump to 2, got ${r1.body.version}`);
+  // Second PATCH with stale expected_version=1 → 409
+  const r2 = await reqJson(server, 'PATCH', `/fleet/groups/${gid}`, {
+    token: 'T', body: { description: 'second', expected_version: 1 },
+  });
+  assert.equal(r2.status, 409);
+  assert.match(r2.body.error, /version conflict/);
+  assert.ok(r2.body.current, 'response should include current row for client to reconcile');
+  // PATCH without expected_version still works (back-compat)
+  const r3 = await reqJson(server, 'PATCH', `/fleet/groups/${gid}`, {
+    token: 'T', body: { description: 'third' },
+  });
+  assert.equal(r3.status, 200);
+  await close();
+});

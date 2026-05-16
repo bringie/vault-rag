@@ -529,9 +529,11 @@ async function handlePatchGroup({ req, res, body, ctx }) {
     if (!Array.isArray(body.labels)) return send(res, 422, { error: 'labels must be array of strings' });
     patch.labels = body.labels;
   }
+  const expectedVersion = Number.isFinite(body.expected_version) ? body.expected_version : undefined;
   try {
-    const g = await fleetDb.updateGroup(ctx.db, id, patch);
+    const g = await fleetDb.updateGroup(ctx.db, id, patch, expectedVersion);
     if (!g) return send(res, 404, { error: 'not found' });
+    if (g.__conflict) return send(res, 409, { error: 'version conflict', current: g.current });
     send(res, 200, g);
   } catch (e) {
     if (e.code === '23505') return send(res, 409, { error: 'name already exists' });

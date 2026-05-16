@@ -58,7 +58,10 @@ async function createGroup(c, { name, description, color, labels }) {
   return rows[0];
 }
 
-async function updateGroup(c, id, patch) {
+// expectedVersion (optional) enables optimistic-concurrency for cross-tab edits.
+// If provided and current version differs, returns 'conflict' (no UPDATE applied);
+// caller surfaces 409. Otherwise updates and bumps version atomically.
+async function updateGroup(c, id, patch, expectedVersion) {
   const updates = []; const args = [];
   if ('name' in patch)        { args.push(patch.name);        updates.push(`name = $${args.length}`); }
   if ('description' in patch) { args.push(patch.description); updates.push(`description = $${args.length}`); }
@@ -69,10 +72,25 @@ async function updateGroup(c, id, patch) {
     updates.push(`labels = $${args.length}`);
   }
   if (!updates.length) return await getGroup(c, id);
+  updates.push(`version = version + 1`);
   args.push(id);
-  const { rows } = await c.query(
-    `UPDATE fleet_groups SET ${updates.join(', ')} WHERE id = $${args.length} RETURNING *`, args);
-  return rows[0] || null;
+  let sql = `UPDATE fleet_groups SET ${updates.join(', ')} WHERE id = $${args.length}`;
+  if (Number.isFinite(expectedVersion)) {
+    args.push(expectedVersion);
+    sql += ` AND version = $${args.length}`;
+  }
+  sql += ' RETURNING *';
+  const { rows } = await c.query(sql, args);
+  if (!rows.length) {
+    if (Number.isFinite(expectedVersion)) {
+      // Distinguish 404 (not found) vs 409 (version mismatch)
+      const cur = await getGroup(c, id);
+      if (!cur) return null;
+      return { __conflict: true, current: cur };
+    }
+    return null;
+  }
+  return rows[0];
 }
 
 // Effective capabilities = host.capabilities ∪ ⋃ group.labels for each group host is in.
