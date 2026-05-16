@@ -238,7 +238,9 @@ async function handleGet(body) {
   if (!fs.existsSync(full)) throw new Error('not found');
   const text = fs.readFileSync(full, 'utf8');
   const stat = fs.statSync(full);
-  return { path: p, text, mtime: stat.mtime.toISOString(), size: stat.size };
+  // vt-0141: round-trip sha so callers (Fleet UI editor) can send it back
+  // as expected_sha on PUT for optimistic concurrency.
+  return { path: p, text, mtime: stat.mtime.toISOString(), size: stat.size, sha: sha256(text) };
 }
 
 async function handleBacklinks(body) {
@@ -295,6 +297,19 @@ async function handlePut(body) {
   const now = new Date().toISOString();
   const existingRaw = exists ? fs.readFileSync(full, 'utf8') : '';
   const shaBefore = exists ? sha256(existingRaw) : null;
+  // vt-0141: optimistic concurrency. If the caller passes expected_sha, the
+  // current on-disk SHA must match — otherwise this is a mid-air collision
+  // (Obsidian-Git push + Fleet UI editor both writing the same note). 412 lets
+  // the UI show a "reload from server / force overwrite" conflict modal.
+  // expected_sha is meaningless on the create path (mode === 'create' already
+  // 409s on exists), and null/undefined means "no concurrency check" so old
+  // callers keep working.
+  if (body.expected_sha !== undefined && body.expected_sha !== null
+      && exists && mode !== 'create' && body.expected_sha !== shaBefore) {
+    const err = new Error(`stale write: expected_sha=${body.expected_sha} but current=${shaBefore}`);
+    err.code = 412;
+    throw err;
+  }
   const { fm: existingFm, body: existingBody } = exists
     ? lib.parseFrontmatter(existingRaw)
     : { fm: {}, body: '' };
@@ -581,5 +596,11 @@ process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
 
 // vt-0141 prereq: export `server` so tests can read .address().port and call
 // .close(). Requires PORT=0 + VAULT_SECRETS_SKIP_PG=1 + test-pg env to be
-// set BEFORE require. See scripts/lib/rag-api-test-helpers.js.
-module.exports = { server };
+// set BEFORE require. cleanup() ends the lazy pg + tokmon clients so the
+// node:test event loop can exit. See scripts/lib/rag-api-test-helpers.js.
+async function cleanup() {
+  if (pg) { try { await pg.end(); } catch {} pg = null; }
+  if (fleetCtx?.tokmonDb) { try { await fleetCtx.tokmonDb.end(); } catch {} fleetCtx.tokmonDb = null; }
+  if (fleetCtx?.db) { try { await fleetCtx.db.end(); } catch {} fleetCtx.db = null; }
+}
+module.exports = { server, cleanup };

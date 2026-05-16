@@ -71,7 +71,8 @@ async function startTestApi({
 
 async function closeTestApi() {
   if (!_ragApiHandle) return;
-  const { server } = _ragApiHandle;
+  const { server, cleanup } = _ragApiHandle;
+  if (cleanup) await cleanup();
   await new Promise(r => server.close(r));
   _ragApiHandle = null;
 }
