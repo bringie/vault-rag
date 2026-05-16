@@ -160,7 +160,7 @@ function createRunner(deps) {
       }
       const node = byId.get(current);
       if (!node) {
-        await wfDb.updateRunStatus(deps.db, runId, 'failed', `unknown node ${current}`);
+        await wfDb.updateRunStatus(deps.db, runId, 'failed', `unknown node ${current}`, current);
         deps.broadcast(runId, { type: 'run_state', run_id: runId, status: 'failed' });
         return;
       }
@@ -181,7 +181,7 @@ function createRunner(deps) {
           return;
         }
         deps.broadcast(runId, { type: 'node_progress', run_id: runId, node_id: current, status: 'failed', error: e.message });
-        await wfDb.updateRunStatus(deps.db, runId, 'failed', `${current}: ${e.message}`);
+        await wfDb.updateRunStatus(deps.db, runId, 'failed', `${current}: ${e.message}`, current);
         deps.broadcast(runId, { type: 'run_state', run_id: runId, status: 'failed' });
         return;
       }

@@ -3,11 +3,24 @@
 // Callers pass an active pg Client/Pool.
 
 async function listWorkflows(c) {
+  // LATERAL JOIN pulls the most-recent run per workflow (or NULL columns
+  // if the workflow has never been run). Powers the "last run / status /
+  // failed at" columns in the workflows list UI.
   const { rows } = await c.query(`
-    SELECT id, name, description,
-           jsonb_array_length(definition->'nodes') AS n_nodes,
-           updated_at, created_at
-    FROM fleet_workflows ORDER BY updated_at DESC`);
+    SELECT w.id, w.name, w.description,
+           jsonb_array_length(w.definition->'nodes') AS n_nodes,
+           w.updated_at, w.created_at,
+           lr.status         AS last_status,
+           lr.finished_at    AS last_finished,
+           lr.failed_node_id AS last_failed_node
+    FROM fleet_workflows w
+    LEFT JOIN LATERAL (
+      SELECT status, finished_at, failed_node_id
+      FROM fleet_workflow_runs
+      WHERE workflow_id = w.id
+      ORDER BY created_at DESC LIMIT 1
+    ) lr ON true
+    ORDER BY w.updated_at DESC`);
   return rows;
 }
 
@@ -66,16 +79,18 @@ async function createRun(c, { workflowId, snapshot, state = {} }) {
   return rows[0];
 }
 
-async function updateRunStatus(c, id, status, errorMsg = null) {
+async function updateRunStatus(c, id, status, errorMsg = null, failedNodeId = null) {
   const ts = status === 'running' ? 'started_at = now()' :
              (status === 'done' || status === 'failed' || status === 'cancelled') ? 'finished_at = now()' :
              '';
   const tsClause = ts ? `, ${ts}` : '';
-  const errClause = errorMsg ? `, state = jsonb_set(state, '{error}', to_jsonb($3::text), true)` : '';
   const args = [id, status];
-  if (errorMsg) args.push(errorMsg);
+  let errClause = '';
+  if (errorMsg) { args.push(errorMsg); errClause = `, state = jsonb_set(state, '{error}', to_jsonb($${args.length}::text), true)`; }
+  let failClause = '';
+  if (failedNodeId) { args.push(failedNodeId); failClause = `, failed_node_id = $${args.length}`; }
   await c.query(
-    `UPDATE fleet_workflow_runs SET status = $2 ${tsClause} ${errClause} WHERE id = $1`, args);
+    `UPDATE fleet_workflow_runs SET status = $2 ${tsClause} ${errClause} ${failClause} WHERE id = $1`, args);
 }
 
 async function updateRunState(c, id, patch) {

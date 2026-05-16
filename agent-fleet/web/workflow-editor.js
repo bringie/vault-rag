@@ -26,6 +26,15 @@
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   }
   function t(k, vars) { return window.fleetI18n ? window.fleetI18n.t(k, vars) : k; }
+  function relTime(iso) {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 0) return new Date(iso).toLocaleString();
+    const s = Math.floor(ms / 1000);
+    if (s < 60)    return s + 's ago';
+    if (s < 3600)  return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
 
   async function openWorkflowsList() {
     const view = document.getElementById('workflowsview');
@@ -38,12 +47,23 @@
         body.innerHTML = `<p style="padding:1em;color:var(--text-dim)">${esc(t('workflows.empty'))}</p>`;
       } else {
         body.innerHTML = `<table class="wf-runs-table archive-table">
-          <thead><tr><th>${esc(t('workflows.col.name'))}</th><th>${esc(t('workflows.col.nodes'))}</th><th>${esc(t('workflows.col.updated'))}</th><th>${esc(t('workflows.col.actions'))}</th></tr></thead>
+          <thead><tr>
+            <th>${esc(t('workflows.col.name'))}</th>
+            <th>${esc(t('workflows.col.nodes'))}</th>
+            <th>${esc(t('workflows.col.updated'))}</th>
+            <th>${esc(t('workflows.col.last_run'))}</th>
+            <th>${esc(t('workflows.col.status'))}</th>
+            <th>${esc(t('workflows.col.failed_at'))}</th>
+            <th>${esc(t('workflows.col.actions'))}</th>
+          </tr></thead>
           <tbody>${list.map(w => `
             <tr class="row-clickable" data-edit="${w.id}">
               <td>${esc(w.name)}</td>
               <td>${w.n_nodes || 0}</td>
               <td>${new Date(w.updated_at).toLocaleString()}</td>
+              <td class="nowrap">${w.last_finished ? esc(relTime(w.last_finished)) : '—'}</td>
+              <td>${w.last_status ? `<span class="wf-run-status-${esc(w.last_status)}">${esc(t('workflows.run_status.' + w.last_status))}</span>` : '—'}</td>
+              <td>${w.last_failed_node ? `<code>${esc(w.last_failed_node)}</code>` : '—'}</td>
               <td>
                 <button class="btn-row" data-run="${w.id}">${esc(t('workflows.btn.run'))}</button>
                 <button class="btn-row" data-del="${w.id}">${esc(t('workflows.btn.delete'))}</button>
