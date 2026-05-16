@@ -238,21 +238,34 @@ async function handleExec({ req, res, body, ctx }) {
   if (!ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: {} })) {
     return send(res, 502, { error: 'daemon vanished mid-dispatch' });
   }
-  // Subscribe to session_exit
+  // Subscribe to session_exit. Use a plain Promise executor (no async) and a
+  // single unsubscribe() closure so the hook is guaranteed freed on every
+  // resolution path — including orphan reconciliation and spawn_err (which
+  // both now also emit session_exit to viewers, see handleDaemonWs).
   const TIMEOUT = Math.min(Math.max(parseInt(timeout_ms || 120000, 10), 5000), 600000);
-  let finished = false;
-  const result = await new Promise(async (resolve) => {
-    const handler = (frame) => {
-      if (frame.type === 'session_exit') { finished = true; resolve({ exitCode: frame.exit_code }); }
+  let unsubscribed = false;
+  let timeoutHandle = null;
+  let handler = null;
+  const result = await new Promise((resolve) => {
+    const cleanup = () => {
+      if (unsubscribed) return;
+      unsubscribed = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (handler) ctx.bus.unsubscribeViewerHook(s.id, handler);
+    };
+    handler = (frame) => {
+      if (frame.type === 'session_exit') {
+        cleanup();
+        resolve({ exitCode: frame.exit_code });
+      }
     };
     ctx.bus.subscribeViewerHook(s.id, handler);
-    setTimeout(() => {
-      if (!finished) {
-        ctx.bus.unsubscribeViewerHook(s.id, handler);
-        ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
-        resolve({ exitCode: -1, timeout: true });
-      }
-    }, TIMEOUT).unref?.();
+    timeoutHandle = setTimeout(() => {
+      cleanup();
+      ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
+      resolve({ exitCode: -1, timeout: true });
+    }, TIMEOUT);
+    timeoutHandle.unref?.();
   });
   // Read transcript (batcher flush already triggered by session_exit)
   const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out' });
@@ -1031,10 +1044,12 @@ async function handleDaemonWs(ws, params, ctx) {
     try { await fleetDb.setHostOffline(ctx.db, host.id); } catch {}
   });
 
-  ws.on('message', async (raw) => {
-    let f;
-    try { f = JSON.parse(raw.toString()); } catch { return ws.close(4005, 'invalid frame'); }
-    try {
+  // Circuit-breaker: after 3 consecutive frame-handler exceptions on this WS,
+  // close with 1011 so the daemon reconnects and triggers reconciliation
+  // rather than keep pumping frames into a broken pipe (e.g. DB read-only).
+  let consecutiveErrs = 0;
+
+  async function dispatchFrame(f) {
       if (f.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
       if (f.type === 'hello') {
         await fleetDb.upsertHost(ctx.db, {
@@ -1056,6 +1071,9 @@ async function handleDaemonWs(ws, params, ctx) {
       }
       if (f.type === 'spawn_err') {
         await fleetDb.markSessionExited(ctx.db, f.session_id, -1, 'exited');
+        // Emit session_exit so handleExec waiters (and any attached viewer)
+        // unblock instead of waiting for the timeout.
+        ctx.bus.broadcastViewers(f.session_id, { type: 'session_exit', exit_code: -1 });
         return;
       }
       if (f.type === 'pty_data') {
@@ -1094,6 +1112,9 @@ async function handleDaemonWs(ws, params, ctx) {
           } else {
             const status = (s.exit_code === 137 || s.signal) ? 'killed' : 'exited';
             await fleetDb.markSessionExited(ctx.db, s.session_id, s.exit_code ?? null, status);
+            // Notify handleExec waiters + viewers attached to a session the
+            // daemon reports dead — otherwise their hooks leak in hooksBySession.
+            ctx.bus.broadcastViewers(s.session_id, { type: 'session_exit', exit_code: s.exit_code ?? -1 });
           }
         }
         return;
@@ -1109,8 +1130,20 @@ async function handleDaemonWs(ws, params, ctx) {
         ctx.bus.broadcastHostMetrics(host.id, { type: 'inventory', host_id: host.id, ...f });
         return;
       }
+  }
+
+  ws.on('message', async (raw) => {
+    let f;
+    try { f = JSON.parse(raw.toString()); } catch { return ws.close(4005, 'invalid frame'); }
+    try {
+      await dispatchFrame(f);
+      consecutiveErrs = 0;
     } catch (e) {
-      console.error(`[fleet-routes] daemon frame error: ${e.message}`);
+      consecutiveErrs += 1;
+      console.error(`[fleet-routes] daemon frame error (${consecutiveErrs}/3): ${e.message}`);
+      if (consecutiveErrs >= 3) {
+        try { ws.close(1011, 'consecutive frame errors'); } catch {}
+      }
     }
   });
 }
