@@ -332,6 +332,14 @@
         term.loadAddon(new CanvasAddon.CanvasAddon());
       }
     } catch (e) { console.warn('canvas addon failed, falling back to DOM:', e); }
+    // Unicode 11 widths: correct emoji + CJK + box-drawing column counts
+    // (xterm default is unicode 6, which mis-widths modern emoji).
+    try {
+      if (window.Unicode11Addon && Unicode11Addon.Unicode11Addon) {
+        term.loadAddon(new Unicode11Addon.Unicode11Addon());
+        term.unicode.activeVersion = '11';
+      }
+    } catch (e) { console.warn('unicode11 addon failed:', e); }
     state.term = term; state.fit = fit;
     // Defer fit until the container has real dimensions (layout flush after
     // viewer became visible). Otherwise FitAddon falls back to cols=1, which
