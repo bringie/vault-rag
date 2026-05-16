@@ -3,6 +3,8 @@ const WebSocket = require('ws');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { collectMetrics } = require('./metrics-collector');
+const { collectInventory, inventoryChanged, resetInventoryCache } = require('./inventory-collector');
 const { execSync } = require('node:child_process');
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
@@ -117,9 +119,28 @@ async function runDaemon(opts) {
       if (recon.length) ws.send(JSON.stringify({ type: 'reconciliation', sessions: recon }));
       for (const [id] of local) if (!ptyMgr.sessions.has(id)) store.delete(id);
 
+      // Initial inventory frame — fresh on every (re)connect.
+      resetInventoryCache();
+      safeSend(ws, { type: 'inventory', ...collectInventory() });
+
       await new Promise((resolve) => {
         const heartbeat = setInterval(() => safeSend(ws, { type: 'ping' }), 15_000);
         heartbeat.unref?.();
+        const metricsTimer = setInterval(async () => {
+          try {
+            const m = await collectMetrics();
+            safeSend(ws, { type: 'metrics', ...m });
+          } catch {}
+        }, 10_000);
+        metricsTimer.unref?.();
+        const invMtimeTimer = setInterval(() => {
+          if (inventoryChanged()) safeSend(ws, { type: 'inventory', ...collectInventory() });
+        }, 60_000);
+        invMtimeTimer.unref?.();
+        const invHeartbeatTimer = setInterval(() => {
+          safeSend(ws, { type: 'inventory', ...collectInventory() });
+        }, 900_000);
+        invHeartbeatTimer.unref?.();
         ws.on('message', (raw) => {
           let f;
           try { f = JSON.parse(raw.toString()); } catch { return; }
@@ -168,10 +189,16 @@ async function runDaemon(opts) {
           }
           opts.onFrame?.(f, ws);
         });
-        ws.on('close', () => { clearInterval(heartbeat); resolve(); });
-        ws.on('error', () => { clearInterval(heartbeat); resolve(); });
-        opts.abortSignal?.addEventListener('abort', () => {
+        const clearTimers = () => {
           clearInterval(heartbeat);
+          clearInterval(metricsTimer);
+          clearInterval(invMtimeTimer);
+          clearInterval(invHeartbeatTimer);
+        };
+        ws.on('close', () => { clearTimers(); resolve(); });
+        ws.on('error', () => { clearTimers(); resolve(); });
+        opts.abortSignal?.addEventListener('abort', () => {
+          clearTimers();
           try { ws.close(); } catch {}
           resolve();
         });
