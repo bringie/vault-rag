@@ -517,13 +517,16 @@
     </div>
   </div>
 
-  <!-- vt-0146: vault tab — read-only viewer (vt-0147 adds editor + secrets) -->
+  <!-- vt-0146/0147: vault tab — notes viewer/editor + secrets sub-tab -->
   <div id="vaultview" hidden>
     <header class="archive-head overlay-header">
       <h2 data-i18n="vault.title">VAULT</h2>
-      <span id="vault-mode-badge" class="pill" data-i18n="vault.notes">notes</span>
+      <div class="vault-tab-switch">
+        <button id="vault-tab-notes" class="btn-ghost active-nav" data-i18n="vault.notes">notes</button>
+        <button id="vault-tab-secrets" class="btn-ghost" data-i18n="vault.secrets">secrets</button>
+      </div>
       <span style="flex:1"></span>
-      <button id="vault-reload" class="btn-ghost" data-i18n="vault.reload" title="reload tree">↻ reload</button>
+      <button id="vault-reload" class="btn-ghost" data-i18n="vault.reload" title="reload">↻ reload</button>
       <button id="vaultview-close" class="btn-ghost" data-i18n="common.back">× back</button>
     </header>
     <div class="vault-split">
@@ -532,11 +535,26 @@
       </div>
       <div id="vault-viewer-pane">
         <div id="vault-viewer" class="vault-viewer">
-          <em data-i18n="vault.click_hint">Select a note from the tree.</em>
+          <em data-i18n="vault.click_hint">Select an item from the tree.</em>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- vt-0147: secret reveal modal -->
+  <dialog id="secret-reveal">
+    <div class="secret-reveal-frame">
+      <div class="secret-reveal-head">
+        <span class="lbl">SECRET //</span>
+        <span id="secret-reveal-name" class="callsign">—</span>
+        <span style="flex:1"></span>
+        <span id="secret-reveal-timer" class="lbl">30s</span>
+        <button id="secret-reveal-copy" class="btn-ghost">copy</button>
+        <button id="secret-reveal-close" class="btn-ghost">× close</button>
+      </div>
+      <pre id="secret-reveal-value" class="secret-reveal-value"></pre>
+    </div>
+  </dialog>
 
   <!-- FILE EDITOR MODAL -->
   <div id="editor" hidden>

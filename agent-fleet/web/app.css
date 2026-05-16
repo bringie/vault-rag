@@ -730,3 +730,41 @@ body::after {
   .vault-split { flex-direction:column; height:auto; }
   #vault-tree-pane { width:auto; max-height:40vh; border-right:none; border-bottom:1px solid var(--border, #333); }
 }
+
+/* vt-0147: vault editor + secrets sub-tab */
+.vault-tab-switch { display:inline-flex; gap:4px; margin-left:1em; }
+.vault-tab-switch .btn-ghost { padding:.3em .8em; }
+.vault-tab-switch .btn-ghost.active-nav { background:var(--accent-dim, #234); color:var(--accent, #6cf); }
+
+.vault-edit-textarea {
+  width:100%; min-height:60vh; padding:10px; box-sizing:border-box;
+  background:var(--bg, #0a0a0a); color:var(--text, #ccc);
+  border:1px solid var(--border, #333); border-radius:3px;
+  font:12px/1.5 "JetBrains Mono", monospace; resize:vertical;
+}
+.vault-edit-bar { display:flex; gap:8px; align-items:center; margin-top:10px; }
+.vault-edit-bar .btn-primary, .vault-edit-bar .btn-ghost { width:auto; padding:.45em 1em; }
+
+dialog#secret-reveal {
+  background:transparent; border:none; padding:0; max-width:90vw;
+}
+dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
+.secret-reveal-frame {
+  background:var(--bg, #0a0a0a); border:1px solid var(--accent, #6cf); border-radius:4px;
+  padding:14px 18px; min-width:480px; max-width:90vw;
+  box-shadow:0 0 20px rgba(102,204,255,.25);
+}
+.secret-reveal-head {
+  display:flex; gap:8px; align-items:center; margin-bottom:10px;
+  padding-bottom:8px; border-bottom:1px solid var(--border, #333);
+  font:11px/1.4 monospace;
+}
+.secret-reveal-head .btn-ghost { padding:.25em .7em; }
+.secret-reveal-value {
+  background:var(--bg-hover, #1c1c1c); color:var(--accent, #6cf);
+  padding:10px 12px; border-radius:3px;
+  font:13px/1.5 "JetBrains Mono", monospace;
+  white-space:pre-wrap; word-break:break-all;
+  user-select:all; -webkit-user-select:all;
+  margin:0; max-height:40vh; overflow:auto;
+}
