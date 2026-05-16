@@ -224,4 +224,79 @@ async function sessionCostBatch(tokmonPg, vaultPg, sessionIds) {
   return out;
 }
 
-module.exports = { sessionCost, sessionCostBatch, hostSummary, timeline, rowCost };
+// vt-0114: aggregate one day of tokmon events into fleet_cost_daily_rollup.
+// Idempotent — ON CONFLICT DO UPDATE replaces the row so re-running an
+// aggregation pass (e.g. after a backfill) overwrites cleanly.
+async function aggregateDayRollup(tokmonPg, vaultPg, day /* 'YYYY-MM-DD' */) {
+  const { rows } = await tokmonPg.query(
+    `SELECT model, host_id,
+            COUNT(*)::int                    AS msgs,
+            SUM(input_tokens)::bigint        AS input_tokens,
+            SUM(output_tokens)::bigint       AS output_tokens,
+            SUM(cache_creation_5m)::bigint   AS cache_creation_5m,
+            SUM(cache_read)::bigint          AS cache_read,
+            MAX(ts)                          AS last_ts
+     FROM events
+     WHERE ts >= $1::date AND ts < ($1::date + interval '1 day')
+     GROUP BY model, host_id`,
+    [day]);
+  if (!rows.length) return { day, rows: 0 };
+  // Aggregate by dim ('model' | 'host') so the rollup answers both pivots.
+  const byModel = new Map(), byHost = new Map();
+  for (const r of rows) {
+    const usd = await rowCost(r, r.last_ts, vaultPg);
+    const tally = (m, key) => {
+      if (!m.has(key)) m.set(key, { usd: 0, msgs: 0, input_tokens: 0n, output_tokens: 0n, cache_creation_5m: 0n, cache_read: 0n });
+      const t = m.get(key);
+      t.usd += usd;
+      t.msgs += Number(r.msgs);
+      t.input_tokens      += BigInt(r.input_tokens || 0);
+      t.output_tokens     += BigInt(r.output_tokens || 0);
+      t.cache_creation_5m += BigInt(r.cache_creation_5m || 0);
+      t.cache_read        += BigInt(r.cache_read || 0);
+    };
+    tally(byModel, r.model);
+    tally(byHost,  r.host_id);
+  }
+  const writes = [];
+  for (const [m, t] of byModel) writes.push(['model', m, t]);
+  for (const [h, t] of byHost)  writes.push(['host',  h, t]);
+  for (const [dim, value, t] of writes) {
+    await vaultPg.query(
+      `INSERT INTO fleet_cost_daily_rollup
+         (day, dim, value, usd, msgs, input_tokens, output_tokens, cache_creation_5m, cache_read, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+       ON CONFLICT (day, dim, value) DO UPDATE SET
+         usd               = EXCLUDED.usd,
+         msgs              = EXCLUDED.msgs,
+         input_tokens      = EXCLUDED.input_tokens,
+         output_tokens     = EXCLUDED.output_tokens,
+         cache_creation_5m = EXCLUDED.cache_creation_5m,
+         cache_read        = EXCLUDED.cache_read,
+         updated_at        = now()`,
+      [day, dim, value, t.usd, t.msgs,
+       String(t.input_tokens), String(t.output_tokens),
+       String(t.cache_creation_5m), String(t.cache_read)]);
+  }
+  return { day, rows: writes.length };
+}
+
+// vt-0114: rollup-backed timeline for date ranges that exceed tokmon retention.
+// dim = 'model' | 'host'. Returns rows {day, dim, value, usd, msgs, ...}.
+async function timelineFromRollup(vaultPg, days = 365, dim = 'model') {
+  if (!['model', 'host'].includes(dim)) {
+    throw new Error(`timelineFromRollup: dim must be model|host (got ${dim})`);
+  }
+  const { rows } = await vaultPg.query(
+    `SELECT day, dim, value, usd, msgs, input_tokens, output_tokens, cache_creation_5m, cache_read
+     FROM fleet_cost_daily_rollup
+     WHERE dim = $1 AND day >= current_date - ($2::int || ' days')::interval
+     ORDER BY day, value`,
+    [dim, days]);
+  return rows;
+}
+
+module.exports = {
+  sessionCost, sessionCostBatch, hostSummary, timeline, rowCost,
+  aggregateDayRollup, timelineFromRollup,
+};

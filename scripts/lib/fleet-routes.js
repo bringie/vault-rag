@@ -691,6 +691,23 @@ async function handleSessionCostBatch({ req, res, body, ctx }) {
   send(res, 200, costs);
 }
 
+// vt-0114: long-term cost timeline backed by fleet_cost_daily_rollup. The
+// existing /fleet/cost/timeline only sees rows within tokmon retention
+// (90 days default). This endpoint reads the rollup table so the UI can
+// render 12-month windows even after events are purged.
+async function handleCostRollupTimeline({ req, res, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const days = Math.min(Math.max(parseInt(url.searchParams.get('days') || '90', 10), 1), 730);
+  const dim = url.searchParams.get('dim') || 'model';
+  if (!['model', 'host'].includes(dim)) return send(res, 422, { error: 'dim must be model|host' });
+  try {
+    const rows = await fleetCost.timelineFromRollup(ctx.db, days, dim);
+    send(res, 200, { days, dim, points: rows });
+  } catch (e) {
+    send(res, 500, { error: e.message });
+  }
+}
+
 async function handleCostSummary({ req, res, ctx }) {
   if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
   const url = new URL(req.url, 'http://x');
@@ -1219,6 +1236,8 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path === '/fleet/stack-status') return handleStackStatus({ res, ctx });
   // Cost-chart drill-down: sessions in a bucket
   if (method === 'GET' && path === '/fleet/sessions/by-bucket') return handleSessionsByBucket({ req, res, ctx });
+  // Long-term cost timeline (post-retention) from rollup table
+  if (method === 'GET' && path === '/fleet/cost/rollup-timeline') return handleCostRollupTimeline({ req, res, ctx });
 
   // Pending approvals + events
   if (method === 'GET'  && path === '/fleet/workflow-pending-approvals') return handleListPendingApprovals({ res, ctx });

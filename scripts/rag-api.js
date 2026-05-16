@@ -431,6 +431,39 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
       }
     }, 60 * 1000).unref?.();
 
+    // vt-0114: daily cost rollup. Run BEFORE the tokmon retention purge
+    // (so we don't lose rows we never aggregated). Tick every 6h —
+    // covers UTC midnight in any operator timezone without leaning on
+    // exact cron.
+    const fleetCost = require('./lib/fleet-cost');
+    setInterval(async () => {
+      if (!fleetCtx.tokmonDb) return;
+      try {
+        // Aggregate yesterday + today — yesterday so it's complete, today
+        // for partial-day visibility (rows get overwritten on next tick).
+        for (const offset of [1, 0]) {
+          const d = new Date(Date.now() - offset * 86400000);
+          const dayStr = d.toISOString().slice(0, 10);
+          const r = await fleetCost.aggregateDayRollup(fleetCtx.tokmonDb, pg, dayStr);
+          if (r.rows) console.log(`[rag-api] cost rollup ${dayStr}: ${r.rows} rows`);
+        }
+      } catch (e) {
+        console.error(`[rag-api] cost rollup failed: ${e.message}`);
+      }
+    }, 6 * 60 * 60 * 1000).unref?.();
+    // Run once at startup so a fresh deploy seeds yesterday's data without
+    // waiting 6h for the first tick.
+    setTimeout(async () => {
+      if (!fleetCtx.tokmonDb) return;
+      try {
+        const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+        const r = await fleetCost.aggregateDayRollup(fleetCtx.tokmonDb, pg, yest);
+        if (r.rows) console.log(`[rag-api] cost rollup ${yest}: ${r.rows} rows (startup)`);
+      } catch (e) {
+        console.error(`[rag-api] cost rollup (startup) failed: ${e.message}`);
+      }
+    }, 15_000).unref?.();
+
     // vt-0120: tokmon.events retention. Cost-event rows otherwise grow
     // forever; we keep N days of fine-grained data + the daily cost view
     // (computed on read, not pre-aggregated for now — see vt-0114 for the
