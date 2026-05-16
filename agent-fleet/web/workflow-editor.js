@@ -37,27 +37,33 @@
       if (!list || !list.length) {
         body.innerHTML = `<p style="padding:1em;color:var(--text-dim)">${esc(t('workflows.empty'))}</p>`;
       } else {
-        body.innerHTML = `<table class="wf-runs-table">
+        body.innerHTML = `<table class="wf-runs-table archive-table">
           <thead><tr><th>${esc(t('workflows.col.name'))}</th><th>${esc(t('workflows.col.nodes'))}</th><th>${esc(t('workflows.col.updated'))}</th><th>${esc(t('workflows.col.actions'))}</th></tr></thead>
           <tbody>${list.map(w => `
-            <tr>
+            <tr class="row-clickable" data-edit="${w.id}">
               <td>${esc(w.name)}</td>
               <td>${w.n_nodes || 0}</td>
               <td>${new Date(w.updated_at).toLocaleString()}</td>
               <td>
-                <button data-edit="${w.id}">${esc(t('workflows.btn.edit'))}</button>
-                <button data-run="${w.id}">${esc(t('workflows.btn.run'))}</button>
-                <button data-del="${w.id}">${esc(t('workflows.btn.delete'))}</button>
+                <button class="btn-row" data-run="${w.id}">${esc(t('workflows.btn.run'))}</button>
+                <button class="btn-row" data-del="${w.id}">${esc(t('workflows.btn.delete'))}</button>
               </td>
             </tr>`).join('')}</tbody></table>`;
-        body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => location.hash = `#/workflows/${b.dataset.edit}/edit`);
-        body.querySelectorAll('[data-run]').forEach(b => b.onclick = async () => {
+        body.querySelectorAll('tr[data-edit]').forEach(tr => {
+          tr.onclick = (ev) => {
+            if (ev.target.closest('[data-run]') || ev.target.closest('[data-del]')) return;
+            location.hash = `#/workflows/${tr.dataset.edit}/edit`;
+          };
+        });
+        body.querySelectorAll('[data-run]').forEach(b => b.onclick = async (ev) => {
+          ev.stopPropagation();
           try {
             const r = await api(`/workflows/${b.dataset.run}/run`, { method: 'POST', body: '{}' });
             location.hash = `#/workflow-runs/${r.run_id}`;
           } catch (e) { alert(e.message); }
         });
-        body.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+        body.querySelectorAll('[data-del]').forEach(b => b.onclick = async (ev) => {
+          ev.stopPropagation();
           if (!confirm(t('workflows.delete_confirm'))) return;
           try { await api(`/workflows/${b.dataset.del}`, { method: 'DELETE' }); openWorkflowsList(); }
           catch (e) { alert(e.message); }

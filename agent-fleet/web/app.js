@@ -925,9 +925,9 @@
           const ts = new Date(s.started_at);
           const exitTag = s.exit_code != null ? ` exit=${s.exit_code}` : '';
           const labelText = (s.label || '') + (s.notes ? ` — ${s.notes.replace(/\n.*/, '')}` : '');
-          return `<tr>
+          return `<tr class="row-clickable" data-sid="${s.id}">
             <td class="nowrap">${ts.toLocaleString()}</td>
-            <td class="sess-id-cell" data-sid="${s.id}">${short(s.id)}</td>
+            <td class="sess-id-cell">${short(s.id)}</td>
             <td>${esc(host?.display_name || host?.name || '?')}</td>
             <td class="nowrap">${s.status}${exitTag}</td>
             <td class="cwd-cell" title="${esc(s.cwd || '')}">${esc(s.cwd || '—')}</td>
@@ -935,8 +935,8 @@
             <td class="nowrap" id="cost-${s.id.slice(0,8)}">—</td>
           </tr>`;
         }).join('');
-    body.querySelectorAll('.sess-id-cell').forEach(td => {
-      td.onclick = () => navigate('/sessions/' + td.dataset.sid);
+    body.querySelectorAll('tr[data-sid]').forEach(tr => {
+      tr.onclick = () => navigate('/sessions/' + tr.dataset.sid);
     });
     // Batch cost lookup: 1 POST instead of N concurrent GETs (was a perf hot
     // spot under load — see audit §6.1).
