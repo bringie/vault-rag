@@ -76,20 +76,15 @@ services:
     restart: unless-stopped
     mem_limit: 200m
     memswap_limit: 400m
-    # vt-0135: still root for now — host bind mount /root/obsidian-vault:/vault:rw
-    # is owned by root on the host. Switching to uid 1000 requires `chown -R
-    # 1000:1000 /root/obsidian-vault` + matching /root/.ssh deploy key perms.
-    # Filed as vt-0137 (stage B).
-    user: "0:0"
+    # vt-0137: dropped root. Host's /root/obsidian-vault is now chowned to
+    # 1000:1000 + scoped deploy key at /opt/vault-rag/.secrets/git_deploy.key.
+    # No more /root/.ssh mount — container can't reach the host's primary
+    # SSH key any more.
+    user: "1000:1000"
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Node + age + git only need DAC/CHOWN for vault writes; no setuid.
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -105,12 +100,16 @@ services:
       - VAULT_RAG_PG_PASS=${VAULT_RAG_PG_PASSWORD}
       - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
       - VAULT_PATH=/vault
-      # Git auto-sync (used by lib/git-sync.js)
-      - HOME=/root
+      # Git auto-sync (used by lib/git-sync.js). vt-0137: HOME points at the
+      # tmpfs-backed dir we mount below, and a scoped deploy key replaces
+      # /root/.ssh. safe.directory accepts the bind-mounted /vault path.
+      - HOME=/home/app
+      - GIT_SSH_COMMAND=ssh -i /run/secrets/git_deploy.key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/app/.ssh/known_hosts
       - GIT_AUTHOR_NAME=vault-rag-api
       - GIT_AUTHOR_EMAIL=vault-rag-api@brain.local
       - GIT_COMMITTER_NAME=vault-rag-api
       - GIT_COMMITTER_EMAIL=vault-rag-api@brain.local
+      - GIT_CONFIG_GLOBAL=/home/app/.gitconfig
       # vt-0134: secrets handled by the standalone vault-rag-secrets service
       # (age.key + push creds live there, NOT here). Rag-api proxies to it
       # via VAULT_RAG_SECRETS_URL. Falls back to in-process handler if unset.
@@ -118,13 +117,20 @@ services:
       - VAULT_RAG_SECRETS_TOKEN=${VAULT_RAG_SECRETS_TOKEN}
     ports:
       - "127.0.0.1:5679:5679"
+    tmpfs:
+      # vt-0137: writable scratch for the non-root user's $HOME (gitconfig,
+      # known_hosts, ssh control sockets).
+      - /home/app:uid=1000,gid=1000,mode=0700,size=8m
     volumes:
       # vt-0134: removed /opt/vault-rag/.secrets/age.key — now mounted ONLY
       # into vault-rag-secrets. RCE in rag-api can no longer decrypt secrets.
+      # vt-0137: /root/.ssh dropped → /run/secrets/git_deploy.key (1000:1000)
+      # is the only outbound SSH credential. Scoped to push-only Forgejo
+      # access (operator can rotate it independently of the host's SSH key).
       - /root/obsidian-vault:/vault:rw
-      - /root/.ssh:/root/.ssh:ro
       - ./scripts:/scripts:ro
       - ./agent-fleet:/agent-fleet:ro
+      - /opt/vault-rag/.secrets/git_deploy.key:/run/secrets/git_deploy.key:ro
     networks:
       - vault-rag-net
     healthcheck:
@@ -140,16 +146,12 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     memswap_limit: 256m
-    # vt-0135: still root, same reasoning as vault-rag-api (writes /vault).
-    user: "0:0"
+    # vt-0137: dropped root (same setup as vault-rag-api).
+    user: "1000:1000"
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -163,11 +165,16 @@ services:
       - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
       - VAULT_PATH=/vault
       - VAULT_GIT_REMOTE=${VAULT_GIT_REMOTE:-}
-      - HOME=/root
+      # vt-0137: non-root user + scoped deploy key (replaces /root/.ssh mount).
+      - HOME=/home/app
+      - GIT_SSH_COMMAND=ssh -i /run/secrets/git_deploy.key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/app/.ssh/known_hosts
+      - GIT_CONFIG_GLOBAL=/home/app/.gitconfig
+    tmpfs:
+      - /home/app:uid=1000,gid=1000,mode=0700,size=8m
     volumes:
       - /root/obsidian-vault:/vault:rw
-      - /root/.ssh:/root/.ssh:ro
       - ./scripts:/scripts:ro
+      - /opt/vault-rag/.secrets/git_deploy.key:/run/secrets/git_deploy.key:ro
     networks:
       - vault-rag-net
     labels:
@@ -288,6 +295,8 @@ services:
     restart: unless-stopped
     mem_limit: 100m
     memswap_limit: 200m
+    # vt-0137: dropped root. age.key + git_deploy.key are 1000:1000 on host.
+    user: "1000:1000"
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -299,27 +308,26 @@ services:
       - VAULT_REPO_PATH=/vault
       - VAULT_AGE_PATH=/vault/secrets/vault.age
       - VAULT_RECIPIENTS_PATH=/vault/secrets/recipients
-      - HOME=/root
+      - HOME=/home/app
+      - GIT_SSH_COMMAND=ssh -i /run/secrets/git_deploy.key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/app/.ssh/known_hosts
+      - GIT_CONFIG_GLOBAL=/home/app/.gitconfig
       - GIT_AUTHOR_NAME=vault-rag-secrets
       - GIT_AUTHOR_EMAIL=vault-rag-secrets@brain.local
       - GIT_COMMITTER_NAME=vault-rag-secrets
       - GIT_COMMITTER_EMAIL=vault-rag-secrets@brain.local
+    tmpfs:
+      - /home/app:uid=1000,gid=1000,mode=0700,size=8m
     volumes:
       - /root/obsidian-vault:/vault:rw
-      - /root/.ssh:/root/.ssh:ro
       - ./scripts:/scripts:ro
       - /opt/vault-rag/.secrets/age.key:/run/secrets/age.key:ro
+      - /opt/vault-rag/.secrets/git_deploy.key:/run/secrets/git_deploy.key:ro
     networks:
       - vault-rag-net
-    # Same hardening as the other Node services.
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5682/healthz || exit 1"]
       interval: 30s
