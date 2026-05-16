@@ -53,7 +53,11 @@ class VaultRagPlugin extends obsidian.Plugin {
   }
 
   async api(path, body) {
-    const url = this.settings.hubUrl.replace(/\/$/, '') + '/api' + path;
+    // vt-0168: strip trailing slash AND a trailing /api so users who paste
+    // "https://brain.example.com/api" from a README sample don't get
+    // double-prefixed "/api/api/..." 404s.
+    const base = this.settings.hubUrl.replace(/\/+$/, '').replace(/\/api$/, '');
+    const url = base + '/api' + path;
     const headers = {
       'Authorization': 'Bearer ' + this.settings.apiToken,
       'Content-Type': 'application/json',

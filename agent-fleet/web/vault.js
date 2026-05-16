@@ -105,12 +105,17 @@
           }
         }
       }
-      const display = alias || (heading ? `${target}#${heading}` : target);
+      // vt-0181: escape ALL interpolations. DOMPurify is the last barrier
+      // (and it currently strips on*-handlers), but a future config change
+      // or a malformed wiki-link target with a quote should not be the
+      // only thing standing between us and XSS.
+      const display = esc(alias || (heading ? `${target}#${heading}` : target));
+      const eTarget = esc(target);
       if (!resolved) {
-        return `<span class="vault-wiki-unresolved" title="unresolved: ${target}">${display}</span>`;
+        return `<span class="vault-wiki-unresolved" title="unresolved: ${eTarget}">${display}</span>`;
       }
       // Custom anchor — onTreeClick equivalent for inline navigation.
-      return `<a href="#" class="vault-wiki" data-vault-link="${resolved}">${display}</a>`;
+      return `<a href="#" class="vault-wiki" data-vault-link="${esc(resolved)}">${display}</a>`;
     });
   }
 

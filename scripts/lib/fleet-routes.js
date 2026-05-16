@@ -471,9 +471,16 @@ async function handleDispatch({ req, res, body, ctx }) {
   // order — per-call lands later in the combined text, so it acts as a
   // refinement on top of the group's shared context. An empty per-call
   // system_prompt just inherits the group's verbatim.
+  // vt-0169: coerce structured spawn fields to safe types before forwarding
+  // to the daemon. `dangerous` is boolean (claude --dangerously-skip-perms),
+  // any truthy non-boolean (object/array) reaching the daemon would be a
+  // surprise; string-typed prompt/model fields stay strings.
   const structured = {};
   for (const k of STRUCTURED_SPAWN_FIELDS) {
-    if (body[k] != null) structured[k] = body[k];
+    if (body[k] == null) continue;
+    if (k === 'dangerous') structured[k] = Boolean(body[k]);
+    else if (typeof body[k] === 'string' || typeof body[k] === 'number') structured[k] = body[k];
+    // silently drop objects/arrays for string-typed fields
   }
   if (resolvedGroup && resolvedGroup.brain_prompt) {
     structured.system_prompt = structured.system_prompt
@@ -719,6 +726,10 @@ function validColor(c) {
 async function handleCreateGroup({ res, body, ctx }) {
   if (!body || !body.name) return send(res, 422, { error: 'name required' });
   if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
+  // vt-0170: size cap on brain_prompt (see handlePatchGroup).
+  if (typeof body.brain_prompt === 'string' && body.brain_prompt.length > 32768) {
+    return send(res, 422, { error: 'brain_prompt too long (max 32768 chars)' });
+  }
   try {
     const g = await fleetDb.createGroup(ctx.db, {
       name: body.name, description: body.description, color: body.color || null,
@@ -749,6 +760,12 @@ async function handlePatchGroup({ req, res, body, ctx }) {
   if ('brain_prompt' in body) {
     if (body.brain_prompt !== null && typeof body.brain_prompt !== 'string') {
       return send(res, 422, { error: 'brain_prompt must be string or null' });
+    }
+    // vt-0170: cap to keep the merged spawn payload bounded. 32 KiB is
+    // ~8000 words — generous for a brain prompt; anything larger is
+    // misuse (manifesto, full doc) and would blow up every spawn.
+    if (body.brain_prompt && body.brain_prompt.length > 32768) {
+      return send(res, 422, { error: 'brain_prompt too long (max 32768 chars)' });
     }
     patch.brain_prompt = body.brain_prompt;
   }
@@ -1533,16 +1550,43 @@ async function handleDaemonWs(ws, params, ctx) {
   async function dispatchFrame(f) {
       if (f.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
       if (f.type === 'hello') {
+        // vt-0178: filter installed_backends to known names from
+        // BACKEND_CONFIGS — a compromised daemon could otherwise send
+        // arbitrary keys ("<script>", "../etc/passwd") that the UI
+        // would iterate and surface as edit buttons.
+        let filteredBackends = null;
+        if (f.backends && typeof f.backends === 'object') {
+          const { BACKEND_CONFIGS } = require('./backend-configs');
+          const known = new Set(Object.keys(BACKEND_CONFIGS));
+          filteredBackends = {};
+          for (const [k, v] of Object.entries(f.backends)) {
+            if (known.has(k)) filteredBackends[k] = v;
+          }
+        }
         await fleetDb.upsertHost(ctx.db, {
           name: hostName,
           os: f.os, arch: f.arch,
           capabilities: f.capabilities || [],
           daemonVersion: params.get('daemon_version'),
           claudeVersion: f.claude_version,
-          backends: f.backends && typeof f.backends === 'object' ? f.backends : null,
+          backends: filteredBackends,
         });
         if (f.host_info && typeof f.host_info === 'object') {
-          await fleetDb.setHostMetadata(ctx.db, host.id, f.host_info);
+          // vt-0177: allowlist host_info keys before merging into metadata.
+          // A malicious/compromised daemon could otherwise pollute jsonb
+          // with arbitrary keys and the UI may render them unescaped.
+          const ALLOWED = new Set([
+            'os', 'kernel', 'kernel_version', 'distro', 'arch',
+            'cpu_model', 'cpu_cores', 'cpu_threads',
+            'ram_total_bytes', 'ram_free_bytes',
+            'uptime_seconds', 'hostname', 'load1', 'load5', 'load15',
+            'docker_version', 'node_version',
+          ]);
+          const safe = {};
+          for (const [k, v] of Object.entries(f.host_info)) {
+            if (ALLOWED.has(k)) safe[k] = v;
+          }
+          await fleetDb.setHostMetadata(ctx.db, host.id, safe);
         }
         return;
       }
@@ -1894,8 +1938,11 @@ function tryDispatch(req, res, ctx) {
   Promise.resolve()
     .then(() => dispatchHttp(req, res, ctx))
     .catch((e) => {
+      // vt-0180: server-side log keeps the real message; client gets a
+      // generic 500 so pg error strings, file paths, or stack content
+      // don't leak. Request URL is in the log line for grep.
       console.error(`[fleet-routes] ${req.url}: ${e.stack || e.message}`);
-      if (!res.headersSent) send(res, 500, { error: String(e.message || e) });
+      if (!res.headersSent) send(res, 500, { error: 'internal error' });
     });
   return true;
 }

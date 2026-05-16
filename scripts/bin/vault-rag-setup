@@ -44,10 +44,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --hub) HUB="$2"; shift 2;;
     --api-token) API_TOKEN="$2"; shift 2;;
-    --api-token-stdin) read -r API_TOKEN; shift;;
+    --api-token-stdin) read -r API_TOKEN; API_TOKEN="${API_TOKEN%$'\r'}"; shift;;
     --admin-token) ADMIN_TOKEN="$2"; shift 2;;
     --mcp-token) MCP_TOKEN="$2"; shift 2;;
-    --mcp-token-stdin) read -r MCP_TOKEN; shift;;
+    --mcp-token-stdin) read -r MCP_TOKEN; MCP_TOKEN="${MCP_TOKEN%$'\r'}"; shift;;
     --mcp-url) MCP_URL="$2"; shift 2;;
     --vault-name) VAULT_NAME="$2"; shift 2;;
     --config-dir) CONFIG_DIR="$2"; shift 2;;
@@ -79,17 +79,12 @@ if [[ -z "$MCP_ONLY" ]]; then
   else
     mkdir -p "$CONFIG_DIR"
     CFG_TMP="$CONFIG_DIR/config.json.tmp.$$"
-    ( umask 077 && cat > "$CFG_TMP" <<EOF
-{
-  "hub": "$HUB",
-  "api_token": "$API_TOKEN",
-  "admin_token": "$ADMIN_TOKEN",
-  "mcp_url": "$MCP_URL",
-  "vault_name": "$VAULT_NAME",
-  "updated_at": "$(date -u +%FT%TZ)"
-}
-EOF
-    )
+    # vt-0167: build JSON via node so quotes/backticks/dollar-signs in
+    # tokens don't corrupt the file. Previously a heredoc allowed shell
+    # expansion of $VARS and didn't escape ", \, control chars.
+    ( umask 077 && HUB="$HUB" API_TOKEN="$API_TOKEN" ADMIN_TOKEN="$ADMIN_TOKEN" \
+                  MCP_URL="$MCP_URL" VAULT_NAME="$VAULT_NAME" \
+      node -e 'const fs=require("fs"); const o={hub:process.env.HUB, api_token:process.env.API_TOKEN, admin_token:process.env.ADMIN_TOKEN, mcp_url:process.env.MCP_URL, vault_name:process.env.VAULT_NAME, updated_at:new Date().toISOString()}; fs.writeFileSync(process.argv[1], JSON.stringify(o, null, 2)+"\n");' "$CFG_TMP" )
     mv "$CFG_TMP" "$CONFIG_DIR/config.json"
     chmod 0600 "$CONFIG_DIR/config.json"
     echo "config: $CONFIG_DIR/config.json"

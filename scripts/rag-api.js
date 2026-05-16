@@ -261,7 +261,11 @@ async function handleNotesIndex(req, res) {
   const all = [];
   const byBase = {};
   const byBaseLower = {};
-  const MAX = 50000;
+  // vt-0171: cap reduced to 20k. At ~200 B avg path × 3 structures + JSON
+  // serialization overhead, 20k entries ≈ ~10 MiB response — already
+  // generous for the UI's wiki-link resolver. Larger vaults get truncated;
+  // the UI falls back to its prefix-match heuristic.
+  const MAX = 20000;
   function walk(dir, rel) {
     if (all.length >= MAX) return;
     let dirents;
@@ -296,11 +300,21 @@ async function handleNotesIndex(req, res) {
 // (Obsidian-Git on every device + vault-sync.sh on the hub auto-commit),
 // so history is meaningful — every Fleet UI save shows up too via the
 // auto-commit hook.
+// vt-0165: strict path validator for git-spawning endpoints. Reject
+// anything outside /^[\w./-]+$/ to keep \0, leading dash, unicode, or
+// shell-meta chars away from spawn argv. The existing `..` filter and
+// VAULT-prefix check stay; this is an additional first-line filter.
+function safeGitPath(rel) {
+  if (!rel || rel.includes('..')) return null;
+  if (rel.startsWith('-') || rel.startsWith('/')) return null;
+  if (!/^[\w./-]+$/.test(rel)) return null;
+  return rel;
+}
 async function handleNotesHistory(req, res) {
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
-  const rel = (u.searchParams.get('path') || '').replace(/^\/+/, '');
-  if (!rel || rel.includes('..')) return send(res, 422, { error: 'bad path' });
+  const rel = safeGitPath((u.searchParams.get('path') || '').replace(/^\/+/, ''));
+  if (!rel) return send(res, 422, { error: 'bad path' });
   const limit = Math.min(Math.max(parseInt(u.searchParams.get('limit') || '50', 10), 1), 500);
   const full = path.join(VAULT, rel);
   if (!full.startsWith(VAULT + path.sep) && full !== VAULT) {
@@ -338,16 +352,29 @@ async function handleNotesHistory(req, res) {
 async function handleNotesShow(req, res) {
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
-  const rel = (u.searchParams.get('path') || '').replace(/^\/+/, '');
+  const rel = safeGitPath((u.searchParams.get('path') || '').replace(/^\/+/, ''));
   const sha = u.searchParams.get('sha') || '';
-  if (!rel || rel.includes('..')) return send(res, 422, { error: 'bad path' });
+  if (!rel) return send(res, 422, { error: 'bad path' });
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return send(res, 422, { error: 'bad sha' });
   const { spawn } = require('node:child_process');
+  // vt-0172: cap stdout at 16 MiB. A vault note larger than that won't
+  // render meaningfully in the UI anyway, and unbounded growth here is
+  // a memory-exhaustion vector for any viewer-authenticated caller.
+  const MAX_BYTES = 16 * 1024 * 1024;
   const p = spawn('git', ['-C', VAULT, 'show', `${sha}:${rel}`], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const chunks = []; let err = '';
-  p.stdout.on('data', (c) => chunks.push(c));
+  const chunks = []; let err = ''; let total = 0; let killed = false;
+  p.stdout.on('data', (c) => {
+    total += c.length;
+    if (total > MAX_BYTES) {
+      killed = true;
+      try { p.kill('SIGKILL'); } catch {}
+      return;
+    }
+    chunks.push(c);
+  });
   p.stderr.on('data', (c) => { err += c.toString('utf8'); });
   p.on('close', (code) => {
+    if (killed) return send(res, 413, { error: 'blob too large (>16 MiB)' });
     if (code !== 0) {
       return send(res, 404, { error: 'not found at sha', detail: err.slice(0, 200) });
     }
@@ -367,8 +394,8 @@ async function handleNotesShow(req, res) {
 async function handleNotesDiff(req, res) {
   if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
-  const rel = (u.searchParams.get('path') || '').replace(/^\/+/, '');
-  if (!rel || rel.includes('..')) return send(res, 422, { error: 'bad path' });
+  const rel = safeGitPath((u.searchParams.get('path') || '').replace(/^\/+/, ''));
+  if (!rel) return send(res, 422, { error: 'bad path' });
   const sha = u.searchParams.get('sha') || '';
   const from = u.searchParams.get('from') || '';
   const to = u.searchParams.get('to') || '';
@@ -573,7 +600,11 @@ async function withPathLock(key, fn) {
 }
 
 async function handlePut(body, req) {
-  return await withPathLock(String(body.path || ''), () => handlePutLocked(body, req));
+  // vt-0173: normalize lock key for case-insensitive filesystems (macOS
+  // dev/CI). Without this, "Foo.md" and "foo.md" get separate locks but
+  // hit the same file → race resurrected.
+  const lockKey = String(body.path || '').toLowerCase();
+  return await withPathLock(lockKey, () => handlePutLocked(body, req));
 }
 async function handlePutLocked(body, req) {
   const agent_id = body.agent_id ? String(body.agent_id).trim() : null;
@@ -587,9 +618,22 @@ async function handlePutLocked(body, req) {
 
   // vt-0161: admin bearer bypasses WRITABLE_PREFIXES — the prefix list was
   // a safety rail for unsupervised agents, but a human admin in the Fleet
-  // UI should be able to edit any vault file. agent_id is ignored in this
-  // path; the audit trail comes from the secret_audit table (caller fp).
-  const isAdmin = req && fleetRoutes.checkAdminAuth(req, fleetCtx);
+  // UI should be able to edit any vault file.
+  // vt-0162: CRITICAL fix — checkAdminAuth fallbacks to viewer when
+  // FLEET_ADMIN_TOKEN is unset (see fleet-routes.js:77-78), which would
+  // mean every viewer-authed PUT bypasses the prefix gate. Require admin
+  // token to be EXPLICITLY configured before honoring isAdmin.
+  const isAdmin = req && FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx);
+  // vt-0162: even admin must NOT write directly to secrets/ via /put — that
+  // path is for encrypted blobs managed by the secrets handler (which writes
+  // through a separate code path) or recipients (managed via secret_set).
+  // A misclick that overwrites secrets/vault.age would destroy the entire
+  // encrypted store.
+  const isProtectedPath = relPath.startsWith('secrets/');
+  if (isProtectedPath) {
+    const err = new Error('secrets/ is managed via /api/secrets/* — direct /put refused');
+    err.code = 403; throw err;
+  }
   const finalRel = isAdmin ? safeRel(relPath) : resolveWritePath(agent_id, relPath);
   const full = path.join(VAULT, finalRel);
   if (!full.startsWith(VAULT + path.sep)) throw new Error('bad path');
@@ -775,7 +819,14 @@ const server = http.createServer(async (req, res) => {
     });
   }
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  // vt-0163: accept EITHER viewer bearer OR admin bearer at the outer gate.
+  // Pre-fix, when VAULT_RAG_FLEET_ADMIN_TOKEN was set, this check rejected
+  // admin tokens outright — making the vt-0161 "admin can edit any vault
+  // file" feature dead in the configuration it was designed for. Mirrors
+  // fleet-routes.js:1361.
+  if (!checkAuth(req) && !(FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx))) {
+    return send(res, 401, { error: 'unauthorized' });
+  }
   // VT task routes (vt-rest-mcp) — dispatched separately.
   if (TASK_ROUTES[req.url]) {
     const name = TASK_ROUTES[req.url];
@@ -783,7 +834,14 @@ const server = http.createServer(async (req, res) => {
     if (!handler) return send(res, 404, { error: `no handler: ${name}` });
     try {
       const body = await readBody(req);
-      const out = await handler({ vault: VAULT, body });
+      // vt-0166: serialize task mutations through withPathLock so a
+      // concurrent /api/put on the same task file (vt-NNNN-slug.md) can't
+      // race with task_create/update/close. Key by body.id when present
+      // (specific task) else by route (covers list/ready scans).
+      const lockKey = body && body.id
+        ? `04-tasks/${String(body.id).toLowerCase()}`
+        : `__task_route__:${name}`;
+      const out = await withPathLock(lockKey, () => handler({ vault: VAULT, body }));
       send(res, out.status, out.body);
     } catch (e) {
       console.error(`[rag-api] ${req.url}: ${e.stack || e.message}`);

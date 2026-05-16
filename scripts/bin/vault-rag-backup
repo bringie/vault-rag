@@ -184,7 +184,14 @@ restore() {
   # (vault.age) is for a different vault — recoverable from the .bak.* file
   # but a footgun. Require --force-host-mismatch to override.
   if [[ -f "$BK_STAGING/manifest.json" ]]; then
-    BUNDLE_HOST=$(grep -o '"host":"[^"]*"' "$BK_STAGING/manifest.json" | head -1 | sed 's/.*:"\(.*\)"/\1/')
+    # vt-0174: tolerate whitespace from jq-prettified manifests.
+    # Prefer python (always available where rag-api runs); fall back to
+    # a whitespace-tolerant grep so the check never silently no-ops.
+    if command -v python3 >/dev/null 2>&1; then
+      BUNDLE_HOST=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])) or {}).get("host",""))' "$BK_STAGING/manifest.json" 2>/dev/null || echo "")
+    else
+      BUNDLE_HOST=$(grep -oE '"host"[[:space:]]*:[[:space:]]*"[^"]*"' "$BK_STAGING/manifest.json" | head -1 | sed -E 's/.*"([^"]*)"$/\1/')
+    fi
     if [[ -n "$BUNDLE_HOST" && "$BUNDLE_HOST" != "$(hostname)" && -z "$FORCE_HOST_MISMATCH" ]]; then
       echo "refusing restore: bundle was created on host '$BUNDLE_HOST', this is '$(hostname)'." >&2
       echo "  use --force-host-mismatch if this is intentional (e.g. host migration)" >&2
@@ -192,13 +199,29 @@ restore() {
     fi
   fi
 
+  # vt-0175: atomic restore via staging + rename so a mid-flight failure
+  # doesn't leave the host with mismatched age.key + vault.age. Stage all
+  # three to sibling .new files in their final dirs (same FS → rename is
+  # atomic), then rename in sequence. On any failure rollback by removing
+  # the .new files; original files are untouched.
+  AGE_KEY_NEW="$AGE_KEY.new.$$"
+  VAULT_AGE_NEW="$VAULT_REPO/secrets/vault.age.new.$$"
+  RECIPIENTS_NEW="$VAULT_REPO/secrets/recipients.new.$$"
+  cleanup_new() { rm -f "$AGE_KEY_NEW" "$VAULT_AGE_NEW" "$RECIPIENTS_NEW"; }
+  trap 'cleanup; cleanup_new' EXIT
+
+  install -D -m 0600 "$BK_STAGING/age.key" "$AGE_KEY_NEW"
+  install -m 0644 "$BK_STAGING/vault.age" "$VAULT_AGE_NEW"
+  install -m 0644 "$BK_STAGING/recipients" "$RECIPIENTS_NEW"
+
+  # All three are in place — only now back up the originals and rename.
   if [[ -f "$AGE_KEY" ]]; then
     cp "$AGE_KEY" "$AGE_KEY.bak.$(date +%s)"
     echo "existing age.key backed up to $AGE_KEY.bak.*"
   fi
-  install -D -m 0600 "$BK_STAGING/age.key" "$AGE_KEY"
-  install -m 0644 "$BK_STAGING/vault.age" "$VAULT_REPO/secrets/vault.age"
-  install -m 0644 "$BK_STAGING/recipients" "$VAULT_REPO/secrets/recipients"
+  mv -f "$AGE_KEY_NEW" "$AGE_KEY"
+  mv -f "$VAULT_AGE_NEW" "$VAULT_REPO/secrets/vault.age"
+  mv -f "$RECIPIENTS_NEW" "$VAULT_REPO/secrets/recipients"
 
   echo "restored:"
   echo "  age.key → $AGE_KEY"

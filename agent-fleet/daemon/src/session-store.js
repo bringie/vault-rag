@@ -7,10 +7,21 @@ class SessionStore {
     this.file = path.join(stateDir, 'sessions.json');
     fs.mkdirSync(stateDir, { recursive: true });
     this.map = new Map();
+    // vt-0176: on corrupt sessions.json, log + quarantine the file (rename
+    // to .corrupt.<ts>) so the next _flush doesn't overwrite the evidence.
+    // Previously a silent catch{} emptied the store → live PTYs become
+    // orphans because reconciliation reports them as nonexistent.
     try {
-      const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      for (const [k, v] of Object.entries(raw)) this.map.set(k, v);
-    } catch {}
+      if (fs.existsSync(this.file)) {
+        const text = fs.readFileSync(this.file, 'utf8');
+        const raw = JSON.parse(text);
+        for (const [k, v] of Object.entries(raw)) this.map.set(k, v);
+      }
+    } catch (e) {
+      const quarantine = this.file + '.corrupt.' + Date.now();
+      try { fs.renameSync(this.file, quarantine); } catch {}
+      console.error(`[session-store] corrupt sessions.json moved to ${quarantine}: ${e.message}`);
+    }
   }
   put(id, info) { this.map.set(id, info); this._flush(); }
   get(id) { return this.map.get(id) || null; }

