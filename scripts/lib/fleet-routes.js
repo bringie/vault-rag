@@ -1949,4 +1949,4 @@ function makeContext({ token, adminToken, db, version }) {
   return ctx;
 }
 
-module.exports = { attach, tryDispatch, attachUpgrade, makeContext, send, readBody, checkAuth, ensureWorkflowRunner };
+module.exports = { attach, tryDispatch, attachUpgrade, makeContext, send, readBody, checkAuth, checkAdminAuth, ensureWorkflowRunner };
