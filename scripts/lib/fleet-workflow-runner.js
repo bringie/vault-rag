@@ -49,6 +49,10 @@ function validateDefinition(def) {
     visited.add(id);
   }
   dfs(start);
+  // vt-0082: unreachable-from-start nodes are likely author errors (orphan islands).
+  for (const n of nodes) {
+    if (!visited.has(n.id)) throw new Error(`node ${n.id} is unreachable from start`);
+  }
 }
 
 // Branch condition is evaluated as a JS expression with ctx variables (n1, n2,
@@ -128,6 +132,15 @@ function createRunner(deps) {
   }
 
   async function runToCompletion(runId) {
+    try {
+      return await _runToCompletion(runId);
+    } finally {
+      // vt-0082: clean Set entry so it doesn't leak over hub lifetime.
+      cancelled.delete(runId);
+    }
+  }
+
+  async function _runToCompletion(runId) {
     const run = await wfDb.getRun(deps.db, runId);
     if (!run) throw new Error(`run not found: ${runId}`);
     const def = run.snapshot;

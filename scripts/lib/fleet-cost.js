@@ -76,8 +76,9 @@ async function hostSummary(tokmonPg, vaultPg, hostNames, days = 7) {
 }
 
 async function timeline(tokmonPg, vaultPg, hostNames, days = 7, groupBy = 'model') {
-  if (groupBy === 'label' && vaultPg) return timelineByLabel(tokmonPg, vaultPg, days);
-  if (groupBy === 'group' && vaultPg) return timelineByGroup(tokmonPg, vaultPg, days);
+  // vaultPg is required positional arg post-refactor; && vaultPg guards removed (vt-0082).
+  if (groupBy === 'label') return timelineByLabel(tokmonPg, vaultPg, days);
+  if (groupBy === 'group') return timelineByGroup(tokmonPg, vaultPg, days);
   const dim = groupBy === 'host' ? 'host_id' : 'model';
   const where = ['ts > now() - ($1 || \' days\')::interval'];
   const args = [String(days)];
