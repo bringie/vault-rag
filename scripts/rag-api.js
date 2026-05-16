@@ -168,45 +168,102 @@ function secretsBackend() {
   return client || getSecretsHandler();
 }
 
-async function handleSecretGet(body) {
+// vt-0142: audit every secret operation. Lives in rag-api (where the
+// HTTP auth + bearer are visible) so the standalone vault-rag-secrets
+// container per vt-0134 keeps its minimal capability set.
+function callerFingerprint(req) {
+  if (!req) return null;
+  const auth = req.headers?.authorization || '';
+  const token = auth.replace(/^Bearer\s+/i, '');
+  if (!token) return null;
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 12);
+}
+async function auditSecret(req, op, name, outcome) {
+  try {
+    await withPg(c => c.query(
+      `INSERT INTO secret_audit (op, name, caller_id, via, outcome) VALUES ($1,$2,$3,$4,$5)`,
+      [op, name || null, callerFingerprint(req), 'http', outcome]));
+  } catch (e) {
+    console.error(`[secret-audit] ${op} ${name || ''}: ${e.message}`);
+  }
+}
+function mapOutcome(e) {
+  if (e instanceof NotFound || e.statusCode === 404 || e.code === 404) return 'denied';
+  return 'error';
+}
+
+async function handleSecretGet(body, req) {
   if (!body.name) throw new Error('name required');
   try {
     const value = await secretsBackend().get(body.name);
+    await auditSecret(req, 'get', body.name, 'ok');
     return { value };
   } catch (e) {
+    await auditSecret(req, 'get', body.name, mapOutcome(e));
     if (e instanceof NotFound || e.statusCode === 404) { const err = new Error(e.message); err.code = 404; throw err; }
     throw e;
   }
 }
 
-async function handleSecretList() {
-  return { names: await secretsBackend().list() };
+async function handleSecretList(_body, req) {
+  try {
+    const names = await secretsBackend().list();
+    await auditSecret(req, 'list', null, 'ok');
+    return { names };
+  } catch (e) {
+    await auditSecret(req, 'list', null, mapOutcome(e));
+    throw e;
+  }
 }
 
-async function handleSecretSet(body) {
+async function handleSecretSet(body, req) {
   if (!body.name) throw new Error('name required');
   if (body.value === undefined || body.value === null) throw new Error('value required');
-  return { committed_sha: await secretsBackend().set(body.name, body.value) };
+  try {
+    const committed_sha = await secretsBackend().set(body.name, body.value);
+    await auditSecret(req, 'set', body.name, 'ok');
+    return { committed_sha };
+  } catch (e) {
+    await auditSecret(req, 'set', body.name, mapOutcome(e));
+    throw e;
+  }
 }
 
-async function handleSecretDelete(body) {
+async function handleSecretDelete(body, req) {
   if (!body.name) throw new Error('name required');
   try {
-    return { committed_sha: await secretsBackend().delete(body.name) };
+    const committed_sha = await secretsBackend().delete(body.name);
+    await auditSecret(req, 'delete', body.name, 'ok');
+    return { committed_sha };
   } catch (e) {
+    await auditSecret(req, 'delete', body.name, mapOutcome(e));
     if (e instanceof NotFound || e.statusCode === 404) { const err = new Error(e.message); err.code = 404; throw err; }
     throw e;
   }
 }
 
-async function handleSecretRotate(body) {
+async function handleSecretRotate(body, req) {
   if (!body.name) throw new Error('name required');
   const newValue = body.value === undefined ? null : body.value;
-  return { committed_sha: await secretsBackend().rotate(body.name, newValue) };
+  try {
+    const committed_sha = await secretsBackend().rotate(body.name, newValue);
+    await auditSecret(req, 'rotate', body.name, 'ok');
+    return { committed_sha };
+  } catch (e) {
+    await auditSecret(req, 'rotate', body.name, mapOutcome(e));
+    throw e;
+  }
 }
 
-async function handleSecretVerify() {
-  return await secretsBackend().verify();
+async function handleSecretVerify(_body, req) {
+  try {
+    const out = await secretsBackend().verify();
+    await auditSecret(req, 'verify', null, 'ok');
+    return out;
+  } catch (e) {
+    await auditSecret(req, 'verify', null, mapOutcome(e));
+    throw e;
+  }
 }
 
 async function handleSearch(body) {
@@ -418,7 +475,10 @@ const server = http.createServer(async (req, res) => {
   if (!handler) return send(res, 404, { error: 'not found' });
   try {
     const body = await readBody(req);
-    const out = await handler(body);
+    // vt-0142: handlers may opt into receiving the raw req (for caller-id
+    // fingerprint + via attribution in the audit log). Signature is
+    // (body, req) so legacy 1-arg handlers stay working.
+    const out = await handler(body, req);
     send(res, 200, out);
   } catch (e) {
     console.error(`[rag-api] ${req.url}: ${e.message}`);
