@@ -578,3 +578,8 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
 });
 
 process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
+
+// vt-0141 prereq: export `server` so tests can read .address().port and call
+// .close(). Requires PORT=0 + VAULT_SECRETS_SKIP_PG=1 + test-pg env to be
+// set BEFORE require. See scripts/lib/rag-api-test-helpers.js.
+module.exports = { server };
