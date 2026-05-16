@@ -17,7 +17,6 @@
     fit: null,
     pollTimer: null,
     backoff: 800,
-    bootedAt: Date.now(),
   };
 
   // ============ Auth ============
@@ -108,13 +107,6 @@
     if (m && !d) parts.push(m + 'm');
     if (!parts.length) parts.push((s % 60) + 's');
     return parts.join(' ');
-  }
-  function tFromBoot() {
-    const d = Math.floor((Date.now() - state.bootedAt) / 1000);
-    const h = Math.floor(d / 3600).toString().padStart(2, '0');
-    const m = Math.floor((d % 3600) / 60).toString().padStart(2, '0');
-    const s = (d % 60).toString().padStart(2, '0');
-    return `T+${h}:${m}:${s}`;
   }
   function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function dotClass(status, kind) {
@@ -227,7 +219,6 @@
   function startPolling() {
     refresh();
     state.pollTimer = setInterval(refresh, 5000);
-    setInterval(() => { const el = $('stat-clock'); if (el) el.textContent = tFromBoot(); }, 1000);
   }
 
   // ============ Terminal + WS ============

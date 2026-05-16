@@ -28,9 +28,19 @@
   function t(k, vars) { return window.fleetI18n ? window.fleetI18n.t(k, vars) : k; }
 
   let activeWs = null;
+  // Generation counter: each open() bumps it; reconnect/timer callbacks check
+  // their captured gen against current to bail out of stale loops. Prevents
+  // WS leak when openWorkflowRunViewer is re-entered (e.g. fleet-langchange
+  // → applyRoute → setPage re-invokes open).
+  let gen = 0;
+  let stopFlags = [];
 
   async function openWorkflowRunViewer(runId) {
+    // Stop all prior reconnect loops; their setTimeout callbacks check stopped.
+    for (const f of stopFlags) f.stopped = true;
+    stopFlags = [];
     if (activeWs) { try { activeWs.close(); } catch {} activeWs = null; }
+    const myGen = ++gen;
     let run;
     try { run = await api(`/workflow-runs/${runId}`); }
     catch (e) { document.getElementById('wf-run-detail').textContent = `Error: ${e.message}`; return; }
@@ -61,14 +71,18 @@
       } catch (e) { alert(e.message); }
     };
 
-    let stopped = false;
+    const flag = { stopped: false };
+    stopFlags.push(flag);
     let backoff = 800;
     const connectStream = () => {
+      if (flag.stopped || gen !== myGen) return;
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url = `${proto}//${location.host}/fleet/ws?role=workflow_viewer&run_id=${runId}`;
-      activeWs = new WebSocket(url, [`bearer.${token()}`]);
-      activeWs.onopen = () => { backoff = 800; };
-      activeWs.onmessage = (ev) => {
+      const ws = new WebSocket(url, [`bearer.${token()}`]);
+      activeWs = ws;
+      ws.onopen = () => { backoff = 800; };
+      ws.onmessage = (ev) => {
+        if (flag.stopped || gen !== myGen) return;
         let f;
         try { f = JSON.parse(ev.data); } catch { return; }
         if (f.type === 'run_state') {
@@ -85,25 +99,27 @@
           }
         }
       };
-      activeWs.onerror = () => {};
-      activeWs.onclose = (ev) => {
-        if (stopped || ev.code === 4001) return;
-        // Re-fetch run on reconnect so terminal status is correct even if we
-        // missed the final run_state frame.
+      ws.onerror = () => {};
+      ws.onclose = (ev) => {
+        if (flag.stopped || gen !== myGen || ev.code === 4001) return;
         const wait = Math.min(backoff *= 1.7, 8000);
         setTimeout(async () => {
-          if (stopped) return;
+          if (flag.stopped || gen !== myGen) return;
           try {
             const fresh = await api(`/workflow-runs/${runId}`);
             run = fresh;
             setStatus(run.status);
           } catch {}
-          if (!stopped) connectStream();
+          connectStream();
         }, wait);
       };
     };
     connectStream();
-    const closeWs = () => { stopped = true; try { activeWs && activeWs.close(); } catch {} activeWs = null; };
+    const closeWs = () => {
+      flag.stopped = true;
+      try { activeWs && activeWs.close(); } catch {}
+      activeWs = null;
+    };
     window.addEventListener('hashchange', closeWs, { once: true });
   }
 

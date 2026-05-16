@@ -13,7 +13,6 @@
   "topbar.hosts": "HOSTS",
   "topbar.online": "ONLINE",
   "topbar.active": "ACTIVOS",
-  "topbar.uptime": "UPTIME",
   "topbar.spend7d": "GASTO 7D",
 
   "footer.version": "FLEET v0.1.0 / proto=v0.1",

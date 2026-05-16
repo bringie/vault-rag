@@ -101,9 +101,15 @@ body::after {
 .auth-hint { color: var(--text-faint); font-size: .78em; margin: 1.2em 0 0; letter-spacing: .04em; }
 
 /* ============ APP SHELL ============ */
-/* topbar (56px) + footbar (28px) are position:fixed (see below) — #app is plain block */
+/* topbar (56px) + footbar (28px) are position:fixed (see below). main is in the
+ * normal flow and would slide under the topbar without offset — push it down. */
 #app { display: block; min-height: 100vh; }
-#app > main { height: calc(100vh - var(--topbar-h, 56px) - var(--footbar-h, 28px)); }
+#app > main {
+  height: calc(100vh - var(--topbar-h, 56px) - var(--footbar-h, 28px));
+  padding-top: var(--topbar-h, 56px);
+  padding-bottom: var(--footbar-h, 28px);
+  box-sizing: content-box;
+}
 
 /* Persistent header — fixed above all overlays, z-index higher than page z:80 */
 .topbar {
