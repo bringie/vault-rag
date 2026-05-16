@@ -62,38 +62,139 @@
     return parsed;
   }
 
+  // vt-0158: post-process Obsidian wiki-links before passing to marked.
+  // Forms handled:
+  //   [[name]]             → link by basename
+  //   [[name|alias]]       → link by basename, anchor text = alias
+  //   [[folder/name]]      → explicit rel-path (slashes preserved)
+  //   [[name#heading]]     → resolved by basename, anchor text shows heading
+  // Resolution happens client-side against state.indexByBase (loaded once
+  // per session). Unresolved links render as a muted span — clicking them
+  // does nothing (matches Obsidian's "unresolved" affordance).
+  function expandWikiLinks(md) {
+    if (!md) return '';
+    const idx = state.indexByBase || {};
+    const idxLc = state.indexByBaseLower || {};
+    return md.replace(/\[\[([^\]\n]+)\]\]/g, (_full, inner) => {
+      let target = inner.trim(), alias = null;
+      const pipe = target.indexOf('|');
+      if (pipe >= 0) { alias = target.slice(pipe + 1).trim(); target = target.slice(0, pipe).trim(); }
+      const hash = target.indexOf('#');
+      let heading = null;
+      if (hash >= 0) { heading = target.slice(hash + 1); target = target.slice(0, hash).trim(); }
+      let resolved = null;
+      if (target.includes('/')) {
+        // explicit path; allow with or without .md
+        resolved = target.endsWith('.md') ? target : target + '.md';
+      } else {
+        const base = target.endsWith('.md') ? target.slice(0, -3) : target;
+        resolved = idx[base] || idxLc[base.toLowerCase()] || null;
+      }
+      const display = alias || (heading ? `${target}#${heading}` : target);
+      if (!resolved) {
+        return `<span class="vault-wiki-unresolved" title="unresolved: ${target}">${display}</span>`;
+      }
+      // Custom anchor — onTreeClick equivalent for inline navigation.
+      return `<a href="#" class="vault-wiki" data-vault-link="${resolved}">${display}</a>`;
+    });
+  }
+
   function renderMd(text) {
-    if (!window.marked || !window.DOMPurify) return esc(text || '');
-    const html = window.marked.parse(text || '');
-    return window.DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
+    const expanded = expandWikiLinks(text);
+    if (!window.marked || !window.DOMPurify) return esc(expanded || '');
+    const html = window.marked.parse(expanded || '');
+    return window.DOMPurify.sanitize(html, {
+      ADD_ATTR: ['target', 'data-vault-link'],
+      ADD_CLASSES: ['vault-wiki', 'vault-wiki-unresolved'],
+    });
   }
 
   // -------- notes mode --------
-  async function loadTree(prefix = '') {
-    return api('GET', `/notes/list?prefix=${encodeURIComponent(prefix)}&depth=2`);
+  // Tree state: { 'dirPath/': { loaded: bool, expanded: bool, entries: [...] }}
+  // Root key is '' (empty string). Entries on disk shape: {path, kind, size,
+  // tags?}. Paths are already prefixed with their parent's dirPath.
+  function dirCache() {
+    if (!state.dirCache) state.dirCache = {};
+    return state.dirCache;
   }
 
-  function renderTree(entries) {
-    const treeEl = $('vault-tree');
-    treeEl.textContent = '';
-    if (!entries.length) { treeEl.textContent = '(empty)'; return; }
-    const sorted = entries.slice().sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
-      return a.path.localeCompare(b.path);
+  async function fetchDir(prefix) {
+    // depth=1 keeps the per-click round-trip tiny — we only need immediate
+    // children. Sub-dirs lazy-load on their own click.
+    const r = await api('GET', `/notes/list?prefix=${encodeURIComponent(prefix)}&depth=1`);
+    return r.entries || [];
+  }
+
+  function sortEntries(entries, parentPrefix) {
+    // Strip the parentPrefix so the displayed name is the basename only.
+    const stripped = entries.map(e => {
+      const rel = parentPrefix && e.path.startsWith(parentPrefix)
+        ? e.path.slice(parentPrefix.length).replace(/^\//, '')
+        : e.path;
+      return { ...e, name: rel };
     });
-    const ul = document.createElement('ul');
-    ul.className = 'vault-tree-ul';
-    for (const e of sorted) {
-      const li = document.createElement('li');
-      li.className = e.kind === 'dir' ? 'vault-row vault-dir' : 'vault-row vault-file';
-      li.dataset.path = e.path;
-      li.dataset.kind = e.kind;
-      const tagsSuffix = (e.tags && e.tags.length) ? ` [${e.tags.join(', ')}]` : '';
-      const sizeSuffix = e.kind === 'file' ? ` (${e.size}b)` : '';
-      li.textContent = (e.kind === 'dir' ? '📁 ' : '📄 ') + e.path + sizeSuffix + tagsSuffix;
-      ul.appendChild(li);
+    return stripped.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  function rowEl(entry) {
+    const li = document.createElement('li');
+    li.className = entry.kind === 'dir' ? 'vault-row vault-dir' : 'vault-row vault-file';
+    li.dataset.path = entry.path;
+    li.dataset.kind = entry.kind;
+    const caret = document.createElement('span');
+    caret.className = 'vault-caret';
+    caret.textContent = entry.kind === 'dir' ? '▶' : ' ';
+    const icon = document.createElement('span');
+    icon.className = 'vault-icon';
+    icon.textContent = entry.kind === 'dir' ? '📁' : '📄';
+    const label = document.createElement('span');
+    label.className = 'vault-label';
+    const tagsSuffix = (entry.tags && entry.tags.length) ? ` [${entry.tags.join(', ')}]` : '';
+    const sizeSuffix = entry.kind === 'file' ? ` (${entry.size}b)` : '';
+    label.textContent = (entry.name || entry.path) + sizeSuffix + tagsSuffix;
+    li.appendChild(caret);
+    li.appendChild(document.createTextNode(' '));
+    li.appendChild(icon);
+    li.appendChild(document.createTextNode(' '));
+    li.appendChild(label);
+    if (entry.kind === 'dir') {
+      const children = document.createElement('ul');
+      children.className = 'vault-tree-ul vault-children';
+      children.hidden = true;
+      li.appendChild(children);
     }
-    treeEl.appendChild(ul);
+    return li;
+  }
+
+  async function toggleDir(li, dirPath) {
+    const prefix = dirPath.replace(/\/$/, '');
+    const cache = dirCache();
+    const childrenUl = li.querySelector(':scope > .vault-children');
+    if (!cache[prefix]) cache[prefix] = { loaded: false, expanded: false };
+    const entry = cache[prefix];
+    const caret = li.querySelector(':scope > .vault-caret');
+    const icon = li.querySelector(':scope > .vault-icon');
+    if (!entry.loaded) {
+      childrenUl.innerHTML = '<li class="vault-row vault-loading"><em>loading…</em></li>';
+      childrenUl.hidden = false;
+      try {
+        const items = await fetchDir(prefix);
+        entry.entries = sortEntries(items, prefix + '/');
+        entry.loaded = true;
+        childrenUl.innerHTML = '';
+        for (const child of entry.entries) childrenUl.appendChild(rowEl(child));
+      } catch (e) {
+        childrenUl.innerHTML = `<li class="vault-row"><em>error: ${esc(e.message)}</em></li>`;
+        return;
+      }
+    }
+    entry.expanded = !entry.expanded;
+    childrenUl.hidden = !entry.expanded;
+    if (caret) caret.textContent = entry.expanded ? '▼' : '▶';
+    if (icon) icon.textContent = entry.expanded ? '📂' : '📁';
   }
 
   async function openNote(p) {
@@ -116,7 +217,9 @@
     viewer.innerHTML = '';
     const head = document.createElement('div');
     head.className = 'vault-viewer-head';
-    head.textContent = state.currentPath;
+    const pathSpan = document.createElement('span');
+    pathSpan.textContent = state.currentPath;
+    head.appendChild(pathSpan);
     if (state.isAdmin && isWritable(state.currentPath) && !state.editing) {
       const btn = document.createElement('button');
       btn.className = 'btn-ghost';
@@ -124,6 +227,15 @@
       btn.textContent = 'edit';
       btn.onclick = () => startEdit();
       head.appendChild(btn);
+    }
+    // vt-0158: history button — available to any viewer, read-only.
+    if (!state.editing) {
+      const hBtn = document.createElement('button');
+      hBtn.className = 'btn-ghost';
+      hBtn.style.marginLeft = '.5em';
+      hBtn.textContent = 'history';
+      hBtn.onclick = () => showHistory(state.currentPath);
+      head.appendChild(hBtn);
     }
     viewer.appendChild(head);
 
@@ -147,6 +259,89 @@
       body.className = 'vault-md';
       body.innerHTML = renderMd(state.currentText);
       viewer.appendChild(body);
+      // vt-0158: intercept wiki-link clicks → openNote.
+      body.querySelectorAll('a.vault-wiki[data-vault-link]').forEach(a => {
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          openNote(a.dataset.vaultLink);
+        });
+      });
+    }
+  }
+
+  // vt-0158: history modal — pulled fresh per click. Renders a list of
+  // commits; clicking a commit row shows that revision's content in a
+  // read-only pre. No diff view yet (keep MVP small).
+  async function showHistory(p) {
+    const viewer = $('vault-viewer');
+    const overlay = document.createElement('div');
+    overlay.className = 'vault-history-overlay';
+    overlay.innerHTML = `<div class="vault-history-frame">
+      <div class="vault-history-head">
+        <span class="lbl">HISTORY //</span>
+        <span class="callsign">${esc(p)}</span>
+        <span style="flex:1"></span>
+        <button class="btn-ghost" data-close>× close</button>
+      </div>
+      <div class="vault-history-body">
+        <div class="vault-history-list"><em>loading…</em></div>
+        <div class="vault-history-preview"><em>pick a commit to preview</em></div>
+      </div>
+    </div>`;
+    overlay.querySelector('[data-close]').onclick = () => overlay.remove();
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) overlay.remove();
+    });
+    viewer.parentNode.appendChild(overlay);
+    let commits = [];
+    try {
+      const r = await api('GET', `/notes/history?path=${encodeURIComponent(p)}&limit=100`);
+      commits = r.commits || [];
+    } catch (e) {
+      overlay.querySelector('.vault-history-list').innerHTML = `<em>error: ${esc(e.message)}</em>`;
+      return;
+    }
+    const listEl = overlay.querySelector('.vault-history-list');
+    const previewEl = overlay.querySelector('.vault-history-preview');
+    if (!commits.length) { listEl.innerHTML = '<em>(no commits)</em>'; return; }
+    listEl.innerHTML = '';
+    for (const c of commits) {
+      const row = document.createElement('div');
+      row.className = 'vault-history-row';
+      row.dataset.sha = c.sha;
+      const when = new Date(c.ts).toLocaleString();
+      row.innerHTML = `<span class="vault-history-sha">${esc(c.sha.slice(0,8))}</span>
+                       <span class="vault-history-when">${esc(when)}</span>
+                       <span class="vault-history-author">${esc(c.author || '')}</span>
+                       <span class="vault-history-subject">${esc(c.subject || '')}</span>`;
+      row.onclick = async () => {
+        listEl.querySelectorAll('.vault-history-row.active').forEach(r => r.classList.remove('active'));
+        row.classList.add('active');
+        previewEl.innerHTML = '<em>loading…</em>';
+        try {
+          const s = await api('GET', `/notes/show?path=${encodeURIComponent(p)}&sha=${encodeURIComponent(c.sha)}`);
+          // Render as Markdown so the preview is readable; user can right-click
+          // → "view source" if they need raw.
+          const wrap = document.createElement('div');
+          wrap.className = 'vault-md';
+          // Don't pass through expandWikiLinks here — historic state may have
+          // referenced files that are renamed/gone today; raw markdown is
+          // truthful, and unresolved links would mislead.
+          const html = window.marked && window.DOMPurify
+            ? window.DOMPurify.sanitize(window.marked.parse(s.text || ''), { ADD_ATTR: ['target'] })
+            : esc(s.text || '');
+          wrap.innerHTML = html;
+          previewEl.innerHTML = '';
+          const meta = document.createElement('div');
+          meta.className = 'vault-history-meta';
+          meta.textContent = `${c.sha.slice(0,8)} · ${new Date(c.ts).toLocaleString()} · ${c.author}`;
+          previewEl.appendChild(meta);
+          previewEl.appendChild(wrap);
+        } catch (e) {
+          previewEl.innerHTML = `<em>error: ${esc(e.message)}</em>`;
+        }
+      };
+      listEl.appendChild(row);
     }
   }
 
@@ -193,29 +388,36 @@
     state.mode = 'notes';
     $('vault-tab-notes').classList.add('active-nav');
     $('vault-tab-secrets').classList.remove('active-nav');
-    $('vault-tree').textContent = 'loading…';
+    const treeEl = $('vault-tree');
+    treeEl.textContent = 'loading…';
+    // Reset cache so a reload sees fresh data.
+    state.dirCache = {};
+    // Wiki-link resolution index — best-effort, render still works without it.
+    api('GET', '/notes/index').then(r => {
+      state.indexByBase = r.byBase || {};
+      state.indexByBaseLower = r.byBaseLower || {};
+    }).catch(() => { /* ignore — links just render as unresolved */ });
     try {
-      const r = await loadTree();
-      state.currentTree = r.entries || [];
-      renderTree(state.currentTree);
+      const items = await fetchDir('');
+      const rootUl = document.createElement('ul');
+      rootUl.className = 'vault-tree-ul vault-root';
+      for (const e of sortEntries(items, '')) rootUl.appendChild(rowEl(e));
+      treeEl.innerHTML = '';
+      treeEl.appendChild(rootUl);
+      // Seed root cache so reload behaviour is consistent with sub-dirs.
+      dirCache()[''] = { loaded: true, expanded: true, entries: items };
     } catch (e) {
-      $('vault-tree').textContent = 'error: ' + e.message;
+      treeEl.textContent = 'error: ' + e.message;
     }
   }
 
   async function onTreeClick(ev) {
     const row = ev.target.closest('.vault-row');
     if (!row) return;
+    ev.stopPropagation();
     if (state.mode === 'notes') {
       if (row.dataset.kind === 'dir') {
-        $('vault-tree').textContent = 'loading…';
-        try {
-          const r = await loadTree(row.dataset.path.replace(/\/$/, ''));
-          state.currentTree = r.entries || [];
-          renderTree(state.currentTree);
-        } catch (e) {
-          $('vault-tree').textContent = 'error: ' + e.message;
-        }
+        await toggleDir(row, row.dataset.path);
       } else {
         await openNote(row.dataset.path);
       }

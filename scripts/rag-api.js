@@ -248,6 +248,117 @@ async function handleNotesList(req, res) {
   send(res, 200, { entries: entries.slice(0, 5000) });
 }
 
+// vt-0158: lightweight basename→path index for wiki-link resolution.
+// Walks the whole vault (max 50k entries to bound cost), returns
+// {byBase, byBasenameLower, all} where:
+//   byBase[basename-without-ext] = rel-path-with-md
+//   byBasenameLower is the same key-lowercased for case-insensitive matches
+//   all is a sorted array of all .md paths
+// Used by the Fleet UI vault tab to resolve [[name]] / [[folder/name]] /
+// [[name|alias]] links on click without an extra round-trip per click.
+async function handleNotesIndex(req, res) {
+  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  const all = [];
+  const byBase = {};
+  const byBaseLower = {};
+  const MAX = 50000;
+  function walk(dir, rel) {
+    if (all.length >= MAX) return;
+    let dirents;
+    try { dirents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const d of dirents) {
+      if (all.length >= MAX) return;
+      if (d.name.startsWith('.')) continue;
+      if (d.name === 'node_modules') continue;
+      const full = path.join(dir, d.name);
+      const subRel = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        walk(full, subRel);
+      } else if (d.name.endsWith('.md')) {
+        all.push(subRel);
+        const base = d.name.replace(/\.md$/, '');
+        // First write wins (so a more "canonical" path higher in the tree
+        // beats a duplicate buried in archive/_refactor/etc). The UI can
+        // also send the full rel-path to disambiguate.
+        if (!(base in byBase)) byBase[base] = subRel;
+        const lc = base.toLowerCase();
+        if (!(lc in byBaseLower)) byBaseLower[lc] = subRel;
+      }
+    }
+  }
+  walk(VAULT, '');
+  all.sort();
+  send(res, 200, { byBase, byBaseLower, all, truncated: all.length >= MAX });
+}
+
+// vt-0158: git log for a single vault file. Returns the last N commits
+// touching that path with sha+ts+author+subject. Vault is a git repo
+// (Obsidian-Git on every device + vault-sync.sh on the hub auto-commit),
+// so history is meaningful — every Fleet UI save shows up too via the
+// auto-commit hook.
+async function handleNotesHistory(req, res) {
+  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  const u = new URL(req.url, 'http://x');
+  const rel = (u.searchParams.get('path') || '').replace(/^\/+/, '');
+  if (!rel || rel.includes('..')) return send(res, 422, { error: 'bad path' });
+  const limit = Math.min(Math.max(parseInt(u.searchParams.get('limit') || '50', 10), 1), 500);
+  const full = path.join(VAULT, rel);
+  if (!full.startsWith(VAULT + path.sep) && full !== VAULT) {
+    return send(res, 422, { error: 'bad path' });
+  }
+  const { spawn } = require('node:child_process');
+  // Format: sha<TAB>iso-ts<TAB>author<TAB>subject — unit-separator-free,
+  // \x1f as record separator so subjects containing tabs/newlines don't
+  // corrupt parsing.
+  const args = [
+    '-C', VAULT, 'log',
+    `--max-count=${limit}`,
+    `--pretty=format:%H%x09%aI%x09%an%x09%s%x1e`,
+    '--', rel,
+  ];
+  const p = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', err = '';
+  p.stdout.on('data', (c) => { out += c.toString('utf8'); });
+  p.stderr.on('data', (c) => { err += c.toString('utf8'); });
+  p.on('close', (code) => {
+    if (code !== 0) {
+      return send(res, 500, { error: 'git log failed', detail: err.slice(0, 200) });
+    }
+    const commits = out.split('\x1e').map(s => s.trim()).filter(Boolean).map(line => {
+      const [sha, ts, author, ...subjectParts] = line.split('\t');
+      return { sha, ts, author, subject: subjectParts.join('\t') };
+    });
+    send(res, 200, { path: rel, commits });
+  });
+}
+
+// vt-0158: blob at a specific commit. Lets the UI diff "what was the
+// file at sha X" without checking out anything. Plain text only; binary
+// blobs return 422.
+async function handleNotesShow(req, res) {
+  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  const u = new URL(req.url, 'http://x');
+  const rel = (u.searchParams.get('path') || '').replace(/^\/+/, '');
+  const sha = u.searchParams.get('sha') || '';
+  if (!rel || rel.includes('..')) return send(res, 422, { error: 'bad path' });
+  if (!/^[0-9a-f]{4,64}$/i.test(sha)) return send(res, 422, { error: 'bad sha' });
+  const { spawn } = require('node:child_process');
+  const p = spawn('git', ['-C', VAULT, 'show', `${sha}:${rel}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const chunks = []; let err = '';
+  p.stdout.on('data', (c) => chunks.push(c));
+  p.stderr.on('data', (c) => { err += c.toString('utf8'); });
+  p.on('close', (code) => {
+    if (code !== 0) {
+      return send(res, 404, { error: 'not found at sha', detail: err.slice(0, 200) });
+    }
+    const buf = Buffer.concat(chunks);
+    // Quick binary sniff: any null byte in first 1KB → reject.
+    const head = buf.slice(0, 1024);
+    if (head.includes(0)) return send(res, 422, { error: 'binary blob' });
+    send(res, 200, { path: rel, sha, text: buf.toString('utf8') });
+  });
+}
+
 // vt-0140: ingest path moved from the standalone tokmon-ingest container.
 // Auth is the separate VAULT_RAG_TOKMON_INGEST_TOKEN — shippers don't hold
 // the viewer or admin bearer.
@@ -582,6 +693,27 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url.startsWith('/notes/list')) {
     return handleNotesList(req, res).catch(e => {
       console.error('[rag-api] /notes/list', e.stack || e.message);
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
+  // vt-0158: basename→path index for wiki-link resolution.
+  if (req.method === 'GET' && req.url.startsWith('/notes/index')) {
+    return handleNotesIndex(req, res).catch(e => {
+      console.error('[rag-api] /notes/index', e.stack || e.message);
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
+  // vt-0158: per-file git history.
+  if (req.method === 'GET' && req.url.startsWith('/notes/history')) {
+    return handleNotesHistory(req, res).catch(e => {
+      console.error('[rag-api] /notes/history', e.stack || e.message);
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
+  // vt-0158: blob at sha for diffing previous revisions.
+  if (req.method === 'GET' && req.url.startsWith('/notes/show')) {
+    return handleNotesShow(req, res).catch(e => {
+      console.error('[rag-api] /notes/show', e.stack || e.message);
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }

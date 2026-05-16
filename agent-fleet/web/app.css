@@ -768,3 +768,68 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   user-select:all; -webkit-user-select:all;
   margin:0; max-height:40vh; overflow:auto;
 }
+
+/* vt-0158: nested tree + wiki links + history overlay */
+.vault-tree-ul .vault-tree-ul { padding-left:16px; }
+.vault-caret { display:inline-block; width:1em; color:var(--text-dim, #888); user-select:none; }
+.vault-icon  { display:inline-block; width:1em; user-select:none; }
+.vault-label { color:inherit; }
+.vault-children { margin:0; padding-left:16px; list-style:none; }
+.vault-row { user-select:none; }
+.vault-dir > .vault-children { transition:max-height .15s ease; }
+
+.vault-wiki {
+  color:var(--accent, #6cf); text-decoration:none;
+  border-bottom:1px dotted var(--accent, #6cf);
+  cursor:pointer;
+}
+.vault-wiki:hover { background:var(--bg-hover, #1c1c1c); }
+.vault-wiki-unresolved {
+  color:var(--text-dim, #888); border-bottom:1px dotted var(--text-dim, #888);
+  cursor:not-allowed;
+}
+
+.vault-history-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.65);
+  z-index:120; display:flex; align-items:center; justify-content:center;
+}
+.vault-history-frame {
+  background:var(--bg, #0a0a0a); border:1px solid var(--accent, #6cf); border-radius:4px;
+  width:min(90vw, 1100px); height:min(85vh, 760px);
+  display:flex; flex-direction:column;
+  box-shadow:0 0 30px rgba(102,204,255,.2);
+}
+.vault-history-head {
+  display:flex; gap:8px; align-items:center; padding:10px 14px;
+  border-bottom:1px solid var(--border, #333); font:11px/1.4 monospace;
+}
+.vault-history-body { display:flex; flex:1; min-height:0; }
+.vault-history-list {
+  width:42%; min-width:320px; overflow:auto;
+  border-right:1px solid var(--border, #333); padding:6px 0;
+  font:11px/1.5 monospace;
+}
+.vault-history-row {
+  display:grid; grid-template-columns:7em 12em 1fr; gap:8px;
+  padding:4px 12px; cursor:pointer; align-items:center;
+}
+.vault-history-row .vault-history-subject {
+  grid-column:1/-1; padding-left:7.5em; color:var(--text, #ccc);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.vault-history-row:hover { background:var(--bg-hover, #1c1c1c); }
+.vault-history-row.active { background:var(--bg-hover, #1c1c1c); border-left:2px solid var(--accent, #6cf); }
+.vault-history-sha { color:var(--accent, #6cf); font-weight:500; }
+.vault-history-when { color:var(--text-dim, #888); }
+.vault-history-author { color:var(--text-dim, #888); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.vault-history-preview {
+  flex:1; overflow:auto; padding:14px 18px;
+}
+.vault-history-meta {
+  font:10px/1.4 monospace; color:var(--text-dim, #888);
+  padding-bottom:8px; margin-bottom:10px; border-bottom:1px solid var(--border, #333);
+}
+@media (max-width:768px) {
+  .vault-history-body { flex-direction:column; }
+  .vault-history-list { width:auto; border-right:none; border-bottom:1px solid var(--border, #333); max-height:40vh; }
+}
