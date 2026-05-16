@@ -532,6 +532,12 @@
     </header>
     <div class="vault-split">
       <div id="vault-tree-pane">
+        <!-- vt-0160: search bar — name filter while typing, content search on submit -->
+        <div class="vault-search-bar">
+          <input id="vault-search-input" type="search" spellcheck="false"
+                 placeholder="filter by name… (Enter = content search)" />
+          <button id="vault-search-clear" class="btn-ghost" title="clear">×</button>
+        </div>
         <div id="vault-tree" class="vault-tree">loading…</div>
       </div>
       <div id="vault-viewer-pane">

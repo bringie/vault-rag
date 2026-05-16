@@ -769,6 +769,37 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   margin:0; max-height:40vh; overflow:auto;
 }
 
+/* vt-0160: search bar in tree pane + search result rendering */
+.vault-search-bar {
+  display:flex; gap:6px; padding:8px; border-bottom:1px solid var(--border, #333);
+  position:sticky; top:0; background:var(--bg, #0a0a0a); z-index:1;
+}
+.vault-search-bar input {
+  flex:1; padding:6px 8px;
+  background:var(--bg-hover, #1c1c1c); color:var(--text, #ccc);
+  border:1px solid var(--border, #333); border-radius:3px;
+  font:12px/1.3 monospace;
+}
+.vault-search-bar input:focus {
+  outline:none; border-color:var(--accent, #6cf);
+}
+.vault-search-bar .btn-ghost { padding:0 .6em; }
+.vault-search-meta {
+  padding:6px 12px; font:10px/1.4 monospace; color:var(--text-dim, #888);
+}
+.vault-search-results { padding:0 8px; }
+.vault-search-hit { padding:6px 4px; border-bottom:1px solid var(--border, #333); }
+.vault-search-hit-head { display:flex; gap:6px; align-items:center; }
+.vault-search-score {
+  margin-left:auto; font-size:10px; color:var(--accent, #6cf);
+  background:var(--bg-hover, #1c1c1c); padding:1px 6px; border-radius:8px;
+}
+.vault-search-snippet {
+  margin-top:4px; padding-left:18px;
+  font:11px/1.4 monospace; color:var(--text-dim, #aaa);
+  white-space:pre-wrap; word-break:break-word;
+}
+
 /* vt-0158: nested tree + wiki links + history overlay */
 .vault-tree-ul .vault-tree-ul { padding-left:16px; }
 .vault-caret { display:inline-block; width:1em; color:var(--text-dim, #888); user-select:none; }

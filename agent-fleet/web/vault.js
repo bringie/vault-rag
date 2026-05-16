@@ -167,9 +167,12 @@
     icon.textContent = entry.kind === 'dir' ? '📁' : '📄';
     const label = document.createElement('span');
     label.className = 'vault-label';
-    const tagsSuffix = (entry.tags && entry.tags.length) ? ` [${entry.tags.join(', ')}]` : '';
-    const sizeSuffix = entry.kind === 'file' ? ` (${entry.size}b)` : '';
-    label.textContent = (entry.name || entry.path) + sizeSuffix + tagsSuffix;
+    // vt-0160: drop tag suffix + size — name only, with .md stripped on files
+    // to match Obsidian's display style. Full path stays in dataset.path.
+    let display = entry.name || entry.path;
+    if (entry.kind === 'file' && display.endsWith('.md')) display = display.slice(0, -3);
+    if (entry.kind === 'dir') display = display.replace(/\/$/, '');
+    label.textContent = display;
     li.appendChild(caret);
     li.appendChild(document.createTextNode(' '));
     li.appendChild(icon);
@@ -614,6 +617,122 @@
     } catch (e) { alert('delete failed: ' + e.message); }
   }
 
+  // -------- search (vt-0160) --------
+  // Two modes share one input:
+  //   typing       → live name-filter against state.indexAll (no round-trip)
+  //   Enter        → semantic content search via POST /api/search (pgvector)
+  // Esc / × clear → restore tree.
+  let _searchDebounce = null;
+  function renderNameFilter(query) {
+    const treeEl = $('vault-tree');
+    if (!query) { reopenTree(); return; }
+    const q = query.toLowerCase();
+    const matches = (state.indexAll || []).filter(p => p.toLowerCase().includes(q));
+    treeEl.innerHTML = '';
+    const meta = document.createElement('div');
+    meta.className = 'vault-search-meta';
+    meta.textContent = matches.length
+      ? `${matches.length} file${matches.length === 1 ? '' : 's'} matching "${query}"`
+      : `no matches for "${query}"`;
+    treeEl.appendChild(meta);
+    if (!matches.length) return;
+    const ul = document.createElement('ul');
+    ul.className = 'vault-tree-ul vault-search-results';
+    for (const p of matches.slice(0, 200)) {
+      const li = document.createElement('li');
+      li.className = 'vault-row vault-file';
+      li.dataset.path = p;
+      li.dataset.kind = 'file';
+      const icon = document.createElement('span');
+      icon.className = 'vault-icon'; icon.textContent = '📄';
+      const label = document.createElement('span');
+      label.className = 'vault-label';
+      label.textContent = p.replace(/\.md$/, '');
+      li.appendChild(icon);
+      li.appendChild(document.createTextNode(' '));
+      li.appendChild(label);
+      ul.appendChild(li);
+    }
+    treeEl.appendChild(ul);
+    if (matches.length > 200) {
+      const more = document.createElement('div');
+      more.className = 'vault-search-meta';
+      more.textContent = `…(${matches.length - 200} more — refine the query)`;
+      treeEl.appendChild(more);
+    }
+  }
+
+  async function runContentSearch(query) {
+    const treeEl = $('vault-tree');
+    treeEl.innerHTML = '<em>searching content…</em>';
+    try {
+      const r = await api('POST', '/search', { query, k: 25 });
+      treeEl.innerHTML = '';
+      const meta = document.createElement('div');
+      meta.className = 'vault-search-meta';
+      meta.textContent = (r.results || []).length
+        ? `${r.results.length} chunks matching "${query}" (semantic)`
+        : `no semantic matches for "${query}"`;
+      treeEl.appendChild(meta);
+      const ul = document.createElement('ul');
+      ul.className = 'vault-tree-ul vault-search-results';
+      for (const row of r.results || []) {
+        const li = document.createElement('li');
+        li.className = 'vault-row vault-file vault-search-hit';
+        li.dataset.path = row.path;
+        li.dataset.kind = 'file';
+        const head = document.createElement('div');
+        head.className = 'vault-search-hit-head';
+        head.innerHTML = `<span class="vault-icon">📄</span> <span class="vault-label">${esc(row.path.replace(/\.md$/, ''))}</span>
+          <span class="vault-search-score">${(row.score * 100).toFixed(0)}%</span>`;
+        const snippet = document.createElement('div');
+        snippet.className = 'vault-search-snippet';
+        const txt = String(row.text || '').slice(0, 240);
+        snippet.textContent = txt + (row.text && row.text.length > 240 ? '…' : '');
+        li.appendChild(head);
+        li.appendChild(snippet);
+        ul.appendChild(li);
+      }
+      treeEl.appendChild(ul);
+    } catch (e) {
+      treeEl.innerHTML = `<em>search failed: ${esc(e.message)}</em>`;
+    }
+  }
+
+  function reopenTree() {
+    // Re-render last-loaded root from cache (no fetch unless cache empty).
+    const treeEl = $('vault-tree');
+    const root = (state.dirCache && state.dirCache[''] && state.dirCache[''].entries) || null;
+    if (!root) { openNotesMode(); return; }
+    const ul = document.createElement('ul');
+    ul.className = 'vault-tree-ul vault-root';
+    for (const e of sortEntries(root, '')) ul.appendChild(rowEl(e));
+    treeEl.innerHTML = '';
+    treeEl.appendChild(ul);
+  }
+
+  function wireSearch() {
+    const inp = $('vault-search-input');
+    const clear = $('vault-search-clear');
+    if (!inp) return;
+    inp.oninput = () => {
+      const q = inp.value.trim();
+      if (_searchDebounce) clearTimeout(_searchDebounce);
+      _searchDebounce = setTimeout(() => renderNameFilter(q), 120);
+    };
+    inp.onkeydown = (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const q = inp.value.trim();
+        if (q) runContentSearch(q);
+      } else if (ev.key === 'Escape') {
+        inp.value = '';
+        reopenTree();
+      }
+    };
+    if (clear) clear.onclick = () => { inp.value = ''; reopenTree(); inp.focus(); };
+  }
+
   // -------- open --------
   async function open() {
     ensureToken();
@@ -626,6 +745,7 @@
     if (reload) reload.onclick = () => (state.mode === 'secrets' ? openSecretsMode() : openNotesMode());
     $('vault-tab-notes').onclick = () => openNotesMode();
     $('vault-tab-secrets').onclick = () => openSecretsMode();
+    wireSearch();
     await openNotesMode();
   }
 
