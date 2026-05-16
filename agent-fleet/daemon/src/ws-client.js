@@ -22,6 +22,41 @@ function hasStructuredFields(f) {
     || f.dangerous != null;
 }
 
+// Spawn-frame handler. Extracted so daemon tests can drive it with a mock
+// ptyMgr — backend modules build {argv, env, stdin} but until vt-0122 the
+// daemon was dropping `stdin`, so hermes/opencode/codex/openclaw wrappers
+// hung on `RAW=$(cat)` waiting for a prompt that never arrived.
+function applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin }) {
+  let argv = f.args || [];
+  let env = f.env || {};
+  let bin = baseBin;
+  let stdin = null;
+  if (f.agent || hasStructuredFields(f)) {
+    const backend = backendsLib.pick(backends, f.agent, defaultBackend);
+    if (!backend) throw new Error(`no backend available for agent=${f.agent || defaultBackend}`);
+    const built = backend.buildSpawnArgs({
+      cwd: f.cwd, args: f.args, env,
+      prompt: f.prompt, model: f.model,
+      system_prompt: f.system_prompt,
+      allowed_tools: f.allowed_tools,
+      resume_session_id: f.resume_session_id,
+      dangerous: f.dangerous,
+    });
+    argv = built.argv;
+    env = { ...env, ...(built.env || {}) };
+    // Some backends (e.g. nanoclaw) return a _shimBin so we run their argv
+    // through /bin/sh instead of the backend's real binary — used to surface
+    // "not supported" errors cleanly.
+    bin = built._shimBin || backend.bin;
+    stdin = built.stdin || null;
+  }
+  ptyMgr.spawn({
+    sessionId: f.session_id, cwd: f.cwd,
+    args: argv, env, binOverride: bin,
+  });
+  if (stdin) ptyMgr.writeInput(f.session_id, stdin.endsWith('\n') ? stdin : stdin + '\n');
+}
+
 function collectHostInfo() {
   const cpus = os.cpus();
   return {
@@ -208,31 +243,7 @@ async function runDaemon(opts) {
             //             and asks it to build argv. Falls back to default
             //             backend if `agent` is unknown.
             try {
-              let argv = f.args || [];
-              let env = f.env || {};
-              let bin = opts.claudeBin;
-              if (f.agent || hasStructuredFields(f)) {
-                const backend = backendsLib.pick(backends, f.agent, defaultBackend);
-                if (!backend) throw new Error(`no backend available for agent=${f.agent || defaultBackend}`);
-                const built = backend.buildSpawnArgs({
-                  cwd: f.cwd, args: f.args, env,
-                  prompt: f.prompt, model: f.model,
-                  system_prompt: f.system_prompt,
-                  allowed_tools: f.allowed_tools,
-                  resume_session_id: f.resume_session_id,
-                  dangerous: f.dangerous,
-                });
-                argv = built.argv;
-                env = { ...env, ...(built.env || {}) };
-                // Some backends (e.g. nanoclaw) return a _shimBin so we run
-                // their argv through /bin/sh instead of the backend's real
-                // binary — used to surface "not supported" errors cleanly.
-                bin = built._shimBin || backend.bin;
-              }
-              ptyMgr.spawn({
-                sessionId: f.session_id, cwd: f.cwd,
-                args: argv, env, binOverride: bin,
-              });
+              applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin: opts.claudeBin });
             } catch (e) {
               safeSend(ws, { type: 'spawn_err', session_id: f.session_id, error: e.message });
             }
@@ -295,4 +306,4 @@ async function runDaemon(opts) {
   }
 }
 
-module.exports = { runDaemon, computeBackoff };
+module.exports = { runDaemon, computeBackoff, applySpawnFrame };

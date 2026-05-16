@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
 const { WebSocketServer } = require('ws');
-const { computeBackoff, runDaemon } = require('../src/ws-client');
+const { computeBackoff, runDaemon, applySpawnFrame } = require('../src/ws-client');
 
 test('computeBackoff caps at 30s and grows exponentially with jitter', () => {
   for (let attempt = 0; attempt < 10; attempt++) {
@@ -47,4 +47,84 @@ test('runDaemon reconnects on close (mock hub)', async () => {
   await p.catch(() => {});
   server.close();
   assert.ok(acceptCount >= 3, `expected ≥3 connection attempts, got ${acceptCount}`);
+});
+
+// vt-0122: backend modules build {argv, env, stdin} but the daemon used to
+// drop `stdin`, so hermes/opencode/codex/openclaw wrappers hung on `RAW=$(cat)`
+// waiting for a prompt that never arrived. applySpawnFrame forwards stdin via
+// ptyMgr.writeInput after the spawn.
+test('applySpawnFrame writes backend stdin to PTY after spawn (structured path)', () => {
+  const calls = [];
+  const ptyMgr = {
+    spawn: (a) => calls.push({ k: 'spawn', ...a }),
+    writeInput: (id, d) => calls.push({ k: 'write', id, d }),
+  };
+  const fakeBackend = {
+    name: 'hermes', bin: '/usr/local/bin/hermes-wrapper.sh',
+    buildSpawnArgs: () => ({ argv: [], env: { MODEL: 'h' }, stdin: '<<USER>>\nHELLO' }),
+  };
+  const backends = new Map([['hermes', fakeBackend]]);
+  applySpawnFrame(
+    { type: 'spawn', session_id: 's1', cwd: '/tmp', agent: 'hermes', prompt: 'HELLO' },
+    { ptyMgr, backends, defaultBackend: 'hermes', baseBin: '/bin/claude' },
+  );
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].k, 'spawn');
+  assert.equal(calls[0].sessionId, 's1');
+  assert.equal(calls[0].binOverride, '/usr/local/bin/hermes-wrapper.sh');
+  assert.equal(calls[1].k, 'write');
+  assert.equal(calls[1].id, 's1');
+  assert.equal(calls[1].d, '<<USER>>\nHELLO\n');
+});
+
+test('applySpawnFrame skips writeInput when backend returns null stdin', () => {
+  const calls = [];
+  const ptyMgr = {
+    spawn: () => calls.push('spawn'),
+    writeInput: () => calls.push('write'),
+  };
+  const fakeBackend = {
+    name: 'nano', bin: '/bin/sh',
+    buildSpawnArgs: () => ({ argv: ['nano-shim.sh'], env: {}, stdin: null, _shimBin: '/bin/sh' }),
+  };
+  const backends = new Map([['nano', fakeBackend]]);
+  applySpawnFrame(
+    { type: 'spawn', session_id: 's2', cwd: '/tmp', agent: 'nano', prompt: 'X' },
+    { ptyMgr, backends, defaultBackend: 'nano', baseBin: '/bin/claude' },
+  );
+  assert.deepEqual(calls, ['spawn']);
+});
+
+test('applySpawnFrame legacy path: no backend lookup when no structured fields', () => {
+  const calls = [];
+  const ptyMgr = {
+    spawn: (a) => calls.push({ k: 'spawn', ...a }),
+    writeInput: () => calls.push('write'),
+  };
+  // Empty backends map — proves the legacy path never asks for a backend.
+  applySpawnFrame(
+    { type: 'spawn', session_id: 's3', cwd: '/tmp', args: ['-p', 'hi'] },
+    { ptyMgr, backends: new Map(), defaultBackend: 'claude', baseBin: '/bin/claude' },
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].k, 'spawn');
+  assert.equal(calls[0].binOverride, '/bin/claude');
+  assert.deepEqual(calls[0].args, ['-p', 'hi']);
+});
+
+test('applySpawnFrame does NOT double the newline when stdin already ends with \\n', () => {
+  const calls = [];
+  const ptyMgr = {
+    spawn: () => {},
+    writeInput: (id, d) => calls.push(d),
+  };
+  const backends = new Map([['x', {
+    name: 'x', bin: '/bin/cat',
+    buildSpawnArgs: () => ({ argv: [], env: {}, stdin: 'already-newlined\n' }),
+  }]]);
+  applySpawnFrame(
+    { type: 'spawn', session_id: 'sN', agent: 'x', prompt: 'p' },
+    { ptyMgr, backends, defaultBackend: 'x', baseBin: '/bin/claude' },
+  );
+  assert.deepEqual(calls, ['already-newlined\n']);
 });
