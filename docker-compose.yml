@@ -222,6 +222,7 @@ services:
     mem_limit: 256m
     memswap_limit: 512m
     # vt-0135: forgejo's entrypoint chowns its data dir + drops to its own user.
+    # SYS_CHROOT is required by the bundled OpenSSH (preauth chroot to /var/empty).
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -233,6 +234,7 @@ services:
       - DAC_OVERRIDE
       - FOWNER
       - FSETID
+      - SYS_CHROOT
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
