@@ -191,3 +191,43 @@ test('runner.start: crashed run flips DB status to failed (not stuck running)', 
     assert.ok(final.finished_at, 'finished_at must be set');
   });
 });
+
+test('branch condition does NOT interpolate output into source (injection prevention, vt-0074)', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // n1 returns output containing JS injection chars; if execBranch
+    // interpolated n1.output into the condition source, the injection
+    // would alter control flow. The fix passes output via sandbox prop only.
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'claude', target: { host_name: 'h' }, prompt: 'p' },
+        { id: 'n2', type: 'branch', condition: 'n1.output === "real"' },
+        { id: 'nT', type: 'delay', seconds: 0 },
+        { id: 'nE', type: 'delay', seconds: 0 },
+      ],
+      edges: [
+        { from: 'n1', to: 'n2' },
+        { from: 'n2', to: 'nT', label: 'then' },
+        { from: 'n2', to: 'nE', label: 'else' },
+      ],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-inj', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    // Output contains chars that would break naive interpolation:
+    //   `"; process.exit(99); //`
+    // If interpolated → `"" === ""; process.exit(99); //"` would execute exit.
+    // With fix → sandbox.n1.output = that string, condition compares to "real" → false.
+    const deps = makeDeps(async () => ({
+      output: '"; process.exit(99); //', exit_code: 0, session_id: 'sx',
+    }));
+    deps.db = c;
+    const runner = createRunner(deps);
+    await runner.runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done', 'run completed normally — no exit/escape');
+    // Output !== "real" → else branch taken
+    assert.ok(!final.state.outputs.nT, 'then branch must NOT have run');
+    assert.ok(final.state.outputs.nE, 'else branch should have run');
+  });
+});

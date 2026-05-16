@@ -51,6 +51,16 @@ function validateDefinition(def) {
   dfs(start);
 }
 
+// Branch condition is evaluated as a JS expression with ctx variables (n1, n2,
+// inputs, etc.) exposed as sandbox properties. Output values from prior nodes
+// are NEVER interpolated into the source string — that would let LLM-generated
+// output influence control flow via injection (vt-0074).
+//
+// SECURITY POLICY: vm.runInContext is NOT a security sandbox. Workflow conditions
+// can still escape via `this.constructor.constructor("...")()` etc. This is
+// acceptable because workflow authoring is a privileged admin operation —
+// equivalent to running scripts on the hub. Do not allow untrusted users to
+// create or edit workflow definitions.
 function evalCondition(expr, sandboxData) {
   const sandbox = vm.createContext({ ...sandboxData });
   try {
@@ -89,8 +99,13 @@ function createRunner(deps) {
   }
 
   function execBranch(node, ctx) {
-    const expr = substituteTemplates(node.condition, ctx);
-    const result = evalCondition(expr, ctx);
+    // Do NOT substituteTemplates() the condition source — that would interpolate
+    // LLM-generated output (n1.output etc) into the JS source, enabling injection
+    // (vt-0074). Author writes condition as JS expression referencing ctx vars:
+    //   n1.exit_code === 0     ✓
+    //   n1.output === "ok"     ✓ (output stays in sandbox prop, not source)
+    //   {{n1.output}} === "ok" ✗ (was a footgun; not supported anymore)
+    const result = evalCondition(node.condition, ctx);
     return { result };
   }
 
