@@ -3,6 +3,12 @@ FROM node:22-alpine
 RUN apk add --no-cache git openssh-client tini ca-certificates wget age bash postgresql-client \
  && rm -rf /var/cache/apk/*
 
+# vt-0135: create a non-root user available for services that don't need to
+# write to host bind-mounts (mcp, tokmon-ingest). Services that DO need
+# write access to /vault (api, tools) can still override `user:` in compose
+# until /root/obsidian-vault is chown'd to 1000:1000 on the host.
+RUN addgroup -g 1000 -S app && adduser -u 1000 -G app -S -H -s /sbin/nologin app
+
 # I2 (audit pass 2): pin claude-code + `--ignore-scripts` so a supply-chain
 # compromise can't execute arbitrary `postinstall` at image build. Bump
 # intentionally; do NOT use `latest`.

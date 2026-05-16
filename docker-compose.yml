@@ -12,6 +12,16 @@ services:
     restart: unless-stopped
     mem_limit: 800m
     memswap_limit: 1500m
+    # vt-0135: prevent setuid binaries inside the image from escalating.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
     volumes:
       - vault-rag-ollama-data:/root/.ollama
     networks:
@@ -30,6 +40,20 @@ services:
     mem_limit: 400m
     memswap_limit: 800m
     shm_size: 128m
+    # vt-0135: postgres image drops to its own user internally but needs a few
+    # caps to chown data dir on first init.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
     environment:
       - POSTGRES_USER=${VAULT_RAG_PG_USER}
       - POSTGRES_PASSWORD=${VAULT_RAG_PG_PASSWORD}
@@ -52,7 +76,20 @@ services:
     restart: unless-stopped
     mem_limit: 200m
     memswap_limit: 400m
+    # vt-0135: still root for now — host bind mount /root/obsidian-vault:/vault:rw
+    # is owned by root on the host. Switching to uid 1000 requires `chown -R
+    # 1000:1000 /root/obsidian-vault` + matching /root/.ssh deploy key perms.
+    # Filed as vt-0137 (stage B).
     user: "0:0"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Node + age + git only need DAC/CHOWN for vault writes; no setuid.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -102,7 +139,16 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     memswap_limit: 256m
+    # vt-0135: still root, same reasoning as vault-rag-api (writes /vault).
     user: "0:0"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -147,6 +193,11 @@ services:
     restart: unless-stopped
     mem_limit: 32m
     memswap_limit: 64m
+    # vt-0135: ofelia talks to /var/run/docker.sock — that's already a huge
+    # privilege escalation surface (controls all containers on the host), so
+    # additional cap_drop doesn't materially help. Just lock new-privs.
+    security_opt:
+      - no-new-privileges:true
     command: daemon --docker
     depends_on:
       - vault-rag-tools
@@ -169,6 +220,18 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     memswap_limit: 512m
+    # vt-0135: forgejo's entrypoint chowns its data dir + drops to its own user.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -213,7 +276,17 @@ services:
     restart: unless-stopped
     mem_limit: 100m
     memswap_limit: 200m
-    user: "0:0"
+    # vt-0135: mcp-shim only reads ./scripts:ro and talks HTTP to rag-api —
+    # no host write surface. Drop root.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+      - /home/app:size=4m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       vault-rag-api:
         condition: service_started
@@ -246,7 +319,16 @@ services:
     restart: unless-stopped
     mem_limit: 100m
     memswap_limit: 200m
-    user: "0:0"
+    # vt-0135: only mounts ./scripts:ro + talks pg → no host write surface.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+      - /home/app:size=4m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -278,7 +360,12 @@ services:
     restart: unless-stopped
     mem_limit: 250m
     memswap_limit: 500m
-    user: "0:0"
+    # vt-0135: drop explicit root override — grafana image runs as uid 472:0
+    # by default which is fine for its volumes.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -316,6 +403,10 @@ services:
     restart: unless-stopped
     mem_limit: 150m
     memswap_limit: 300m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     command:
       - "-storageDataPath=/storage"
       - "-retentionPeriod=14d"
@@ -344,6 +435,14 @@ services:
     mem_limit: 50m
     memswap_limit: 100m
     pid: host
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # SYS_PTRACE so the process can read /proc/<pid>/* of other processes
+      # under pid:host (its core purpose).
+      - SYS_PTRACE
     command:
       - "--path.procfs=/host/proc"
       - "--path.sysfs=/host/sys"
@@ -390,6 +489,10 @@ services:
     restart: unless-stopped
     mem_limit: 60m
     memswap_limit: 120m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       vault-rag-postgres:
         condition: service_healthy
@@ -414,6 +517,14 @@ services:
     mem_limit: 150m
     memswap_limit: 300m
     network_mode: host
+    # vt-0135: host mode → caddy binds 80/443 (privileged ports) on the host.
+    # Keep NET_BIND_SERVICE; drop everything else.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - vault-rag-caddy-data:/data
