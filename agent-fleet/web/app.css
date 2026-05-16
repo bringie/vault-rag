@@ -101,13 +101,18 @@ body::after {
 .auth-hint { color: var(--text-faint); font-size: .78em; margin: 1.2em 0 0; letter-spacing: .04em; }
 
 /* ============ APP SHELL ============ */
-#app { display: grid; grid-template-rows: 56px 1fr 28px; height: 100vh; }
+/* topbar (56px) + footbar (28px) are position:fixed (see below) — #app is plain block */
+#app { display: block; min-height: 100vh; }
+#app > main { height: calc(100vh - var(--topbar-h, 56px) - var(--footbar-h, 28px)); }
 
+/* Persistent header — fixed above all overlays, z-index higher than page z:80 */
 .topbar {
   display: grid; grid-template-columns: auto 1fr auto;
   align-items: center; gap: 1.5em;
   padding: 0 1.4em; background: var(--bg-warm);
-  border-bottom: 1px solid var(--line); position: relative;
+  border-bottom: 1px solid var(--line);
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--topbar-h, 56px);
 }
 .topbar::before {
   /* thin accent line */
@@ -331,24 +336,36 @@ body::after {
 .viewer.exited .callsign { color: var(--text-dim); text-shadow: none; }
 
 /* ============ FOOTBAR ============ */
+/* Persistent footer — fixed below all overlays */
 .footbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 0 1.4em; background: var(--bg-warm);
   border-top: 1px solid var(--line);
   font-size: .72em; color: var(--text-faint); letter-spacing: .12em;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+  height: var(--footbar-h, 28px);
 }
 .footdot { width: 6px; height: 6px; background: var(--ok); box-shadow: 0 0 6px var(--ok-glow); }
 .footver { color: var(--text-dim); }
 
-/* ============ ARCHIVE PAGE ============ */
+/* ============ PAGE OVERLAYS ============ */
+/* Overlays sit ABOVE dashboard but BELOW persistent topbar/footbar. */
+:root { --topbar-h: 56px; --footbar-h: 28px; }
+
 #archive, #sdetail, #costview {
-  position: fixed; inset: 0; z-index: 80; background: var(--bg);
+  position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
+  left: 0; right: 0; z-index: 80; background: var(--bg);
   display: grid; grid-template-rows: auto auto 1fr auto;
+  overflow: auto;
 }
 #groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview {
-  position: fixed; inset: 0; z-index: 80; background: var(--bg);
+  position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
+  left: 0; right: 0; z-index: 80; background: var(--bg);
   display: flex; flex-direction: column; overflow: auto;
 }
+
+/* Modals get higher z-index than page overlays so they sit above topbar/footer */
+#group-detail-modal, #price-modal, #editor { z-index: 200 !important; }
 #price-modal {
   position: fixed; inset: 0; z-index: 90;
   background: rgba(0,0,0,0.7);
