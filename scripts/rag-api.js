@@ -18,6 +18,10 @@ const { SecretsClient } = require('./lib/secrets-client.js');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
+// vt-0137: $HOME is a tmpfs; SSH needs $HOME/.ssh to exist before it can
+// write known_hosts. Create on startup so git operations don't warn.
+try { fs.mkdirSync(path.join(process.env.HOME || '/root', '.ssh'), { recursive: true, mode: 0o700 }); } catch {}
+
 const VAULT = process.env.VAULT_PATH || '/vault';
 const TOKEN = process.env.VAULT_RAG_API_TOKEN;
 // vt-0124: separate token for fleet's mutating/RCE-capable endpoints. If unset,

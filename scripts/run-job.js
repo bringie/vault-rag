@@ -4,7 +4,13 @@
 // Env: VAULT_RAG_PG_HOST, VAULT_RAG_PG_DB, VAULT_RAG_PG_USER, VAULT_RAG_PG_PASS, RUN_JOB_TAIL_BYTES (default 4096).
 
 const { spawn } = require('child_process');
+const fs   = require('node:fs');
+const path = require('node:path');
 const { Client } = require('pg');
+
+// vt-0137: $HOME is a tmpfs (vault-rag-tools runs as non-root). Pre-create
+// $HOME/.ssh so child git operations can write known_hosts without warnings.
+try { fs.mkdirSync(path.join(process.env.HOME || '/root', '.ssh'), { recursive: true, mode: 0o700 }); } catch {}
 
 const [, , jobName, ...cmdArgs] = process.argv;
 if (!jobName || cmdArgs.length === 0) {

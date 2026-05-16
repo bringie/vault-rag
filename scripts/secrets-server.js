@@ -10,7 +10,12 @@
 // not exposed to host or via Caddy.
 
 const http = require('node:http');
+const fs   = require('node:fs');
+const path = require('node:path');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
+
+// vt-0137: $HOME is a tmpfs; pre-create $HOME/.ssh so ssh can write known_hosts.
+try { fs.mkdirSync(path.join(process.env.HOME || '/root', '.ssh'), { recursive: true, mode: 0o700 }); } catch {}
 
 const TOKEN = process.env.VAULT_RAG_SECRETS_TOKEN;
 const PORT  = parseInt(process.env.PORT || '5682', 10);
