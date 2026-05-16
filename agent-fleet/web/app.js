@@ -1237,13 +1237,56 @@
         if (!v) continue;
         const h = innerH * (v / max);
         yCursor -= h;
-        svg += `<rect x="${x}" y="${yCursor}" width="${barW}" height="${h}" fill="${colorFor(k)}" opacity="0.85"><title>${d} · ${k}: $${v.toFixed(4)}</title></rect>`;
+        svg += `<rect x="${x}" y="${yCursor}" width="${barW}" height="${h}" fill="${colorFor(k)}" opacity="0.85" class="cv-bar" data-day="${d}" data-dim="${groupBy}" data-value="${esc(String(k))}" style="cursor:pointer"><title>${d} · ${k}: $${v.toFixed(4)} (click for sessions)</title></rect>`;
       }
       svg += `<text x="${x + barW/2}" y="${H - PAD_B + 18}" fill="#8a8580" font-family="JetBrains Mono" font-size="10" text-anchor="middle">${d.slice(5)}</text>`;
     });
     $('cv-chart').innerHTML = svg;
     $('cv-legend').innerHTML = dims.map(k =>
       `<span><span class="sw" style="background:${colorFor(k)}"></span>${esc(k)}</span>`).join('');
+    // vt-0113: click any bar → modal with sessions in that day-bucket.
+    $('cv-chart').querySelectorAll('rect.cv-bar').forEach(el => {
+      el.onclick = () => openBucketDrillDown(el.dataset.day, el.dataset.dim, el.dataset.value);
+    });
+  }
+
+  async function openBucketDrillDown(day, dim, value) {
+    const modal = $('stack-modal');                 // reuse the generic modal frame
+    if (!modal) return;
+    modal.hidden = false;
+    modal.innerHTML = `<div class="gd-frame" style="width:640px"><div class="gd-head">
+      <span class="display" style="font-size:1.1em">SESSIONS · ${esc(day)}</span>
+      <span class="lbl" style="margin-left:1em">${esc(dim)} = ${esc(value)}</span>
+      <span style="flex:1"></span>
+      <button class="btn-ghost" data-close>× close</button>
+    </div><div class="gd-body" id="bucket-body">loading…</div></div>`;
+    modal.querySelector('[data-close]').onclick = () => { modal.hidden = true; };
+    try {
+      const r = await api('GET', `/sessions/by-bucket?day=${encodeURIComponent(day)}&dim=${encodeURIComponent(dim)}&value=${encodeURIComponent(value)}`);
+      const note = r.dim_unfiltered
+        ? `<p style="color:var(--text-dim); font-size:11px">Showing all sessions on this day — per-${esc(dim)} filtering not yet supported server-side.</p>`
+        : '';
+      const rows = (r.sessions || []).map(s => {
+        const host = s.host_display || s.host_name || (s.host_id || '').slice(0,8);
+        const ts = new Date(s.started_at).toLocaleTimeString();
+        const label = s.label || '—';
+        return `<tr class="row-clickable" data-sid="${esc(s.id)}">
+          <td class="nowrap">${esc(ts)}</td>
+          <td>${esc(host)}</td>
+          <td class="nowrap">${esc(s.status)}${s.exit_code != null ? ' (' + s.exit_code + ')' : ''}</td>
+          <td class="label-cell" title="${esc(label)}">${esc(label)}</td>
+        </tr>`;
+      }).join('');
+      $('bucket-body').innerHTML = `${note}<table class="archive-table">
+        <thead><tr><th>started</th><th>host</th><th>status</th><th>label</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" style="text-align:center; color:var(--text-faint)">no sessions in this bucket</td></tr>'}</tbody>
+      </table>`;
+      $('bucket-body').querySelectorAll('tr[data-sid]').forEach(tr => {
+        tr.onclick = () => { modal.hidden = true; navigate('/sessions/' + tr.dataset.sid); };
+      });
+    } catch (e) {
+      $('bucket-body').textContent = 'load failed: ' + e.message;
+    }
   }
 
   // ============ Groups page ============

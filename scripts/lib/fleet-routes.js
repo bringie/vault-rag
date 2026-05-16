@@ -900,6 +900,42 @@ async function handleCancelRun({ req, res, ctx }) {
 // vt-0115: docker stack self-status. The host writes a JSON file every 30s
 // via systemd timer (scripts/bin/stack-status-writer.sh); we just serve it.
 // Auth-gated — operator-only data, no need to expose container names publicly.
+// vt-0113: drill-down — list sessions whose start_at falls on the requested
+// day, optionally narrowed by host. The /fleet/cost chart calls this on
+// click of a bar segment so the operator can pivot from "$X spent on
+// host=Y on day Z" → the actual sessions behind that number.
+async function handleSessionsByBucket({ req, res, ctx }) {
+  const url = new URL(req.url, 'http://x');
+  const day = url.searchParams.get('day');
+  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return send(res, 422, { error: 'day=YYYY-MM-DD required' });
+  }
+  const dim = url.searchParams.get('dim') || '';
+  const value = url.searchParams.get('value') || '';
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10), 500);
+  const args = [day, limit];
+  let where = `date_trunc('day', s.started_at) = $1::date`;
+  // For dim=host we filter by host_id (value is the host uuid from the
+  // chart). Other dims (model/group/label) need a tokmon join we don't
+  // do here yet — return un-narrowed results with `dim_unfiltered: true`.
+  let dimUnfiltered = false;
+  if (dim === 'host' && /^[0-9a-f-]{36}$/i.test(value)) {
+    args.push(value);
+    where += ` AND s.host_id = $${args.length}`;
+  } else if (dim && dim !== 'host') {
+    dimUnfiltered = true;
+  }
+  const { rows } = await ctx.db.query(
+    `SELECT s.id, s.label, s.started_at, s.ended_at, s.status, s.exit_code,
+            s.host_id, h.name AS host_name, h.display_name AS host_display
+     FROM fleet_sessions s
+     LEFT JOIN fleet_hosts h ON h.id = s.host_id
+     WHERE ${where}
+     ORDER BY s.started_at DESC
+     LIMIT $2`, args);
+  send(res, 200, { day, dim, value, dim_unfiltered: dimUnfiltered, sessions: rows });
+}
+
 async function handleStackStatus({ res, ctx }) {
   const fs = require('node:fs');
   const path = require('node:path');
@@ -1166,6 +1202,8 @@ function dispatchHttp(req, res, ctx) {
 
   // Stack status (docker compose health for the operator)
   if (method === 'GET' && path === '/fleet/stack-status') return handleStackStatus({ res, ctx });
+  // Cost-chart drill-down: sessions in a bucket
+  if (method === 'GET' && path === '/fleet/sessions/by-bucket') return handleSessionsByBucket({ req, res, ctx });
 
   // Pending approvals + events
   if (method === 'GET'  && path === '/fleet/workflow-pending-approvals') return handleListPendingApprovals({ res, ctx });
