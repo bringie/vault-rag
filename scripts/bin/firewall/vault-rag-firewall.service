@@ -1,0 +1,13 @@
+[Unit]
+Description=vault-rag firewall rules (vt-0138: block ext SSH to forgejo)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vault-rag-firewall-apply.sh
+
+[Install]
+WantedBy=multi-user.target
