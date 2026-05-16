@@ -980,11 +980,15 @@
     // summary
     const total = points.reduce((n, p) => n + p.usd, 0);
     const totalMsgs = points.reduce((n, p) => n + p.msgs, 0);
+    const overlapNote = groupBy === 'group'
+      ? `<div class="stat" style="color:var(--warn)"><span class="lbl">overlap</span><span class="val">hosts in multiple groups counted in each</span></div>`
+      : '';
     $('cv-summary').innerHTML = `
       <div class="stat"><span class="lbl">${data.days}d total</span><span class="val val-warn">$${total.toFixed(2)}</span></div>
       <div class="stat"><span class="lbl">messages</span><span class="val">${totalMsgs}</span></div>
       <div class="stat"><span class="lbl">avg/day</span><span class="val">$${(total / Math.max(data.days, 1)).toFixed(2)}</span></div>
       <div class="stat"><span class="lbl">grouped by</span><span class="val">${groupBy} (${dims.length})</span></div>
+      ${overlapNote}
     `;
     // chart
     const W = 1200, H = 320, PAD_L = 60, PAD_R = 30, PAD_T = 30, PAD_B = 50;

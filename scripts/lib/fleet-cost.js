@@ -77,6 +77,7 @@ async function hostSummary(tokmonPg, vaultPg, hostNames, days = 7) {
 
 async function timeline(tokmonPg, vaultPg, hostNames, days = 7, groupBy = 'model') {
   if (groupBy === 'label' && vaultPg) return timelineByLabel(tokmonPg, vaultPg, days);
+  if (groupBy === 'group' && vaultPg) return timelineByGroup(tokmonPg, vaultPg, days);
   const dim = groupBy === 'host' ? 'host_id' : 'model';
   const where = ['ts > now() - ($1 || \' days\')::interval'];
   const args = [String(days)];
@@ -144,6 +145,55 @@ async function timelineByLabel(tokmonPg, vaultPg, days = 7) {
   for (const g of grouped.values()) {
     out.push({ ...g, usd: await rowCost(g, g.day, vaultPg) });
   }
+  return out.sort((a, b) => a.day - b.day);
+}
+
+// Group sessions by host's group memberships. LEFT JOIN → hosts without
+// any group land in '(ungrouped)' bucket (explicit, never silent drop).
+// Host in N groups → session contributes to all N buckets (double-count).
+async function timelineByGroup(tokmonPg, vaultPg, days = 7) {
+  const { rows: ev } = await tokmonPg.query(
+    `SELECT date_trunc('day', ts) AS day, session_id, model,
+            SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+            SUM(cache_creation_5m) AS cache_creation_5m, SUM(cache_read) AS cache_read,
+            COUNT(*) AS msgs
+     FROM events
+     WHERE ts > now() - ($1 || ' days')::interval
+     GROUP BY day, session_id, model`, [String(days)]);
+  if (!ev.length) return [];
+  const sessionIds = Array.from(new Set(ev.map(r => r.session_id).filter(x => /^[0-9a-f-]{36}$/i.test(x))));
+  const groupsBySession = new Map();
+  if (sessionIds.length) {
+    const { rows: ss } = await vaultPg.query(
+      `SELECT s.id::text AS session_id, COALESCE(g.name, '(ungrouped)') AS group_name
+       FROM fleet_sessions s
+       LEFT JOIN fleet_host_groups hg ON hg.host_id = s.host_id
+       LEFT JOIN fleet_groups g ON g.id = hg.group_id
+       WHERE s.id::text = ANY($1)`, [sessionIds]);
+    for (const r of ss) {
+      if (!groupsBySession.has(r.session_id)) groupsBySession.set(r.session_id, []);
+      groupsBySession.get(r.session_id).push(r.group_name);
+    }
+  }
+  const grouped = new Map();
+  for (const r of ev) {
+    const groups = groupsBySession.get(r.session_id) || ['(ungrouped)'];
+    for (const gName of groups) {
+      const key = `${r.day.toISOString()}|${gName}|${r.model}`;
+      let g = grouped.get(key);
+      if (!g) {
+        g = { day: r.day, dim: gName, model: r.model, msgs: 0, input_tokens: 0, output_tokens: 0, cache_creation_5m: 0, cache_read: 0 };
+        grouped.set(key, g);
+      }
+      g.msgs += Number(r.msgs);
+      g.input_tokens += Number(r.input_tokens);
+      g.output_tokens += Number(r.output_tokens);
+      g.cache_creation_5m += Number(r.cache_creation_5m);
+      g.cache_read += Number(r.cache_read);
+    }
+  }
+  const out = [];
+  for (const g of grouped.values()) out.push({ ...g, usd: await rowCost(g, g.day, vaultPg) });
   return out.sort((a, b) => a.day - b.day);
 }
 
