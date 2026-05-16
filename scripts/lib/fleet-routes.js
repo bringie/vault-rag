@@ -917,7 +917,9 @@ async function spawnClaudeForWorkflow(ctx, node, prompt, runId, signal) {
       ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
       return { output: '[timeout]', exit_code: 124, session_id: s.id };
     }
-    await new Promise(r => setTimeout(r, 500));
+    // Jitter ±150ms so N concurrent workflow nodes don't align getSession
+    // queries on 500ms boundaries (audit §7.3).
+    await new Promise(r => setTimeout(r, 400 + Math.random() * 200));
     const cur = await fleetDb.getSession(ctx.db, s.id);
     if (!cur) return { output: '', exit_code: -1, session_id: s.id };
     if (['exited','killed','orphaned'].includes(cur.status)) {
