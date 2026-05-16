@@ -310,25 +310,40 @@ Create `agent-fleet/web/i18n.js`:
 'use strict';
 (function () {
   const VALID = ['en', 'ru', 'es'];
-  const state = { lang: 'en', dict: {} };
+  // dictBase is always 'en' (loaded once); dict is the current lang.
+  // t() falls through dict → dictBase → key, matching spec §11.C.
+  const state = { lang: 'en', dict: {}, dictBase: {} };
+
+  async function fetchDict(lang) {
+    const res = await fetch(`/fleet/static/i18n/${lang}.json`);
+    if (!res.ok) throw new Error('' + res.status);
+    return await res.json();
+  }
 
   async function loadLang(lang) {
     if (!VALID.includes(lang)) lang = 'en';
-    try {
-      const res = await fetch(`/fleet/static/i18n/${lang}.json`);
-      if (!res.ok) throw new Error('' + res.status);
-      state.dict = await res.json();
-      state.lang = lang;
-      localStorage.fleetLang = lang;
-      document.documentElement.setAttribute('data-lang', lang);
-      applyI18n();
-    } catch (e) {
-      console.warn(`[i18n] load ${lang} failed: ${e.message}; falling back to keys`);
+    // Always ensure en is loaded as fallback dictionary
+    if (!Object.keys(state.dictBase).length) {
+      try { state.dictBase = await fetchDict('en'); }
+      catch (e) { console.warn(`[i18n] base en load failed: ${e.message}`); }
     }
+    if (lang === 'en') {
+      state.dict = state.dictBase;
+    } else {
+      try { state.dict = await fetchDict(lang); }
+      catch (e) {
+        console.warn(`[i18n] load ${lang} failed: ${e.message}; using en as effective dict`);
+        state.dict = state.dictBase;
+      }
+    }
+    state.lang = lang;
+    localStorage.fleetLang = lang;
+    document.documentElement.setAttribute('data-lang', lang);
+    applyI18n();
   }
 
   function t(key, vars) {
-    let s = state.dict[key] || key;
+    let s = state.dict[key] || state.dictBase[key] || key;
     if (vars) for (const k in vars) s = s.replace(`{${k}}`, String(vars[k]));
     return s;
   }
@@ -693,8 +708,18 @@ For each existing overlay (`#archive`, `#costview`, `#groupsview`, `#pricesview`
    - `workflowrunviewer` → `page-workflow-run`
    - `sdetail` → `page-session-detail`
 3. Add `class="page"` to each
-4. Remove per-page header bars that duplicate global title (e.g. `<header class="archive-head"><div><span class="display">GROUPS</span>...</div>...</header>`) — but KEEP per-page action buttons (move them to subbar via app.js setPage)
-5. Keep per-page bottom strips inside the .page div (archive pagination, etc.)
+4. **Inner IDs preserved verbatim** — only the OUTER wrapper id changes. All inner-content IDs (`grp-rows`, `wf-canvas-pane`, `cv-summary`, `sd-id`, `archive-count`, `ar-rows`, etc.) stay exactly as before. JS code referencing these inner IDs continues to work unchanged.
+5. **Per-page close buttons removed** — global nav covers navigation. The following close-button wireups in JS must be removed alongside the HTML:
+   - `app.js:800` — `$('archive-close').onclick = () => navigate('/dashboard');` → DELETE
+   - `app.js:958` — `$('costview-close').onclick = () => navigate('/dashboard');` → DELETE
+   - `app.js:1029` — `$('groupsview-close').onclick = () => navigate('/dashboard');` → DELETE
+   - `app.js:1197` — `$('workflowsview-close')` wireup → DELETE
+   - `app.js:1198` — `$('workflowrunviewer-close')` wireup → DELETE
+   - `prices.js:24` — `document.getElementById('pricesview-close').onclick` → DELETE
+6. **Per-page non-close action buttons** stay (e.g. `+ new group`, `+ new workflow`, `+ new pattern`) — move them into `#page-actions` slot via setPage call in applyRoute. For now in Task 4 keep them inline at top of each `.page` (no behavior change); Task 5 moves wiring through setPage.
+7. **Inner DOM references in workflow modules must update outer-id checks:**
+   - `agent-fleet/web/workflow-editor.js:30` has `document.getElementById('workflowsview')` — this is a guard that returns early if the page container doesn't exist. After rename it must read `'page-workflows'`. Apply this edit during Task 4.
+8. Keep per-page bottom strips inside the .page div (archive pagination, etc.)
 
 **For dashboard:** wrap existing `<main class="grid">...</main>` content in `<div id="page-dashboard" class="page">` (the existing `<main class="grid">` becomes inner sibling under the new wrapper).
 
@@ -1086,9 +1111,18 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - Modify: `agent-fleet/web/app.js`
 - Modify: `scripts/lib/fleet-routes.test.js`
 
-- [ ] **Step 1: Add 23505 catch in handlePatchGroup**
+- [ ] **Step 1: Add 23505 catch + hex color validation in handlePatchGroup AND handleCreateGroup**
 
-In `scripts/lib/fleet-routes.js` `handlePatchGroup` (around line 502-524), wrap pg call:
+In `scripts/lib/fleet-routes.js`, add a shared validator helper above the handlers:
+
+```js
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+function validColor(c) {
+  return c == null || c === '' || HEX_COLOR_RE.test(c);
+}
+```
+
+Update `handlePatchGroup`:
 
 ```js
 async function handlePatchGroup({ req, res, body, ctx }) {
@@ -1097,7 +1131,10 @@ async function handlePatchGroup({ req, res, body, ctx }) {
   const patch = {};
   if ('name' in body)        patch.name = body.name;
   if ('description' in body) patch.description = body.description;
-  if ('color' in body)       patch.color = body.color;
+  if ('color' in body) {
+    if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
+    patch.color = body.color || null;
+  }
   if ('labels' in body) {
     if (!Array.isArray(body.labels)) return send(res, 422, { error: 'labels must be array of strings' });
     patch.labels = body.labels;
@@ -1113,6 +1150,25 @@ async function handlePatchGroup({ req, res, body, ctx }) {
 }
 ```
 
+Update `handleCreateGroup` similarly — add color validation before the INSERT:
+
+```js
+async function handleCreateGroup({ res, body, ctx }) {
+  if (!body || !body.name) return send(res, 422, { error: 'name required' });
+  if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
+  try {
+    const g = await fleetDb.createGroup(ctx.db, {
+      name: body.name, description: body.description, color: body.color || null,
+      labels: Array.isArray(body.labels) ? body.labels : [],
+    });
+    send(res, 201, g);
+  } catch (e) {
+    if (e.code === '23505') return send(res, 409, { error: 'name already exists' });
+    send(res, 500, { error: e.message });
+  }
+}
+```
+
 - [ ] **Step 2: Write failing test for 23505**
 
 Append to `scripts/lib/fleet-routes.test.js`:
@@ -1123,12 +1179,26 @@ test('PATCH /fleet/groups/:id rejects duplicate name with 409', async () => {
   await pg.query(`TRUNCATE fleet_groups CASCADE`);
   const a = await pg.query(`INSERT INTO fleet_groups (name) VALUES ('alpha') RETURNING id`);
   await pg.query(`INSERT INTO fleet_groups (name) VALUES ('beta')`);
-  // try to rename alpha to beta — should 409
   const r = await reqJson(server, 'PATCH', `/fleet/groups/${a.rows[0].id}`, {
     token: 'T', body: { name: 'beta' },
   });
   assert.equal(r.status, 409);
   assert.match(r.body.error, /already exists/);
+  await close();
+});
+
+test('PATCH /fleet/groups/:id rejects invalid color hex with 422', async () => {
+  const { server, pg, close } = await startWithDb();
+  await pg.query(`TRUNCATE fleet_groups CASCADE`);
+  const g = await pg.query(`INSERT INTO fleet_groups (name) VALUES ('g') RETURNING id`);
+  const bad = await reqJson(server, 'PATCH', `/fleet/groups/${g.rows[0].id}`, {
+    token: 'T', body: { color: 'javascript:alert(1)' },
+  });
+  assert.equal(bad.status, 422);
+  const ok = await reqJson(server, 'PATCH', `/fleet/groups/${g.rows[0].id}`, {
+    token: 'T', body: { color: '#abc123' },
+  });
+  assert.equal(ok.status, 200);
   await close();
 });
 ```
