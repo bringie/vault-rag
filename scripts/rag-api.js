@@ -376,6 +376,15 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     } catch (e) {
       console.error(`[rag-api] fleet orphan check failed: ${e.message}`);
     }
+    // Retention runs only after pg is bound. If pg failed to connect at boot,
+    // retention never starts — rag-api must restart once pg is reachable.
+    try {
+      const { startRetention } = require('./lib/fleet-retention');
+      startRetention(pg);
+      console.log('[rag-api] fleet metrics retention started');
+    } catch (e) {
+      console.error(`[rag-api] retention start failed: ${e.message}`);
+    }
     const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
     const PURGE_AGE = process.env.VAULT_RAG_FLEET_RETENTION || '30 days';
     setInterval(async () => {
