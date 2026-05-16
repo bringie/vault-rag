@@ -50,10 +50,10 @@
         <td>${Number(r.output_per_mtok).toFixed(2)}</td>
         <td>${Number(r.cache_create_per_mtok).toFixed(2)}</td>
         <td>${Number(r.cache_read_per_mtok).toFixed(2)}</td>
-        <td>${r.flagged ? '<span style="color:var(--warn)">⚠ fallback</span>' : ''}</td>
+        <td>${r.flagged ? '<span class="chip chip-warn">⚠ fallback</span>' : ''}</td>
         <td>
-          <button class="btn-ghost" data-edit="${r.id}" style="font-size:.75em">edit</button>
-          ${r.deleted_at ? '' : `<button class="btn-ghost" data-del="${r.id}" style="font-size:.75em">×</button>`}
+          <button class="btn-row" data-edit="${r.id}">edit</button>
+          ${r.deleted_at ? '' : `<button class="btn-row" data-del="${r.id}">×</button>`}
         </td>
       </tr>`;
     }).join('');

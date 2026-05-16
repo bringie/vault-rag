@@ -279,6 +279,17 @@ body::after {
   font-family: var(--font-mono); font-size: .85em; outline: 0;
 }
 .chip-input input:focus { border-color: var(--accent); }
+.chip-warn { background: color-mix(in srgb, var(--warn) 18%, var(--panel-2)); border-color: var(--warn); color: var(--warn); }
+
+/* compact row action button — used in tables (groups, prices). */
+.btn-row {
+  font-size: .75em; padding: .25em .65em;
+  background: transparent; border: 1px solid var(--line);
+  color: var(--text); font-family: var(--font-mono);
+  cursor: pointer; line-height: 1;
+}
+.btn-row:hover { border-color: var(--accent); color: var(--accent); }
+.btn-row + .btn-row { margin-left: .3em; }
 
 /* ============ VIEWER ============ */
 .viewer { display: grid; grid-template-rows: auto 1fr; min-width: 0; }
