@@ -14,6 +14,7 @@ const gitSync = require('./lib/git-sync');
 const fleetRoutes = require('./lib/fleet-routes');
 const fleetDb = require('./lib/fleet-db');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
+const { SecretsClient } = require('./lib/secrets-client.js');
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -135,7 +136,18 @@ function resolveWritePath(agent_id, relPath) {
   return `agents/${agent_id}/${rel}`;
 }
 
+// vt-0134: prefer the standalone secrets-server when configured (production).
+// Fall back to in-process SecretsHandler for dev/test/legacy deployments that
+// haven't deployed the split yet.
 let _secretsHandler = null;
+let _secretsClient  = null;
+function getSecretsClient() {
+  if (_secretsClient !== null) return _secretsClient;
+  const c = new SecretsClient();
+  _secretsClient = c.enabled ? c : false;
+  if (c.enabled) console.log(`[rag-api] secrets via standalone server: ${c.url}`);
+  return _secretsClient;
+}
 function getSecretsHandler() {
   if (_secretsHandler) return _secretsHandler;
   _secretsHandler = new SecretsHandler({
@@ -146,34 +158,39 @@ function getSecretsHandler() {
   });
   return _secretsHandler;
 }
+// Returns the active secrets backend (client OR in-process handler).
+function secretsBackend() {
+  const client = getSecretsClient();
+  return client || getSecretsHandler();
+}
 
 async function handleSecretGet(body) {
   if (!body.name) throw new Error('name required');
   try {
-    const value = await getSecretsHandler().get(body.name);
+    const value = await secretsBackend().get(body.name);
     return { value };
   } catch (e) {
-    if (e instanceof NotFound) { const err = new Error(e.message); err.code = 404; throw err; }
+    if (e instanceof NotFound || e.statusCode === 404) { const err = new Error(e.message); err.code = 404; throw err; }
     throw e;
   }
 }
 
 async function handleSecretList() {
-  return { names: await getSecretsHandler().list() };
+  return { names: await secretsBackend().list() };
 }
 
 async function handleSecretSet(body) {
   if (!body.name) throw new Error('name required');
   if (body.value === undefined || body.value === null) throw new Error('value required');
-  return { committed_sha: await getSecretsHandler().set(body.name, body.value) };
+  return { committed_sha: await secretsBackend().set(body.name, body.value) };
 }
 
 async function handleSecretDelete(body) {
   if (!body.name) throw new Error('name required');
   try {
-    return { committed_sha: await getSecretsHandler().delete(body.name) };
+    return { committed_sha: await secretsBackend().delete(body.name) };
   } catch (e) {
-    if (e instanceof NotFound) { const err = new Error(e.message); err.code = 404; throw err; }
+    if (e instanceof NotFound || e.statusCode === 404) { const err = new Error(e.message); err.code = 404; throw err; }
     throw e;
   }
 }
@@ -181,11 +198,11 @@ async function handleSecretDelete(body) {
 async function handleSecretRotate(body) {
   if (!body.name) throw new Error('name required');
   const newValue = body.value === undefined ? null : body.value;
-  return { committed_sha: await getSecretsHandler().rotate(body.name, newValue) };
+  return { committed_sha: await secretsBackend().rotate(body.name, newValue) };
 }
 
 async function handleSecretVerify() {
-  return await getSecretsHandler().verify();
+  return await secretsBackend().verify();
 }
 
 async function handleSearch(body) {
