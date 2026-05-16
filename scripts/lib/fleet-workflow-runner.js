@@ -73,10 +73,19 @@ function nextNode(currentId, def, branchResult) {
 
 function createRunner(deps) {
   const cancelled = new Set();
+  // Per-run AbortControllers — abort() on cancel() so long-running execClaude
+  // poll loops can short-circuit instead of waiting full timeout_s (vt-0075).
+  const activeControllers = new Map(); // runId → AbortController
 
   async function execClaude(node, ctx, runId) {
     const prompt = substituteTemplates(node.prompt, ctx);
-    return await deps.spawnClaude({ node, prompt, ctx, runId });
+    const controller = new AbortController();
+    activeControllers.set(runId, controller);
+    try {
+      return await deps.spawnClaude({ node, prompt, ctx, runId, signal: controller.signal });
+    } finally {
+      activeControllers.delete(runId);
+    }
   }
 
   function execBranch(node, ctx) {
@@ -164,6 +173,8 @@ function createRunner(deps) {
 
   function cancel(runId) {
     cancelled.add(runId);
+    const ctrl = activeControllers.get(runId);
+    if (ctrl) try { ctrl.abort(); } catch {}
   }
 
   function start(runId) {

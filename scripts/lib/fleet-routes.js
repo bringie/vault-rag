@@ -772,7 +772,7 @@ async function ensureWorkflowRunner(ctx) {
       catch (e) { console.error('[fleet] orphan workflow runs:', e.message); }
       ctx.workflowRunner = createRunner({
         db: ctx.db,
-        spawnClaude: ({ node, prompt, runId }) => spawnClaudeForWorkflow(ctx, node, prompt, runId),
+        spawnClaude: ({ node, prompt, runId, signal }) => spawnClaudeForWorkflow(ctx, node, prompt, runId, signal),
         broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
       });
       return ctx.workflowRunner;
@@ -820,8 +820,9 @@ async function handleCancelRun({ req, res, ctx }) {
 }
 
 // Spawn a claude session and wait for completion, returning {output, exit_code, session_id}.
-// Used by workflow runner as deps.spawnClaude.
-async function spawnClaudeForWorkflow(ctx, node, prompt, runId) {
+// Used by workflow runner as deps.spawnClaude. signal (optional AbortSignal) lets
+// runner.cancel() short-circuit the poll loop instead of waiting full timeout_s.
+async function spawnClaudeForWorkflow(ctx, node, prompt, runId, signal) {
   const t = node.target || {};
   const all = await fleetDb.listHosts(ctx.db);
   let candidates = all.filter(h => h.status === 'online');
@@ -863,6 +864,10 @@ async function spawnClaudeForWorkflow(ctx, node, prompt, runId) {
   const startedAt = Date.now();
   const timeoutMs = (node.timeout_s || 600) * 1000;
   while (true) {
+    if (signal && signal.aborted) {
+      ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
+      return { output: '[cancelled]', exit_code: -1, session_id: s.id };
+    }
     if (Date.now() - startedAt > timeoutMs) {
       ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
       return { output: '[timeout]', exit_code: 124, session_id: s.id };
