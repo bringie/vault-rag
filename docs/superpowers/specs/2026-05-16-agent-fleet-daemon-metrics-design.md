@@ -127,13 +127,15 @@ async function collectMetrics() {
 }
 
 async function getCpuPct() {
-  // Linux /proc/stat
+  // Linux /proc/stat — fields: user nice system idle iowait irq softirq steal guest guest_nice
+  // We use idle ONLY (not idle+iowait) because iowait is unreliable on busy I/O hosts
+  // and can produce >100% or negative deltas (kernel can revise it downward).
   if (fs.existsSync('/proc/stat')) {
     const sample = () => {
       const line = fs.readFileSync('/proc/stat', 'utf8').split('\n')[0];
       const [, ...vals] = line.split(/\s+/).map(Number);
-      const idle = vals[3] + vals[4];
-      const total = vals.reduce((a, b) => a + b, 0);
+      const idle = vals[3];                          // idle only (NOT idle+iowait)
+      const total = vals.reduce((a, b) => a + b, 0); // total includes iowait — that's fine
       return { idle, total };
     };
     const a = sample();
@@ -141,7 +143,9 @@ async function getCpuPct() {
     const b = sample();
     const idleDiff = b.idle - a.idle;
     const totalDiff = b.total - a.total;
-    return totalDiff ? Math.round(100 * (1 - idleDiff / totalDiff) * 10) / 10 : 0;
+    if (!totalDiff) return 0;
+    const pct = 100 * (1 - idleDiff / totalDiff);
+    return Math.max(0, Math.min(100, Math.round(pct * 10) / 10));  // clamp [0,100]
   }
   // macOS: os.cpus() returns cumulative times
   const sample = () => {
@@ -157,7 +161,9 @@ async function getCpuPct() {
   const b = sample();
   const idleDiff = b.idle - a.idle;
   const totalDiff = b.total - a.total;
-  return totalDiff ? Math.round(100 * (1 - idleDiff / totalDiff) * 10) / 10 : 0;
+  if (!totalDiff) return 0;
+  const pct = 100 * (1 - idleDiff / totalDiff);
+  return Math.max(0, Math.min(100, Math.round(pct * 10) / 10));  // clamp [0,100]
 }
 
 function getRamUsed() {
@@ -177,7 +183,9 @@ function getDisk() {
       const [fs_, blocks, used, avail, _pct, mount] = line.split(/\s+/);
       return { mount, size_bytes: +blocks * 1024, used_bytes: +used * 1024, avail_bytes: +avail * 1024 };
     }).filter(d => !d.mount.startsWith('/snap/') && !d.mount.startsWith('/dev')
-                && !['/proc','/sys','/run','/run/lock'].some(p => d.mount.startsWith(p)));
+                && !['/proc','/sys','/run','/run/lock'].some(p => d.mount.startsWith(p))
+                && !d.mount.startsWith('/var/lib/docker/')
+                && !d.mount.startsWith('/var/lib/containerd/'));
   } catch { return []; }
 }
 
@@ -215,12 +223,16 @@ const { execSync } = require('node:child_process');
 
 let lastMtimes = {};
 
+// mtime check only watches mcp.json + settings.json (single files — reliable).
+// Plugin tree (~/.claude/plugins/cache) is NOT mtime-checked because
+// parent-dir mtime doesn't propagate for nested version updates
+// (e.g. cache/X/plugin/5.1.1/ landing inside existing X/plugin/ dir).
+// Plugin changes show up at the 15-min heartbeat.
 function inventoryChanged() {
   const home = os.homedir();
   const targets = [
     path.join(home, '.claude', 'mcp.json'),
     path.join(home, '.claude', 'settings.json'),
-    path.join(home, '.claude', 'plugins', 'cache'),
   ];
   let changed = false;
   for (const p of targets) {
@@ -228,10 +240,16 @@ function inventoryChanged() {
       const stat = fs.statSync(p);
       const m = stat.mtimeMs;
       if (lastMtimes[p] !== m) { lastMtimes[p] = m; changed = true; }
-    } catch {}
+    } catch {
+      // File deleted — treat as change too
+      if (lastMtimes[p] !== undefined) { lastMtimes[p] = undefined; changed = true; }
+    }
   }
   return changed;
 }
+
+// Called on WS reconnect — clears cache so first post-reconnect tick sends inventory.
+function resetInventoryCache() { lastMtimes = {}; }
 
 function collectInventory() {
   const home = os.homedir();
@@ -292,18 +310,34 @@ function detectClaudeVersion() {
   catch { return null; }
 }
 
+// SECURITY POLICY: settings.json forwarding is a STRICT ALLOWLIST.
+// Adding fields requires security review. The following keys are EXCLUDED:
+//   env        — contains API tokens (GITLAB_TOKEN, GRAFANA_TOKEN, etc.)
+//   hooks      — shell commands that may include credentials
+//   permissions.allow/deny — reveal internal URLs and command patterns
+//   disabledMcpjsonServers — minor info-leak about config
+//   credentials/.credentials.json refs
+// Allowed value types per field validated below — drop value if shape unexpected.
 function parseSettings(home) {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
-    // Redact secrets — only safe fields.
-    const safe = ['model', 'permissionMode', 'enabledPlugins', 'autoUpdater'];
     const out = {};
-    for (const k of safe) if (k in raw) out[k] = raw[k];
+    if (typeof raw.model === 'string')          out.model = raw.model;
+    if (typeof raw.permissionMode === 'string') out.permissionMode = raw.permissionMode;
+    if (raw.autoUpdater && typeof raw.autoUpdater === 'object'
+        && typeof raw.autoUpdater.enabled === 'boolean') {
+      out.autoUpdater = { enabled: raw.autoUpdater.enabled };
+    }
+    // enabledPlugins must be Record<string, boolean> — drop if not
+    if (raw.enabledPlugins && typeof raw.enabledPlugins === 'object'
+        && Object.values(raw.enabledPlugins).every(v => typeof v === 'boolean')) {
+      out.enabledPlugins = raw.enabledPlugins;
+    }
     return out;
   } catch { return null; }
 }
 
-module.exports = { collectInventory, inventoryChanged };
+module.exports = { collectInventory, inventoryChanged, resetInventoryCache };
 ```
 
 ### Daemon main loop wiring
@@ -311,6 +345,14 @@ module.exports = { collectInventory, inventoryChanged };
 В `agent-fleet/daemon/bin/daemon.js` после hello-frame:
 
 ```js
+// On each WS open (initial + reconnect): reset inventory cache so we re-send
+// fresh inventory once. Otherwise hub may carry stale inventory after daemon restart.
+ws.on('open', () => {
+  resetInventoryCache();
+  // Send first inventory immediately on hello so hub has data within seconds.
+  safeSend(ws, { type: 'inventory', ...collectInventory() });
+});
+
 setInterval(async () => {
   try {
     const m = await collectMetrics();
@@ -325,12 +367,10 @@ setInterval(() => {
 }, 60_000);  // check mtime every minute
 
 setInterval(() => {
-  // Heartbeat — always send every 15 min даже без mtime-change
+  // Heartbeat — always send every 15 min даже без mtime-change.
+  // Also catches plugin-tree updates which aren't mtime-watched.
   safeSend(ws, { type: 'inventory', ...collectInventory() });
 }, 900_000);
-
-// На hello — сразу первую inventory
-safeSend(ws, { type: 'inventory', ...collectInventory() });
 ```
 
 ## 6. Hub ingestion
@@ -367,6 +407,19 @@ Bus добавит `addMetricsViewer(hostId, ws)` + `broadcastHostMetrics(hostId
 - На connect — отдельный subscription (не путать с session viewer)
 - Daemon `metrics` frame → hub broadcastHostMetrics всем `metrics_viewer` с этим host_id
 - Same for `inventory`
+
+**Lifecycle decoupling**: `metrics_viewer` subscription is per `host_id`, NOT tied to a daemon socket. If the daemon disconnects:
+- Subscribers stay connected to hub, just stop receiving frames until daemon reconnects.
+- UI shows "host offline" badge but keeps last-known sparkline data visible.
+Hub's bus tracks `metricsViewersByHost = Map<host_id, Set<ws>>`. On viewer ws.close → remove from set. On daemon disconnect → no cleanup needed (set already correct, just no incoming traffic).
+
+### Existing host_info vs new metrics — overlap
+
+`collectHostInfo()` (existing, sent in hello frame at daemon startup) reports static-ish host description: `cpu_model`, `cpu_cores`, `ram_total_bytes`, `node_version`, `hostname`, `platform_release`, `uptime_seconds`. Stored once in `fleet_hosts.metadata`.
+
+`collectMetrics()` (new, every 10s) reports the live stream: `cpu_pct`, `ram_used_bytes`, `disk`, `net`. Stored in `fleet_host_metrics`.
+
+**Reconciliation**: `ram_total_bytes` appears in BOTH (static at hello + live in metrics). This is intentional — UI doesn't fetch hello-data per-frame; the metrics frame carries enough for self-contained rendering. `cpu_pct` is metrics-only; `cpu_model` stays in host_info. No code dedup needed.
 
 ## 9. UI — host detail page
 
@@ -422,15 +475,20 @@ Total ~750 LOC.
 Использовать существующий ofelia container (cron) или добавить `setInterval` в hub:
 
 ```js
-// scripts/lib/fleet-retention.js — called from rag-api.js every 5 min
+// scripts/lib/fleet-retention.js — called from rag-api.js every 5 min + once at boot.
+// Wider 30-min lookback window covers late-arriving samples (WS reconnect buffering,
+// brief hub downtime). ON CONFLICT DO UPDATE recomputes the bucket from full raw data
+// each time, so late samples within the 30-min window are correctly reflected.
+// Samples landing outside this window for an already-existing bucket are lost.
 async function runRetention(db) {
-  // 1. Upsert 5-min rollups from raw
+  // 1. Upsert 5-min rollups from raw — recompute last 6 buckets each tick
   await db.query(`
     INSERT INTO fleet_host_metrics_5m (host_id, bucket, cpu_pct_avg, cpu_pct_max, ram_used_bytes)
-    SELECT host_id, date_trunc('5 minutes', ts), avg(cpu_pct), max(cpu_pct), avg(ram_used_bytes)::bigint
+    SELECT host_id, date_trunc('5 minutes', ts) AS bucket,
+           avg(cpu_pct)::real, max(cpu_pct)::real, avg(ram_used_bytes)::bigint
     FROM fleet_host_metrics
-    WHERE ts > now() - interval '6 minutes' AND ts <= date_trunc('5 minutes', now())
-    GROUP BY host_id, date_trunc('5 minutes', ts)
+    WHERE ts > now() - interval '30 minutes' AND ts < date_trunc('5 minutes', now())
+    GROUP BY host_id, bucket
     ON CONFLICT (host_id, bucket) DO UPDATE SET
       cpu_pct_avg = EXCLUDED.cpu_pct_avg,
       cpu_pct_max = EXCLUDED.cpu_pct_max,
@@ -441,7 +499,9 @@ async function runRetention(db) {
 }
 ```
 
-`setInterval(() => runRetention(ctx.db).catch(console.error), 5 * 60 * 1000)` в hub boot.
+Wiring in rag-api boot: run once on startup, then `setInterval(() => runRetention(ctx.db).catch(console.error), 5 * 60 * 1000)`.
+
+**Acknowledged loss**: samples arriving > 30 min late for an already-flushed bucket are not rolled up. WS reconnects buffer a single tick — well within the 30-min window. Hub downtime > 30 min on a sample-rich host: rolled-up bucket may underrepresent during that gap. Raw data is still kept 24h, so the gap is recoverable by manual SQL.
 
 ## 12. Failure modes
 
