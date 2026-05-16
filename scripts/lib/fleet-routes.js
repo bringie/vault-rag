@@ -276,6 +276,18 @@ async function handleExec({ req, res, body, ctx }) {
   for (const s of sessions) busyByHost[s.host_id] = (busyByHost[s.host_id] || 0) + 1;
   candidates.sort((a, b) => (busyByHost[a.id] || 0) - (busyByHost[b.id] || 0));
   const host = candidates[0];
+  // vt-0133: cap concurrent exec sessions per host. Without this, 100 parallel
+  // /fleet/exec POSTs pin every host to its slowest task, each holding a
+  // session row + viewer hook + 600s default timeout = OOM + fd exhaustion.
+  const MAX_EXEC_PER_HOST = Math.max(1, parseInt(
+    process.env.VAULT_RAG_FLEET_EXEC_MAX_PER_HOST || '5', 10));
+  if ((busyByHost[host.id] || 0) >= MAX_EXEC_PER_HOST) {
+    res.setHeader('retry-after', '5');
+    return send(res, 429, {
+      error: `host ${host.name} at capacity (${busyByHost[host.id]} running, cap ${MAX_EXEC_PER_HOST})`,
+      retry_after_seconds: 5,
+    });
+  }
 
   const args = ['--print'];
   if (model) args.push('--model', String(model));

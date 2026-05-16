@@ -186,6 +186,25 @@ test('vt-0124: cost-batch (read-shaped POST) is allowed for viewer', async () =>
   await close();
 });
 
+// vt-0133: /fleet/exec used to dispatch unbounded — 100 concurrent POSTs
+// pinned every host to a session row + viewer hook + 600s timeout each.
+// Now capped at MAX_EXEC_PER_HOST (default 5, configurable via env).
+test('vt-0133: /fleet/exec returns 429 when host at capacity', async () => {
+  const { server, pg, close } = await startWithDb();
+  const h = (await pg.query("INSERT INTO fleet_hosts (name, status) VALUES ('hex', 'online') RETURNING id")).rows[0].id;
+  // Fill the host with 5 running sessions
+  for (let i = 0; i < 5; i++) {
+    await pg.query("INSERT INTO fleet_sessions (host_id, cwd, status, started_at, args) VALUES ($1, '/', 'running', now(), '{}')", [h]);
+  }
+  const r = await reqJson(server, 'POST', '/fleet/exec', {
+    token: 'T',
+    body: { host_id: h, prompt: 'hi' },
+  });
+  assert.equal(r.status, 429);
+  assert.match(r.body.error, /capacity/);
+  await close();
+});
+
 // vt-0126: body-size caps. PUT /fleet/hosts/:id/file content used to be
 // unbounded — a 100 MiB body would OOM the API + the daemon.
 test('vt-0126: readBody rejects body > 1 MiB with 413', async () => {
