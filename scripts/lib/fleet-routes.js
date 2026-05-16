@@ -40,6 +40,7 @@ function pathMatch(url, prefix) {
 }
 
 const SID_RE = '[0-9a-f-]{36}';
+const SID_RE_BARE = /^[0-9a-f-]{36}$/i;
 
 function makeBus() {
   const daemonsByHost = new Map();          // host_id -> ws
@@ -404,10 +405,15 @@ async function handleBroadcast({ req, res, body, ctx }) {
   send(res, 201, { count: results.length, results });
 }
 
+// Allowlist for days — fleet-cost interpolates it into "($N || ' days')::interval".
+// parseInt protects against SQL injection (returns NaN/integer), but malformed
+// values leak raw Postgres errors out of the 500 handler. Allowlist is cleaner.
+const COST_VALID_DAYS = new Set([1, 7, 14, 30, 90]);
 async function handleCostTimeline({ req, res, ctx }) {
   if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
   const url = new URL(req.url, 'http://x');
   const days = parseInt(url.searchParams.get('days') || '7', 10);
+  if (!COST_VALID_DAYS.has(days)) return send(res, 422, { error: 'invalid days', allowed: [...COST_VALID_DAYS] });
   const groupBy = url.searchParams.get('group_by') || 'model';
   const hosts = await fleetDb.listHosts(ctx.db);
   const rows = await fleetCost.timeline(ctx.tokmonDb, ctx.db, hosts.map(h => h.name), days, groupBy);
@@ -599,8 +605,8 @@ async function handleCleanupSessions({ req, res, body, ctx }) {
       allowed: [...CLEANUP_OLDER_THAN_ALLOWED],
     });
   }
-  const n = await fleetDb.deleteClosedSessions(ctx.db, olderThan);
-  send(res, 200, { deleted: n, older_than: olderThan });
+  const r = await fleetDb.deleteClosedSessions(ctx.db, olderThan);
+  send(res, 200, { deleted: r.deleted, limited: r.limited, older_than: olderThan });
 }
 
 async function handleHostFileGet({ req, res, ctx }) {
@@ -650,10 +656,22 @@ async function handleSessionCost({ req, res, ctx }) {
   send(res, 200, { session_id: s.id, host: host.name, ...cost });
 }
 
+// Batch cost lookup — replaces N concurrent /sessions/:id/cost calls from the
+// archive page (one tokmon query instead of 50). Body: { ids: ['uuid', ...] }.
+async function handleSessionCostBatch({ req, res, body, ctx }) {
+  if (!body || !Array.isArray(body.ids)) return send(res, 422, { error: 'ids[] required' });
+  if (body.ids.length > 200) return send(res, 422, { error: 'max 200 ids per request' });
+  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
+  const ids = body.ids.filter(x => typeof x === 'string' && SID_RE_BARE.test(x));
+  const costs = await fleetCost.sessionCostBatch(ctx.tokmonDb, ctx.db, ids);
+  send(res, 200, costs);
+}
+
 async function handleCostSummary({ req, res, ctx }) {
   if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
   const url = new URL(req.url, 'http://x');
   const days = parseInt(url.searchParams.get('days') || '7', 10);
+  if (!COST_VALID_DAYS.has(days)) return send(res, 422, { error: 'invalid days', allowed: [...COST_VALID_DAYS] });
   const hosts = await fleetDb.listHosts(ctx.db);
   const r = await fleetCost.hostSummary(ctx.tokmonDb, ctx.db, hosts.map(h => h.name), days);
   const result = hosts.map(h => ({
@@ -952,6 +970,9 @@ function dispatchHttp(req, res, ctx) {
   }
   if (method === 'POST' && path === '/fleet/sessions/cleanup') {
     return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
+  }
+  if (method === 'POST' && path === '/fleet/sessions/cost-batch') {
+    return readBody(req).then(b => handleSessionCostBatch({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));
   }
   if (method === 'PATCH' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) {
     return readBody(req).then(b => handlePatchSession({ req, res, body: b, ctx })).catch(e => send(res, 400, { error: e.message }));

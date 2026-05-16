@@ -198,4 +198,30 @@ async function timelineByGroup(tokmonPg, vaultPg, days = 7) {
   return out.sort((a, b) => a.day - b.day);
 }
 
-module.exports = { sessionCost, hostSummary, timeline, rowCost };
+// Batch-fetch costs for many fleet sessions in a single tokmon query.
+// Returns { [sessionId]: {usd, msgs, attribution: 'exact'} } for IDs that
+// have any events tagged with session_id. IDs without events are omitted —
+// caller can fall back to time-window heuristic per missing ID if needed.
+async function sessionCostBatch(tokmonPg, vaultPg, sessionIds) {
+  if (!sessionIds.length) return {};
+  const { rows } = await tokmonPg.query(
+    `SELECT session_id, model, MAX(ts) AS last_ts,
+            SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+            SUM(cache_creation_5m) AS cache_creation_5m, SUM(cache_read) AS cache_read,
+            COUNT(*) AS msgs
+     FROM events
+     WHERE session_id = ANY($1)
+     GROUP BY session_id, model`,
+    [sessionIds]);
+  const out = {};
+  for (const r of rows) {
+    if (!out[r.session_id]) out[r.session_id] = { usd: 0, msgs: 0, attribution: 'exact', by_model: {} };
+    const c = await rowCost(r, r.last_ts, vaultPg);
+    out[r.session_id].usd += c;
+    out[r.session_id].msgs += Number(r.msgs);
+    out[r.session_id].by_model[r.model] = { usd: c, msgs: Number(r.msgs) };
+  }
+  return out;
+}
+
+module.exports = { sessionCost, sessionCostBatch, hostSummary, timeline, rowCost };

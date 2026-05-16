@@ -285,14 +285,20 @@ async function orphanRunningSessions(c) {
 
 // Delete sessions that have been in a terminal state for at least `olderThan`
 // (e.g. '1 hour'). CASCADE removes their fleet_events.
-async function deleteClosedSessions(c, olderThan = '1 hour') {
+// LIMIT 1000 caps the AccessExclusiveLock duration on busy installs.
+// Caller can loop while limited === true to drain.
+async function deleteClosedSessions(c, olderThan = '1 hour', limit = 1000) {
   const { rowCount } = await c.query(
     `DELETE FROM fleet_sessions
-     WHERE status IN ('exited','killed')
-       AND ended_at IS NOT NULL
-       AND ended_at < now() - $1::interval`,
-    [olderThan]);
-  return rowCount;
+     WHERE id IN (
+       SELECT id FROM fleet_sessions
+       WHERE status IN ('exited','killed')
+         AND ended_at IS NOT NULL
+         AND ended_at < now() - $1::interval
+       LIMIT $2
+     )`,
+    [olderThan, limit]);
+  return { deleted: rowCount, limited: rowCount >= limit };
 }
 
 async function appendEvents(c, events) {
@@ -327,11 +333,17 @@ async function readTranscript(c, sessionId, { sinceSeq = 0, limit = 10000, kind 
   return rows;
 }
 
-async function purgeOldEvents(c, intervalStr) {
+// LIMIT 10000 + caller-loop to avoid one giant delete on million-row tables.
+async function purgeOldEvents(c, intervalStr, limit = 10000) {
   const { rowCount } = await c.query(
-    `DELETE FROM fleet_events WHERE ts < now() - $1::interval AND kind IN ('pty_out','pty_in','meta')`,
-    [intervalStr]);
-  return rowCount;
+    `DELETE FROM fleet_events WHERE id IN (
+       SELECT id FROM fleet_events
+       WHERE ts < now() - $1::interval
+         AND kind IN ('pty_out','pty_in','meta')
+       LIMIT $2
+     )`,
+    [intervalStr, limit]);
+  return { deleted: rowCount, limited: rowCount >= limit };
 }
 
 async function insertHostMetric(c, hostId, m) {

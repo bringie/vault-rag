@@ -218,8 +218,9 @@ test('purgeOldEvents deletes pty_* older than cutoff but keeps lifecycle', async
        ($1, now() - interval '1 day', 'pty_out', 2, decode('cc','hex'))`,
       [s.id],
     );
-    const n = await fleetDb.purgeOldEvents(c, '30 days');
-    assert.equal(n, 1);
+    const r = await fleetDb.purgeOldEvents(c, '30 days');
+    assert.equal(r.deleted, 1);
+    assert.equal(r.limited, false);
     const { rows } = await c.query('SELECT kind, seq FROM fleet_events ORDER BY seq');
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map(r => r.kind), ['lifecycle', 'pty_out']);

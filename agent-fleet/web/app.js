@@ -907,15 +907,20 @@
     body.querySelectorAll('.sess-id-cell').forEach(td => {
       td.onclick = () => navigate('/sessions/' + td.dataset.sid);
     });
-    // lazy-load cost per row
-    for (const s of rows) {
-      api('GET', `/sessions/${s.id}/cost`).then(c => {
-        const el = document.getElementById('cost-' + s.id.slice(0,8));
-        if (el) {
-          const tag = c.attribution === 'approximate' ? '~' : '';
-          el.textContent = c.usd ? `$${c.usd.toFixed(4)}${tag}` : '—';
-        }
-      }).catch(() => {});
+    // Batch cost lookup: 1 POST instead of N concurrent GETs (was a perf hot
+    // spot under load — see audit §6.1).
+    if (rows.length) {
+      api('POST', '/sessions/cost-batch', { ids: rows.map(s => s.id) })
+        .then(map => {
+          for (const s of rows) {
+            const el = document.getElementById('cost-' + s.id.slice(0, 8));
+            if (!el) continue;
+            const c = map[s.id];
+            if (!c) { el.textContent = '—'; continue; }
+            const tag = c.attribution === 'approximate' ? '~' : '';
+            el.textContent = c.usd ? `$${c.usd.toFixed(4)}${tag}` : '—';
+          }
+        }).catch(() => {});
     }
   }
 

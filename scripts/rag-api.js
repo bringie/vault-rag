@@ -389,8 +389,15 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     const PURGE_AGE = process.env.VAULT_RAG_FLEET_RETENTION || '30 days';
     setInterval(async () => {
       try {
-        const n = await fleetDb.purgeOldEvents(pg, PURGE_AGE);
-        if (n) console.log(`[rag-api] fleet: purged ${n} events older than ${PURGE_AGE}`);
+        // Drain in chunks of 10k to avoid one massive AccessExclusiveLock.
+        let total = 0, limited = true, passes = 0;
+        while (limited && passes < 100) {
+          const r = await fleetDb.purgeOldEvents(pg, PURGE_AGE);
+          total += r.deleted;
+          limited = r.limited;
+          passes += 1;
+        }
+        if (total) console.log(`[rag-api] fleet: purged ${total} events older than ${PURGE_AGE} (${passes} passes)`);
       } catch (e) {
         console.error(`[rag-api] fleet purge failed: ${e.message}`);
       }
