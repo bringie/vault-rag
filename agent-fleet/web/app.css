@@ -589,6 +589,23 @@ body::after {
 }
 .chip-x:hover { color: var(--danger); }
 
+/* ============ HOST METRICS (sparklines + tabs) ============ */
+.hm-live { display: flex; gap: 1.4em; padding: .6em 0; flex-wrap: wrap; font-family: var(--font-mono); font-size: .9em; }
+.hm-live strong { color: var(--accent); }
+.hm-chart { margin: .4em 0; }
+.hm-chart-title { font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-bottom: .2em; }
+.hm-chart svg { background: var(--bg); border: 1px solid var(--line); display: block; }
+.hm-disk-table, .hm-tab-table { width: 100%; border-collapse: collapse; margin-top: .6em; font-family: var(--font-mono); font-size: .82em; }
+.hm-disk-table td, .hm-disk-table th, .hm-tab-table td, .hm-tab-table th { padding: .4em .6em; border-bottom: 1px solid var(--line); text-align: left; }
+.hm-tab-table th, .hm-disk-table th { color: var(--text-dim); font-size: .7em; text-transform: uppercase; }
+.hm-bar { background: var(--panel-2); height: 8px; border-radius: 4px; overflow: hidden; min-width: 80px; }
+.hm-bar > div { background: var(--accent); height: 100%; }
+.hm-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-top: 1em; }
+.hm-tab { background: transparent; border: 0; padding: .5em 1em; color: var(--text-dim);
+          cursor: pointer; font-family: var(--font-mono); font-size: .85em; border-bottom: 2px solid transparent; }
+.hm-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.hm-tab:hover { color: var(--text); }
+
 /* ============ MOBILE ============ */
 @media (max-width: 768px) {
   .grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }

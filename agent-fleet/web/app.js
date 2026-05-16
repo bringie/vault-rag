@@ -590,6 +590,7 @@
     $('hd-md').onclick   = () => openEditor(h.id, 'CLAUDE.md');
     $('hd-json').onclick = () => openEditor(h.id, 'settings.json');
     $('hd-close-detail').onclick = () => {
+      if (window.stopHostMetrics) window.stopHostMetrics();
       state.selectedHost = null;
       setViewMode('session');
       render();
@@ -616,6 +617,8 @@
     };
     // groups
     renderHostGroups(h);
+    // live metrics + inventory tabs (guards same-host re-render churn)
+    if (window.startHostMetrics) window.startHostMetrics(h.id);
   }
 
   async function renderHostGroups(h) {

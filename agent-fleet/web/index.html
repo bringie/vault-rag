@@ -147,6 +147,30 @@
             </div>
           </section>
           <section class="hd-section">
+            <h4>METRICS</h4>
+            <div id="hm-live" class="hm-live"></div>
+            <div id="hm-sparklines">
+              <div class="hm-chart">
+                <div class="hm-chart-title">CPU %</div>
+                <svg id="hm-cpu-svg" width="100%" height="60" viewBox="0 0 360 60" preserveAspectRatio="none"></svg>
+              </div>
+              <div class="hm-chart">
+                <div class="hm-chart-title">RAM %</div>
+                <svg id="hm-ram-svg" width="100%" height="60" viewBox="0 0 360 60" preserveAspectRatio="none"></svg>
+              </div>
+            </div>
+            <div id="hm-disk"></div>
+          </section>
+          <section class="hd-section">
+            <h4>INVENTORY</h4>
+            <div class="hm-tabs">
+              <button class="hm-tab active" data-tab="skills">Skills</button>
+              <button class="hm-tab" data-tab="mcp">MCP servers</button>
+              <button class="hm-tab" data-tab="settings">Settings</button>
+            </div>
+            <div id="hm-tab-content"></div>
+          </section>
+          <section class="hd-section">
             <h4>RECENT SESSIONS</h4>
             <ul id="hd-sessions" class="list list-sessions"></ul>
           </section>
@@ -438,6 +462,7 @@
   <script src="/fleet/static/workflow-editor.js"></script>
   <script src="/fleet/static/workflow-run-viewer.js"></script>
   <script src="/fleet/static/prices.js"></script>
+  <script src="/fleet/static/host-metrics.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
 </html>
