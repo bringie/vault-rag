@@ -265,3 +265,53 @@ test('listHostsByEffectiveTag returns direct + via-group hosts', async () => {
     assert.deepEqual(names, ['direct', 'viagroup']);
   });
 });
+
+test('insertHostMetric + readMetricsSince', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    await c.query('TRUNCATE fleet_host_metrics, fleet_host_metrics_5m');
+    const h = await fleetDb.upsertHost(c, { name: 'h-met' });
+    await fleetDb.insertHostMetric(c, h.id, {
+      ts: new Date().toISOString(),
+      cpu_pct: 42.3, ram_used_bytes: 1024, ram_total_bytes: 4096,
+      disk: [{ mount: '/', size_bytes: 100, used_bytes: 50, avail_bytes: 50 }],
+      net: { rx_bps: 1000, tx_bps: 500 },
+    });
+    const rows = await fleetDb.readMetricsSince(c, h.id, '1 hour');
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].cpu_pct, 42.3);
+    assert.deepStrictEqual(rows[0].disk[0].mount, '/');
+  });
+});
+
+test('setHostInventory merges into metadata.inventory', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const h = await fleetDb.upsertHost(c, { name: 'h-inv' });
+    await fleetDb.setHostInventory(c, h.id, {
+      collected_at: new Date().toISOString(),
+      skills: [{ plugin: 'p1', version: '1.0', name: 's1' }],
+      mcp_servers: [{ name: 'vault-rag', enabled: true, command: 'node', args: [] }],
+      claude_version: '1.5.2',
+      settings: { model: 'claude-opus-4-7' },
+    });
+    const after = await fleetDb.getHost(c, h.id);
+    assert.strictEqual(after.metadata.inventory.skills[0].name, 's1');
+    assert.strictEqual(after.metadata.inventory.mcp_servers[0].name, 'vault-rag');
+  });
+});
+
+test('readMetricsRollupSince returns 5-min buckets', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    await c.query('TRUNCATE fleet_host_metrics_5m');
+    const h = await fleetDb.upsertHost(c, { name: 'h-roll' });
+    await c.query(`
+      INSERT INTO fleet_host_metrics_5m (host_id, bucket, cpu_pct_avg, cpu_pct_max, ram_used_bytes)
+      VALUES ($1, now() - interval '10 minutes', 25, 40, 1024),
+             ($1, now() - interval '5 minutes',  30, 50, 2048)`, [h.id]);
+    const rows = await fleetDb.readMetricsRollupSince(c, h.id, '1 hour');
+    assert.strictEqual(rows.length, 2);
+    assert.ok(rows[0].cpu_pct_avg !== null);
+  });
+});

@@ -316,6 +316,60 @@ async function purgeOldEvents(c, intervalStr) {
   return rowCount;
 }
 
+async function insertHostMetric(c, hostId, m) {
+  await c.query(
+    `INSERT INTO fleet_host_metrics (host_id, ts, cpu_pct, ram_used_bytes, ram_total_bytes, disk, net, error)
+     VALUES ($1, COALESCE($2::timestamptz, now()), $3, $4, $5, $6::jsonb, $7::jsonb, $8)`,
+    [
+      hostId,
+      m.ts || null,
+      m.cpu_pct == null ? null : Number(m.cpu_pct),
+      m.ram_used_bytes == null ? null : Number(m.ram_used_bytes),
+      m.ram_total_bytes == null ? null : Number(m.ram_total_bytes),
+      m.disk ? JSON.stringify(m.disk) : null,
+      m.net ? JSON.stringify(m.net) : null,
+      m.error || null,
+    ]);
+}
+
+async function setHostLatestMetrics(c, hostId, m) {
+  await c.query(
+    `UPDATE fleet_hosts
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('latest_metrics', $2::jsonb)
+     WHERE id = $1`,
+    [hostId, JSON.stringify({
+      ts: m.ts, cpu_pct: m.cpu_pct, ram_used_bytes: m.ram_used_bytes, ram_total_bytes: m.ram_total_bytes,
+    })]);
+}
+
+async function setHostInventory(c, hostId, inv) {
+  await c.query(
+    `UPDATE fleet_hosts
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('inventory', $2::jsonb)
+     WHERE id = $1`,
+    [hostId, JSON.stringify(inv)]);
+}
+
+async function readMetricsSince(c, hostId, interval) {
+  const { rows } = await c.query(
+    `SELECT ts, cpu_pct, ram_used_bytes, ram_total_bytes, disk, net, error
+     FROM fleet_host_metrics
+     WHERE host_id = $1 AND ts > now() - $2::interval
+     ORDER BY ts ASC`,
+    [hostId, interval]);
+  return rows;
+}
+
+async function readMetricsRollupSince(c, hostId, interval) {
+  const { rows } = await c.query(
+    `SELECT bucket, cpu_pct_avg, cpu_pct_max, ram_used_bytes
+     FROM fleet_host_metrics_5m
+     WHERE host_id = $1 AND bucket > now() - $2::interval
+     ORDER BY bucket ASC`,
+    [hostId, interval]);
+  return rows;
+}
+
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
   createSession, getSession, listSessions, countSessions, updateSession,
@@ -324,4 +378,5 @@ module.exports = {
   listGroups, getGroup, getGroupByName, createGroup, updateGroup, deleteGroup,
   addHostToGroup, removeHostFromGroup, listGroupsForHost, listHostsInGroup,
   getEffectiveCapabilities, listHostsByEffectiveTag,
+  insertHostMetric, setHostLatestMetrics, setHostInventory, readMetricsSince, readMetricsRollupSince,
 };
