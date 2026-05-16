@@ -1482,13 +1482,20 @@ async function handleViewerWs(ws, params, ctx) {
   const sid = params.get('session_id');
   if (!sid) return ws.close(4002, 'session_id required');
 
-  // Buffer incoming frames until session is loaded (avoids race with async DB lookup)
+  // Buffer incoming frames until session is loaded (avoids race with async DB lookup).
+  // vt-0132: cap queue length so a chatty client can't OOM the hub by spamming
+  // input frames while we await getSession. 256 is plenty for the ~ms gap.
+  const MAX_PENDING_FRAMES = 256;
   let session = null;
+  let droppedFrames = 0;
   const queue = [];
   const processFrame = (raw) => {
     let f;
     try { f = JSON.parse(raw.toString()); } catch { return; }
-    if (!session) { queue.push(f); return; }
+    if (!session) {
+      if (queue.length >= MAX_PENDING_FRAMES) { droppedFrames++; return; }
+      queue.push(f); return;
+    }
     if (f.type === 'input') ctx.bus.sendInput(session.id, session.host_id, f.data);
     else if (f.type === 'kill') ctx.bus.sendKill(session.id, session.host_id, f.signal || 'SIGTERM');
     else if (f.type === 'resize') {
@@ -1552,6 +1559,9 @@ async function handleViewerWs(ws, params, ctx) {
   }
 
   // Drain queued frames now that session is ready
+  if (droppedFrames > 0) {
+    try { ws.send(JSON.stringify({ type: 'warn', dropped_frames: droppedFrames, reason: 'pre-ready queue overflow' })); } catch {}
+  }
   while (queue.length) {
     const f = queue.shift();
     if (f.type === 'input') ctx.bus.sendInput(s.id, s.host_id, f.data);
