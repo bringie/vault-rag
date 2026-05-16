@@ -5,17 +5,21 @@ const path = require('node:path');
 const os = require('node:os');
 const { collectMetrics } = require('./metrics-collector');
 const { collectInventory, inventoryChanged, resetInventoryCache } = require('./inventory-collector');
-const { execFileSync } = require('node:child_process');
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
+const backendsLib = require('./backends');
 
-function detectClaudeVersion(bin) {
-  try {
-    // execFileSync: bin is passed as the executable path, NOT through a shell.
-    // Prevents shell word-splitting if claudeBin contains spaces or metachars.
-    const out = execFileSync(bin, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
-    return String(out).trim().split('\n')[0] || null;
-  } catch { return null; }
+// True when the spawn frame uses the new generic schema rather than legacy
+// {args:[...]} passthrough. Any of these fields means we should consult a
+// backend.buildSpawnArgs() rather than ptyMgr.spawn(args) directly.
+function hasStructuredFields(f) {
+  return f.agent != null
+    || f.prompt != null
+    || f.model != null
+    || f.system_prompt != null
+    || f.allowed_tools != null
+    || f.resume_session_id != null
+    || f.dangerous != null;
 }
 
 function collectHostInfo() {
@@ -62,6 +66,17 @@ async function runDaemon(opts) {
   fs.mkdirSync(opts.stateDir, { recursive: true });
   const backoff = opts.backoffOverride || computeBackoff;
   const store = new SessionStore(opts.stateDir);
+  // Backend registry — built-in claude + anything declared in backends.json.
+  // Config path defaults to /etc/agent-fleet/backends.json on prod installs;
+  // dev overrides via --backends-config or AGENT_FLEET_BACKENDS_PATH.
+  const backendsCfg = opts.backendsConfig
+    || process.env.AGENT_FLEET_BACKENDS_PATH
+    || '/etc/agent-fleet/backends.json';
+  const { registry: backends, default: defaultBackend } = backendsLib.loadBackends({
+    configPath: backendsCfg,
+    baseDir: path.dirname(backendsCfg),
+  });
+  // PtyManager keeps claudeBin as the default; per-spawn we override via env.
   const ptyMgr = new PtyManager({ claudeBin: opts.claudeBin });
   let ws = null;
   let attempt = 0;
@@ -98,12 +113,18 @@ async function runDaemon(opts) {
       });
       attempt = 0;
       const hostInfo = collectHostInfo();
-      const claudeVersion = detectClaudeVersion(opts.claudeBin);
+      // Probe every registered backend so the hub can see what this host can run.
+      const backendVersions = {};
+      for (const [name, b] of backends) {
+        try { backendVersions[name] = await b.detectVersion(b.bin); }
+        catch { backendVersions[name] = null; }
+      }
       ws.send(JSON.stringify({
         type: 'hello', host_name: opts.hostName,
         os: process.platform, arch: process.arch,
         capabilities: opts.capabilities || [],
-        claude_version: claudeVersion,
+        claude_version: backendVersions.claude || null,
+        backends: backendVersions,
         host_info: hostInfo,
       }));
       const local = store.list();
@@ -143,8 +164,37 @@ async function runDaemon(opts) {
             hostId = f.host_id;
             fs.writeFileSync(cfgPath, JSON.stringify({ host_id: hostId, host_name: opts.hostName }));
           } else if (f.type === 'spawn') {
+            // Two payload shapes:
+            //   Legacy:   { args: [...], env, cwd } — args are pre-built by the
+            //             client (current UI buildSpawnArgs path). Pass through.
+            //   Backend:  { agent: 'claude'|'opencode'|..., prompt, model,
+            //             system_prompt, allowed_tools, resume_session_id,
+            //             dangerous, args?, env, cwd } — daemon picks backend
+            //             and asks it to build argv. Falls back to default
+            //             backend if `agent` is unknown.
             try {
-              ptyMgr.spawn({ sessionId: f.session_id, cwd: f.cwd, args: f.args || [], env: f.env || {} });
+              let argv = f.args || [];
+              let env = f.env || {};
+              let bin = opts.claudeBin;
+              if (f.agent || hasStructuredFields(f)) {
+                const backend = backendsLib.pick(backends, f.agent, defaultBackend);
+                if (!backend) throw new Error(`no backend available for agent=${f.agent || defaultBackend}`);
+                const built = backend.buildSpawnArgs({
+                  cwd: f.cwd, args: f.args, env,
+                  prompt: f.prompt, model: f.model,
+                  system_prompt: f.system_prompt,
+                  allowed_tools: f.allowed_tools,
+                  resume_session_id: f.resume_session_id,
+                  dangerous: f.dangerous,
+                });
+                argv = built.argv;
+                env = { ...env, ...(built.env || {}) };
+                bin = backend.bin;
+              }
+              ptyMgr.spawn({
+                sessionId: f.session_id, cwd: f.cwd,
+                args: argv, env, binOverride: bin,
+              });
             } catch (e) {
               safeSend(ws, { type: 'spawn_err', session_id: f.session_id, error: e.message });
             }

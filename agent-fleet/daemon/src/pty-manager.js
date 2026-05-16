@@ -14,23 +14,26 @@ class PtyManager extends EventEmitter {
     this.killGraceMs = killGraceMs;
     this.sessions = new Map();
   }
-  spawn({ sessionId, cwd, args = [], env = {} }) {
+  spawn({ sessionId, cwd, args = [], env = {}, binOverride = null }) {
     // Resolve '~', '~/', or empty cwd to the daemon's $HOME.
     const home = process.env.HOME || '/root';
     let resolvedCwd = cwd;
     if (!resolvedCwd || resolvedCwd === '~') resolvedCwd = home;
     else if (resolvedCwd.startsWith('~/')) resolvedCwd = home + resolvedCwd.slice(1);
 
+    // Per-spawn bin override (chosen by backend registry, vt-0096). Falls back
+    // to claudeBin so legacy callers keep working.
+    const bin = binOverride || this.claudeBin;
     // Inject --session-id <fleet sid> for exact tokmon cost attribution.
     // Only when running claude AND caller didn't already pass --session-id.
     const finalArgs = args.slice();
-    const looksLikeClaude = /claude(\.|$)/i.test(this.claudeBin);
+    const looksLikeClaude = /claude(\.|$)/i.test(bin);
     const hasSessionFlag = finalArgs.some(a => a === '--session-id' || a.startsWith('--session-id='));
     if (looksLikeClaude && !hasSessionFlag && /^[0-9a-f-]{36}$/i.test(sessionId)) {
       finalArgs.unshift('--session-id', sessionId);
     }
 
-    const proc = pty.spawn(this.claudeBin, finalArgs, {
+    const proc = pty.spawn(bin, finalArgs, {
       name: 'xterm-color', cols: 120, rows: 30, cwd: resolvedCwd,
       env: { ...process.env, ...env },
     });
