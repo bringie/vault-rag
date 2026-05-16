@@ -134,6 +134,12 @@
     document.getElementById('wf-add-claude').onclick = () => canvas.addNode(newNode('claude'));
     document.getElementById('wf-add-branch').onclick = () => canvas.addNode(newNode('branch'));
     document.getElementById('wf-add-delay').onclick  = () => canvas.addNode(newNode('delay'));
+    document.getElementById('wf-add-transform')   ?.addEventListener('click', () => canvas.addNode(newNode('transform')));
+    document.getElementById('wf-add-http')        ?.addEventListener('click', () => canvas.addNode(newNode('http_request')));
+    document.getElementById('wf-add-notify')      ?.addEventListener('click', () => canvas.addNode(newNode('notify')));
+    document.getElementById('wf-add-set-variable')?.addEventListener('click', () => canvas.addNode(newNode('set_variable')));
+    document.getElementById('wf-add-fan-out')     ?.addEventListener('click', () => canvas.addNode(newNode('fan_out')));
+    document.getElementById('wf-add-aggregate')   ?.addEventListener('click', () => canvas.addNode(newNode('aggregate')));
     document.getElementById('wf-back').onclick       = () => location.hash = '#/workflows';
 
     document.getElementById('wf-save').onclick = async () => {
@@ -170,9 +176,15 @@
       const x = 120 + (d.nodes.length % 5) * 200;
       const y = 100 + Math.floor(d.nodes.length / 5) * 120;
       const base = { id: newId, type, position: { x, y } };
-      if (type === 'claude') return { ...base, target: { group: '' }, prompt: '', timeout_s: 300, headless: true };
-      if (type === 'branch') return { ...base, condition: 'true' };
-      if (type === 'delay')  return { ...base, seconds: 10 };
+      if (type === 'claude')       return { ...base, target: { group: '' }, prompt: '', timeout_s: 300, headless: true };
+      if (type === 'branch')       return { ...base, condition: 'true' };
+      if (type === 'delay')        return { ...base, seconds: 10 };
+      if (type === 'transform')    return { ...base, expr: 'ctx => ctx.n1 && ctx.n1.output' };
+      if (type === 'http_request') return { ...base, method: 'GET', url: 'https://', headers: {}, body: null, timeout_ms: 30000 };
+      if (type === 'notify')       return { ...base, webhook_url: '', message_template: '' };
+      if (type === 'set_variable') return { ...base, key: 'name', value_expr: '"value"' };
+      if (type === 'fan_out')      return { ...base, targets: [], prompt: '', model: '', timeout_s: 300, headless: true };
+      if (type === 'aggregate')    return { ...base, input_ref: '', op: 'concat' };
       return base;
     }
 
@@ -208,6 +220,68 @@
           <label>${esc(t('wf_inspect.seconds'))}</label><input id="i-sec" type="number" value="${cur.seconds || 0}">
         `;
         wireInputs(cur.id, ['sec']);
+      } else if (cur.type === 'transform') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (transform)</h3>
+          <label>${esc(t('wf_inspect.expr_hint'))}</label>
+          <textarea id="i-expr">${esc(cur.expr || '')}</textarea>
+        `;
+        wireInputs(cur.id, ['expr']);
+      } else if (cur.type === 'http_request') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (http_request)</h3>
+          <label>method</label>
+          <select id="i-method">
+            ${['GET','POST','PUT','PATCH','DELETE'].map(m =>
+              `<option value="${m}" ${cur.method===m?'selected':''}>${m}</option>`).join('')}
+          </select>
+          <label>url (supports {{n1.output}})</label><input id="i-url" value="${esc(cur.url || '')}">
+          <label>headers (JSON)</label>
+          <textarea id="i-headers" rows="2">${esc(JSON.stringify(cur.headers || {}))}</textarea>
+          <label>body (string or JSON; templated)</label>
+          <textarea id="i-body" rows="3">${esc(typeof cur.body === 'string' ? cur.body : JSON.stringify(cur.body || ''))}</textarea>
+          <label>timeout_ms</label><input id="i-timeout-ms" type="number" value="${cur.timeout_ms || 30000}">
+        `;
+        wireInputs(cur.id, ['method','url','headers','body','timeout-ms']);
+      } else if (cur.type === 'notify') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (notify)</h3>
+          <label>webhook_url</label><input id="i-webhook" value="${esc(cur.webhook_url || '')}">
+          <label>message_template (supports {{n1.output}})</label>
+          <textarea id="i-msg" rows="3">${esc(cur.message_template || '')}</textarea>
+        `;
+        wireInputs(cur.id, ['webhook','msg']);
+      } else if (cur.type === 'set_variable') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (set_variable)</h3>
+          <label>key (becomes inputs.<i>key</i>)</label><input id="i-key" value="${esc(cur.key || '')}">
+          <label>value_expr (JS; sees ctx vars)</label>
+          <textarea id="i-value-expr" rows="2">${esc(cur.value_expr || '')}</textarea>
+        `;
+        wireInputs(cur.id, ['key','value-expr']);
+      } else if (cur.type === 'fan_out') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (fan_out)</h3>
+          <label>targets (JSON array of {group}|{host_name}|{capability})</label>
+          <textarea id="i-targets" rows="3">${esc(JSON.stringify(cur.targets || [], null, 2))}</textarea>
+          <label>prompt (sent to each target; templated)</label>
+          <textarea id="i-prompt-fan">${esc(cur.prompt || '')}</textarea>
+          <label>model (optional)</label><input id="i-model" value="${esc(cur.model || '')}">
+          <label>timeout_s (per child)</label><input id="i-timeout-fan" type="number" value="${cur.timeout_s || 300}">
+        `;
+        wireInputs(cur.id, ['targets','prompt-fan','model','timeout-fan']);
+      } else if (cur.type === 'aggregate') {
+        insp.innerHTML = `
+          <h3>${esc(cur.id)} (aggregate)</h3>
+          <label>input_ref (id of a fan_out node, e.g. n2)</label>
+          <input id="i-ref" value="${esc(cur.input_ref || '')}">
+          <label>op</label>
+          <select id="i-op">
+            ${['concat','count_exit','first_success','all_outputs'].map(o =>
+              `<option value="${o}" ${cur.op===o?'selected':''}>${o}</option>`).join('')}
+          </select>
+        `;
+        wireInputs(cur.id, ['ref','op']);
       }
     }
 
@@ -225,8 +299,30 @@
           if (k === 'prompt')   cur.prompt = elInp.value;
           if (k === 'timeout')  cur.timeout_s = parseInt(elInp.value, 10) || 300;
           if (k === 'headless') cur.headless = elInp.checked;
-          if (k === 'cond')     cur.condition = elInp.value;
-          if (k === 'sec')      cur.seconds = parseInt(elInp.value, 10) || 0;
+          if (k === 'cond')         cur.condition = elInp.value;
+          if (k === 'sec')          cur.seconds = parseInt(elInp.value, 10) || 0;
+          // transform
+          if (k === 'expr')         cur.expr = elInp.value;
+          // http_request
+          if (k === 'method')       cur.method = elInp.value;
+          if (k === 'url')          cur.url = elInp.value;
+          if (k === 'headers')      { try { cur.headers = JSON.parse(elInp.value || '{}'); } catch {} }
+          if (k === 'body')         { try { cur.body = JSON.parse(elInp.value); } catch { cur.body = elInp.value; } }
+          if (k === 'timeout-ms')   cur.timeout_ms = parseInt(elInp.value, 10) || 30000;
+          // notify
+          if (k === 'webhook')      cur.webhook_url = elInp.value;
+          if (k === 'msg')          cur.message_template = elInp.value;
+          // set_variable
+          if (k === 'key')          cur.key = elInp.value;
+          if (k === 'value-expr')   cur.value_expr = elInp.value;
+          // fan_out
+          if (k === 'targets')      { try { cur.targets = JSON.parse(elInp.value || '[]'); } catch {} }
+          if (k === 'prompt-fan')   cur.prompt = elInp.value;
+          if (k === 'model')        cur.model = elInp.value || undefined;
+          if (k === 'timeout-fan')  cur.timeout_s = parseInt(elInp.value, 10) || 300;
+          // aggregate
+          if (k === 'ref')          cur.input_ref = elInp.value;
+          if (k === 'op')           cur.op = elInp.value;
           canvas.replaceDefinition(d);
           definition = d;
         };

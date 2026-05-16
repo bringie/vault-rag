@@ -113,6 +113,165 @@ function createRunner(deps) {
     return { result };
   }
 
+  // transform: evaluate JS expression against ctx, no Claude session.
+  // Same vm.runInContext policy as branch — NOT a security sandbox.
+  // Use case: extract a field from prior output without burning tokens
+  // on "split this string by newline" prompts.
+  function execTransform(node, ctx) {
+    if (!node.expr) throw new Error('transform: expr required');
+    const sandbox = vm.createContext({ ...ctx });
+    try {
+      const result = vm.runInContext(node.expr, sandbox, { timeout: 200 });
+      const output = typeof result === 'string' ? result : JSON.stringify(result);
+      return { output, exit_code: 0 };
+    } catch (e) {
+      throw new Error(`transform error: ${e.message}`);
+    }
+  }
+
+  // http_request: call external URL with template-substituted url/headers/body.
+  // 30s default timeout; status surfaced; non-2xx → exit_code=1 (workflow author
+  // can branch on it). Replaces "ask claude to call this API" prompts.
+  async function execHttpRequest(node, ctx, runId) {
+    const url = substituteTemplates(node.url, ctx);
+    if (!url) throw new Error('http_request: url required');
+    const method = (node.method || 'GET').toUpperCase();
+    const headers = {};
+    for (const [k, v] of Object.entries(node.headers || {})) {
+      headers[k] = substituteTemplates(v, ctx);
+    }
+    let body = null;
+    if (!['GET', 'HEAD'].includes(method) && node.body != null) {
+      body = typeof node.body === 'string'
+        ? substituteTemplates(node.body, ctx)
+        : substituteTemplates(JSON.stringify(node.body), ctx);
+      if (!headers['content-type'] && typeof node.body !== 'string') {
+        headers['content-type'] = 'application/json';
+      }
+    }
+    const controller = new AbortController();
+    activeControllers.set(runId, controller);
+    const timeoutMs = Math.min(Math.max(node.timeout_ms || 30000, 1000), 120000);
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { method, headers, body, signal: controller.signal });
+      const text = await res.text();
+      return { output: text.slice(0, 65536), exit_code: res.ok ? 0 : 1, status: res.status };
+    } catch (e) {
+      throw new Error(`http_request error: ${e.message}`);
+    } finally {
+      clearTimeout(t);
+      activeControllers.delete(runId);
+    }
+  }
+
+  // notify: fire-and-forget POST a webhook. Output records sent status; the
+  // workflow does not stop on a non-2xx. Use case: mid-workflow Slack ping.
+  async function execNotify(node, ctx, runId) {
+    const url = substituteTemplates(node.webhook_url, ctx);
+    if (!url) throw new Error('notify: webhook_url required');
+    const message = substituteTemplates(node.message_template || '', ctx);
+    const controller = new AbortController();
+    activeControllers.set(runId, controller);
+    const t = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: message, message }),
+        signal: controller.signal,
+      });
+      return { output: `notify status=${res.status}`, exit_code: 0, status: res.status };
+    } catch (e) {
+      // Best-effort — don't fail the run if the webhook is down.
+      return { output: `notify failed: ${e.message}`, exit_code: 0, error: e.message };
+    } finally {
+      clearTimeout(t);
+      activeControllers.delete(runId);
+    }
+  }
+
+  // set_variable: evaluate value_expr in sandbox, write result to ctx.inputs[key].
+  // Lets the author give meaningful names instead of {{n3.output}} chains.
+  function execSetVariable(node, ctx) {
+    const key = String(node.key || '').trim();
+    if (!key) throw new Error('set_variable: key required');
+    if (!node.value_expr) throw new Error('set_variable: value_expr required');
+    const sandbox = vm.createContext({ ...ctx });
+    let value;
+    try {
+      value = vm.runInContext(node.value_expr, sandbox, { timeout: 200 });
+    } catch (e) {
+      throw new Error(`set_variable error: ${e.message}`);
+    }
+    ctx.inputs[key] = value;
+    return { output: `inputs.${key} set`, exit_code: 0, value };
+  }
+
+  // fan_out: dispatch the same Claude prompt to N targets in parallel.
+  // Each target is the same shape as a claude-node target ({group}, {host_name},
+  // {capability}). Results collected as an array; child errors do NOT abort the
+  // fan_out (they are recorded with exit_code=-1 in their slot).
+  async function execFanOut(node, ctx, runId) {
+    const targets = Array.isArray(node.targets) ? node.targets : [];
+    if (!targets.length) throw new Error('fan_out: targets[] required');
+    const promptTpl = node.prompt || '';
+    const calls = targets.map((target, idx) => {
+      const childNode = {
+        id: `${node.id}.${idx}`,
+        type: 'claude',
+        target,
+        prompt: promptTpl,
+        model: node.model,
+        timeout_s: node.timeout_s || 300,
+        headless: node.headless !== false,
+      };
+      const childPrompt = substituteTemplates(promptTpl, ctx);
+      const ctrl = new AbortController();
+      return deps.spawnClaude({ node: childNode, prompt: childPrompt, ctx, runId, signal: ctrl.signal })
+        .then(r => ({ target, output: r.output, exit_code: r.exit_code, session_id: r.session_id }))
+        .catch(e => ({ target, error: e.message, exit_code: -1 }));
+    });
+    const results = await Promise.all(calls);
+    return { output: `fan_out ${results.length} results`, exit_code: 0, results };
+  }
+
+  // aggregate: reduce a prior fan_out result array via a fixed op set.
+  // Ops:
+  //   concat         — join all outputs with a separator
+  //   count_exit     — { "0": n, "1": n, ... } counts by exit_code
+  //   first_success  — first result whose exit_code === 0 (or empty)
+  //   all_outputs    — JSON array of outputs
+  function execAggregate(node, ctx) {
+    const ref = String(node.input_ref || '').trim();
+    if (!ref) throw new Error('aggregate: input_ref required');
+    const src = ctx[ref];
+    if (!src || !Array.isArray(src.results)) {
+      throw new Error(`aggregate: ${ref} has no .results array`);
+    }
+    const arr = src.results;
+    const op = String(node.op || 'concat');
+    let output;
+    if (op === 'concat') {
+      output = arr.map(r => r.output || '').join('\n---\n');
+    } else if (op === 'count_exit') {
+      const map = {};
+      for (const r of arr) {
+        const k = String(r.exit_code ?? '?');
+        map[k] = (map[k] || 0) + 1;
+      }
+      output = JSON.stringify(map);
+    } else if (op === 'first_success') {
+      const ok = arr.find(r => r.exit_code === 0);
+      output = ok ? (ok.output || '') : '';
+    } else if (op === 'all_outputs') {
+      output = JSON.stringify(arr.map(r => r.output || ''));
+    } else {
+      throw new Error(`aggregate: unknown op ${op}`);
+    }
+    return { output: String(output), exit_code: 0 };
+  }
+
   async function execDelay(node, runId) {
     const ms = Math.max(0, (node.seconds || 0) * 1000);
     if (ms === 0) return {};
@@ -170,9 +329,15 @@ function createRunner(deps) {
       const ctxData = { ...outputs, inputs };
       let result;
       try {
-        if (node.type === 'claude')      result = await execClaude(node, ctxData, runId);
-        else if (node.type === 'branch') result = execBranch(node, ctxData);
-        else if (node.type === 'delay')  result = await execDelay(node, runId);
+        if      (node.type === 'claude')        result = await execClaude(node, ctxData, runId);
+        else if (node.type === 'branch')        result = execBranch(node, ctxData);
+        else if (node.type === 'delay')         result = await execDelay(node, runId);
+        else if (node.type === 'transform')     result = execTransform(node, ctxData);
+        else if (node.type === 'http_request')  result = await execHttpRequest(node, ctxData, runId);
+        else if (node.type === 'notify')        result = await execNotify(node, ctxData, runId);
+        else if (node.type === 'set_variable')  result = execSetVariable(node, ctxData);
+        else if (node.type === 'fan_out')       result = await execFanOut(node, ctxData, runId);
+        else if (node.type === 'aggregate')     result = execAggregate(node, ctxData);
         else throw new Error(`unknown node type: ${node.type}`);
       } catch (e) {
         if (e.message === 'cancelled') {

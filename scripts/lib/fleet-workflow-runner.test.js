@@ -231,3 +231,125 @@ test('branch condition does NOT interpolate output into source (injection preven
     assert.ok(final.state.outputs.nE, 'else branch should have run');
   });
 });
+
+// --- New blocks (vt-0108) ---
+
+test('transform: evaluates expr against ctx', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'delay', seconds: 0 },
+        { id: 'n2', type: 'transform', expr: '"hello " + inputs.who' },
+      ],
+      edges: [{ from: 'n1', to: 'n2' }],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-tf', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def, state: { inputs: { who: 'fleet' } } });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n2.output, 'hello fleet');
+  });
+});
+
+test('set_variable: writes to inputs ctx, visible to next node', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'set_variable', key: 'greeting', value_expr: '"hi"' },
+        { id: 'n2', type: 'transform', expr: 'inputs.greeting + " there"' },
+      ],
+      edges: [{ from: 'n1', to: 'n2' }],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-sv', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(final.state.outputs.n2.output, 'hi there');
+  });
+});
+
+test('fan_out + aggregate concat: parallel spawn, joined output', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'fan_out',
+          targets: [{ host_name: 'h1' }, { host_name: 'h2' }, { host_name: 'h3' }],
+          prompt: 'go', timeout_s: 5 },
+        { id: 'n2', type: 'aggregate', input_ref: 'n1', op: 'concat' },
+      ],
+      edges: [{ from: 'n1', to: 'n2' }],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-fo', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    let calls = 0;
+    const deps = makeDeps(async ({ node }) => {
+      calls += 1;
+      return { output: `from-${node.target.host_name}`, exit_code: 0, session_id: 's' + calls };
+    });
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.strictEqual(calls, 3, 'fan_out fired all 3 child claude spawns');
+    assert.strictEqual(final.state.outputs.n1.results.length, 3);
+    assert.strictEqual(final.state.outputs.n2.output, 'from-h1\n---\nfrom-h2\n---\nfrom-h3');
+  });
+});
+
+test('aggregate count_exit: tallies exit codes from fan_out', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [
+        { id: 'n1', type: 'fan_out',
+          targets: [{ host_name: 'a' }, { host_name: 'b' }, { host_name: 'c' }],
+          prompt: 'p', timeout_s: 5 },
+        { id: 'n2', type: 'aggregate', input_ref: 'n1', op: 'count_exit' },
+      ],
+      edges: [{ from: 'n1', to: 'n2' }],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-cnt', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const codes = { a: 0, b: 1, c: 0 };
+    const deps = makeDeps(async ({ node }) => ({
+      output: '', exit_code: codes[node.target.host_name], session_id: 's',
+    }));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'done');
+    assert.deepStrictEqual(JSON.parse(final.state.outputs.n2.output), { '0': 2, '1': 1 });
+  });
+});
+
+test('transform: invalid expr fails the run with failed_node_id set', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const def = {
+      start: 'n1',
+      nodes: [{ id: 'n1', type: 'transform', expr: 'totally.broken.expr' }],
+      edges: [],
+    };
+    const w = await wfDb.createWorkflow(c, { name: 'wf-bad', definition: def });
+    const r = await wfDb.createRun(c, { workflowId: w.id, snapshot: def });
+    const deps = makeDeps(async () => ({}));
+    deps.db = c;
+    await createRunner(deps).runToCompletion(r.id);
+    const final = await wfDb.getRun(c, r.id);
+    assert.strictEqual(final.status, 'failed');
+    assert.strictEqual(final.failed_node_id, 'n1');
+  });
+});

@@ -21,8 +21,14 @@
       const target = t.group ? `gr:${t.group}` : t.host_name ? t.host_name : t.capability ? `cap:${t.capability}` : '?';
       return `${node.id} → ${target}`;
     }
-    if (node.type === 'branch') return tt('workflows.node.if_prefix', { cond: (node.condition || '').slice(0, 22) });
-    if (node.type === 'delay')  return tt('workflows.node.wait_seconds', { sec: node.seconds || 0 });
+    if (node.type === 'branch')       return tt('workflows.node.if_prefix', { cond: (node.condition || '').slice(0, 22) });
+    if (node.type === 'delay')        return tt('workflows.node.wait_seconds', { sec: node.seconds || 0 });
+    if (node.type === 'transform')    return `${node.id}: transform`;
+    if (node.type === 'http_request') return `${node.id}: http ${(node.method || 'GET').toUpperCase()}`;
+    if (node.type === 'notify')       return `${node.id}: notify`;
+    if (node.type === 'set_variable') return `${node.id}: set ${node.key || '?'}`;
+    if (node.type === 'fan_out')      return `${node.id}: fan_out → ${(node.targets || []).length}`;
+    if (node.type === 'aggregate')    return `${node.id}: ${node.op || 'concat'}`;
     return node.id;
   }
 
@@ -96,8 +102,14 @@
                      status === 'failed'  ? '#7a2a2a' :
                                             '#2a3441';
         const stroke = n.id === selectedId ? '#7ad1ff' :
-                       n.type === 'claude' ? '#5985b8' :
-                       n.type === 'branch' ? '#c08a3a' :
+                       n.type === 'claude'        ? '#5985b8' :
+                       n.type === 'branch'        ? '#c08a3a' :
+                       n.type === 'fan_out'       ? '#7a5fb8' :
+                       n.type === 'aggregate'     ? '#5fb8a3' :
+                       n.type === 'http_request'  ? '#b8a05f' :
+                       n.type === 'notify'        ? '#b87a5f' :
+                       n.type === 'transform'     ? '#9ab85f' :
+                       n.type === 'set_variable'  ? '#5fb8b3' :
                        '#6b7a8a';
         el('rect', {
           x: 0, y: 0, width: NODE_W, height: NODE_H,
