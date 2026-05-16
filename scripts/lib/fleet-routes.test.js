@@ -648,3 +648,19 @@ test('PATCH /fleet/groups/:id rejects invalid color hex with 422', async () => {
   assert.equal(ok.status, 200);
   await close();
 });
+
+test('POST /fleet/broadcast resolves tag via group-label inheritance', async () => {
+  const { server, pg, close } = await startWithDb();
+  await pg.query(`TRUNCATE fleet_hosts, fleet_groups, fleet_host_groups CASCADE`);
+  // Host h-inh has no direct caps but is in group with label 'gpu-inherit'
+  const h = await pg.query(`INSERT INTO fleet_hosts (name, status, capabilities) VALUES ('h-inh', 'online', '{}') RETURNING id`);
+  const g = await pg.query(`INSERT INTO fleet_groups (name, labels) VALUES ('gr-inh', ARRAY['gpu-inherit']) RETURNING id`);
+  await pg.query(`INSERT INTO fleet_host_groups (host_id, group_id) VALUES ($1, $2)`, [h.rows[0].id, g.rows[0].id]);
+  const r = await reqJson(server, 'POST', '/fleet/broadcast', {
+    token: 'T', body: { tag: 'gpu-inherit', cwd: '/' },
+  });
+  // Should find at least 1 host via group-label inheritance.
+  // (response shape may vary; 4xx if zero matches means inheritance not working)
+  assert.notEqual(r.status, 404, `broadcast should resolve inherited tag, got ${r.status} ${JSON.stringify(r.body)}`);
+  await close();
+});

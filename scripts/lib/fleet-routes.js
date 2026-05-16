@@ -358,7 +358,12 @@ async function handleBroadcast({ req, res, body, ctx }) {
   if (!tag && !group && !body.all) return send(res, 422, { error: 'tag|group|all required' });
   const all = await fleetDb.listHosts(ctx.db);
   let candidates = all.filter(h => h.status === 'online');
-  if (tag) candidates = candidates.filter(h => (h.capabilities || []).includes(tag));
+  if (tag) {
+    // Effective tag: direct h.capabilities ∪ group labels — matches handleDispatch (vt-0078)
+    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
+    const taggedIds = new Set(taggedHosts.map(h => h.id));
+    candidates = candidates.filter(h => taggedIds.has(h.id));
+  }
   if (group) {
     const g = await fleetDb.getGroupByName(ctx.db, group);
     if (!g) return send(res, 404, { error: `group not found: ${group}` });
@@ -818,8 +823,17 @@ async function spawnClaudeForWorkflow(ctx, node, prompt, runId) {
   let candidates = all.filter(h => h.status === 'online');
   if (t.host_id)   candidates = candidates.filter(h => h.id === t.host_id);
   if (t.host_name) candidates = candidates.filter(h => h.name === t.host_name || h.display_name === t.host_name);
-  if (t.tag)       candidates = candidates.filter(h => (h.capabilities || []).includes(t.tag));
-  if (t.capability) candidates = candidates.filter(h => (h.capabilities || []).includes(t.capability));
+  // Effective tag/capability: direct h.capabilities ∪ group labels — matches handleDispatch (vt-0079)
+  if (t.tag) {
+    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, t.tag);
+    const taggedIds = new Set(taggedHosts.map(h => h.id));
+    candidates = candidates.filter(h => taggedIds.has(h.id));
+  }
+  if (t.capability) {
+    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, t.capability);
+    const taggedIds = new Set(taggedHosts.map(h => h.id));
+    candidates = candidates.filter(h => taggedIds.has(h.id));
+  }
   if (t.group) {
     const g = await fleetDb.getGroupByName(ctx.db, t.group);
     if (!g) throw new Error(`group not found: ${t.group}`);
