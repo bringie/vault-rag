@@ -71,17 +71,34 @@ async function withPg(fn) {
   }
 }
 
-async function readBody(req) {
+// vt-0126 follow-up: same body-size cap pattern as fleet-routes readBody.
+// Non-fleet endpoints (/api/put, /api/task/*, /api/secrets/*) used to accept
+// unbounded bodies — a 1 GiB POST would OOM the container.
+const MAX_RAG_BODY_BYTES = 4 * 1024 * 1024;  // 4 MiB: vault notes can be large
+async function readBody(req, { maxBytes = MAX_RAG_BODY_BYTES } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', c => chunks.push(c));
+    let bytes = 0;
+    let aborted = false;
+    req.on('data', c => {
+      if (aborted) return;
+      bytes += c.length;
+      if (bytes > maxBytes) {
+        aborted = true;
+        const err = new Error(`body exceeds ${maxBytes} bytes`);
+        err.statusCode = 413;
+        return reject(err);
+      }
+      chunks.push(c);
+    });
     req.on('end', () => {
+      if (aborted) return;
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw) return resolve({});
       try { resolve(JSON.parse(raw)); }
       catch (e) { reject(new Error(`bad json: ${e.message}`)); }
     });
-    req.on('error', reject);
+    req.on('error', (e) => { if (!aborted) reject(e); });
   });
 }
 
@@ -226,6 +243,26 @@ async function handlePut(body) {
   const finalRel = resolveWritePath(agent_id, relPath);
   const full = path.join(VAULT, finalRel);
   if (!full.startsWith(VAULT + path.sep)) throw new Error('bad path');
+  // I8 (audit pass 2): a pre-existing symlink anywhere in the chain (planted
+  // by the indexer, a misbehaving agent, or a foreign process) would let a
+  // PUT escape the vault root. Resolve the actual on-disk path of the parent
+  // dir and verify it's still under VAULT before opening.
+  if (fs.existsSync(full)) {
+    const realFull = fs.realpathSync(full);
+    if (!realFull.startsWith(VAULT + path.sep)) throw new Error('bad path (symlink escape)');
+  } else {
+    let parent = path.dirname(full);
+    while (parent && parent.startsWith(VAULT)) {
+      if (fs.existsSync(parent)) {
+        const realParent = fs.realpathSync(parent);
+        if (!realParent.startsWith(VAULT + path.sep) && realParent !== VAULT) {
+          throw new Error('bad path (symlink escape)');
+        }
+        break;
+      }
+      parent = path.dirname(parent);
+    }
+  }
 
   const exists = fs.existsSync(full);
   if (mode === 'create' && exists) {
@@ -336,7 +373,7 @@ const server = http.createServer(async (req, res) => {
       send(res, out.status, out.body);
     } catch (e) {
       console.error(`[rag-api] ${req.url}: ${e.stack || e.message}`);
-      send(res, 500, { error: String(e.message || e) });
+      send(res, e.statusCode || 500, { error: scrubError(e.message || String(e)) });
     }
     return;
   }
@@ -349,10 +386,23 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, out);
   } catch (e) {
     console.error(`[rag-api] ${req.url}: ${e.message}`);
-    const code = e.code && Number.isInteger(e.code) ? e.code : 400;
-    send(res, code, { error: e.message });
+    const code = e.statusCode || (e.code && Number.isInteger(e.code) ? e.code : 400);
+    send(res, code, { error: scrubError(e.message) });
   }
 });
+
+// I10 (audit pass 2): strip pg connection details ("host=...", "port=...",
+// "user=...") and absolute file paths from error messages before they reach
+// the wire. Server-side logs keep the full message via console.error.
+function scrubError(msg) {
+  if (!msg) return 'internal error';
+  return String(msg)
+    .replace(/\bhost\s*=\s*\S+/gi, 'host=<redacted>')
+    .replace(/\bport\s*=\s*\d+/gi, 'port=<redacted>')
+    .replace(/\buser\s*=\s*\S+/gi, 'user=<redacted>')
+    .replace(/(connection terminated|ECONNREFUSED|ETIMEDOUT)[\s\S]{0,200}/gi, '$1')
+    .slice(0, 500);
+}
 
 // WS upgrade for fleet
 fleetRoutes.attachUpgrade(server, () => fleetCtx);

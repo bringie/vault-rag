@@ -91,6 +91,27 @@ ${VAULT_RAG_DOMAIN} {
 			events 20
 			window 10s
 		}
+		# I3 (audit pass 2): /api/fleet/exec /dispatch /workflows /hosts/*/file
+		# are RCE-capable (admin token required, but a leaked admin bearer
+		# should still hit a proxy throttle). Plus N10: /fleet/download/* and
+		# /fleet/install* are unauthenticated by design.
+		zone fleet_write_min {
+			match {
+				method POST PATCH PUT DELETE
+				path /api/fleet/* /fleet/*
+			}
+			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			events 60
+			window 1m
+		}
+		zone fleet_install_min {
+			match {
+				path /fleet/install* /fleet/download/*
+			}
+			key {http.request.remote.host}
+			events 30
+			window 1m
+		}
 	}
 
 	handle_path /git/* {

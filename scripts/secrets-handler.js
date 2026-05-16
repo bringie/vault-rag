@@ -49,12 +49,20 @@ class SecretsHandler {
     this.repoPath = repoPath;
     this.skipGit = skipGit;
     this.fetchTtlMs = fetchTtlMs;
+    // I6 (audit pass 2): clear the decrypted blob from memory once we haven't
+    // touched it for this long. Bounds the window where /proc/<pid>/mem or
+    // gcore would yield every secret in cleartext.
+    this.clearAfterMs = 60 * 1000;
     // Relative path of vault.age inside repoPath — needed for git log lookups.
     this._vaultAgeRel = repoPath ? path.relative(repoPath, vaultAgePath) : vaultAgePath;
     this._blob = null;
     this._blobSha = null;
     this._lastFetch = 0;
+    this._lastAccess = 0;
     this._writeMutex = Promise.resolve();
+    // I12: serialise readers so N concurrent `get()`s don't each spawn their
+    // own `git fetch` + `age -d`. Reuse the same in-flight refresh.
+    this._refreshInFlight = null;
   }
 
   async _decryptVaultAge() {
@@ -69,20 +77,40 @@ class SecretsHandler {
   }
 
   async _ensureFresh() {
+    // I12: coalesce concurrent refreshes into a single git fetch + decrypt.
+    if (this._refreshInFlight) return this._refreshInFlight;
+    this._refreshInFlight = this._doEnsureFresh().finally(() => {
+      this._refreshInFlight = null;
+    });
+    return this._refreshInFlight;
+  }
+
+  async _doEnsureFresh() {
+    // I6: drop a cleartext blob that's gone idle past clearAfterMs.
+    if (this._blob && this._lastAccess && Date.now() - this._lastAccess > this.clearAfterMs) {
+      this._blob = null;
+      this._blobSha = null;
+      this._lastFetch = 0;
+    }
     if (this.skipGit) {
       this._blob = await this._decryptVaultAge();
+      this._lastAccess = Date.now();
       return;
     }
     const now = Date.now();
-    if (now - this._lastFetch < this.fetchTtlMs && this._blob) return;
+    if (now - this._lastFetch < this.fetchTtlMs && this._blob) {
+      this._lastAccess = now;
+      return;
+    }
     await this._gitFetch();
     const remoteSha = await this._headShaForFile(this._vaultAgeRel);
-    if (remoteSha !== this._blobSha) {
+    if (remoteSha !== this._blobSha || !this._blob) {
       await this._gitPull();
       this._blob = await this._decryptVaultAge();
       this._blobSha = remoteSha;
     }
     this._lastFetch = now;
+    this._lastAccess = now;
   }
 
   async get(name) {

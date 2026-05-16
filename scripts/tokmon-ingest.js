@@ -46,10 +46,28 @@ async function withPg(fn) {
   }
 }
 
+// C2 (audit pass 2): constant-time bearer compare.
+function tokenEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function authOK(req) {
   const h = req.headers['x-tokmon-token']
         || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  return h && h === TOKEN;
+  return !!(h && TOKEN && tokenEqual(h, TOKEN));
+}
+
+// I9 (audit pass 2): reject backdated / future-dated event timestamps so a
+// buggy shipper can't corrupt cost rollup queries with arbitrary ts values.
+const TS_MAX_SKEW_MS = 30 * 24 * 60 * 60 * 1000;  // 30 days either side
+function isPlausibleTs(ts) {
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t)) return false;
+  return Math.abs(t - Date.now()) < TS_MAX_SKEW_MS;
 }
 
 function readBody(req, limit = 16 * 1024 * 1024) {
@@ -193,8 +211,13 @@ const server = http.createServer(async (req, res) => {
       const events = Array.isArray(payload?.events) ? payload.events : null;
       if (!events) return send(res, 400, { error: 'events array required' });
       if (events.length > 5000) return send(res, 413, { error: 'batch too large (max 5000)' });
+      // I9 (audit pass 2): drop events whose ts is implausible (>30d skew
+      // from now). Their tool_calls[].ts is sanitized inside ingestBulk.
+      const filtered = events.filter(e => isPlausibleTs(e.ts));
+      const dropped = events.length - filtered.length;
 
-      const result = await ingestBulk(events);
+      const result = await ingestBulk(filtered);
+      if (dropped) result.dropped_implausible_ts = dropped;
       return send(res, 200, { ok: true, ...result });
     }
     return send(res, 404, { error: 'not found' });

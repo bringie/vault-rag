@@ -1,6 +1,7 @@
 'use strict';
 // fleet-routes: HTTP + WS handlers for agent-fleet. Mounted by rag-api.js.
 
+const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
 const fleetDb = require('./fleet-db');
 const fleetStatic = require('./fleet-static');
@@ -50,9 +51,20 @@ function readBody(req, { maxBytes = MAX_BODY_BYTES } = {}) {
   });
 }
 
+// C2 (audit pass 2): constant-time bearer compare. Plain `===` is vulnerable
+// to a network-side timing oracle that recovers the token byte-by-byte. The
+// same helper is in mcp-shim.js — keep them in sync if the format changes.
+function tokenEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function checkAuth(req, token) {
   const auth = req.headers.authorization || '';
-  return auth === `Bearer ${token}`;
+  return tokenEqual(auth, `Bearer ${token}`);
 }
 
 // vt-0124: split admin from viewer. When VAULT_RAG_FLEET_ADMIN_TOKEN is set,
@@ -62,8 +74,8 @@ function checkAuth(req, token) {
 // to lock it down.
 function checkAdminAuth(req, ctx) {
   const auth = req.headers.authorization || '';
-  if (ctx.adminToken) return auth === `Bearer ${ctx.adminToken}`;
-  return auth === `Bearer ${ctx.token}`;
+  if (ctx.adminToken) return tokenEqual(auth, `Bearer ${ctx.adminToken}`);
+  return tokenEqual(auth, `Bearer ${ctx.token}`);
 }
 
 // Endpoints that mutate state, execute code on a host, edit workflows, or
@@ -160,7 +172,9 @@ function makeBus() {
     async fileOp(hostId, op, path, content) {
       const d = daemonsByHost.get(hostId);
       if (!d) throw new Error('host offline');
-      const req_id = Math.random().toString(36).slice(2);
+      // H4 (audit pass 2): unpredictable req_id so a compromised co-daemon
+      // can't race-resolve another daemon's pending fileOp by spoofing the id.
+      const req_id = crypto.randomBytes(8).toString('hex');
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pendingFileReqs.delete(req_id);
@@ -1679,7 +1693,11 @@ function attach(server, ctx) {
   // bound after attach() (see rag-api boot flow). See ensureWorkflowRunner.
   server._fleetCtx = merged;
 
-  const wss = new WebSocketServer({ noServer: true });
+  // C3 (audit pass 2): per-frame cap. A compromised daemon WS could send
+  // an unbounded `pty_data` payload that lands in the ring buffer + transcript
+  // batcher. 4 MiB covers any realistic terminal flush; bigger payloads abort
+  // the socket.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
   server._fleetWss = wss;
 
   server.on('request', (req, res) => {
@@ -1704,14 +1722,16 @@ function acceptWsUpgrade(ws, { role, auth, params, ctx }) {
   const adminBearer = ctx.adminToken ? `Bearer ${ctx.adminToken}` : null;
   const viewerBearer = `Bearer ${ctx.token}`;
   // Daemon WS executes code on a host — requires admin token when configured.
-  // Other viewer roles are read-only; either token works.
+  // Other viewer roles are read-only; either token works. C2: constant-time
+  // comparisons throughout (auth flows in from a TLS-terminated WS handshake;
+  // a timing oracle is realistic).
   if (role === 'daemon') {
     const needed = adminBearer || viewerBearer;
-    if (auth !== needed) return ws.close(4001, 'unauthorized');
+    if (!tokenEqual(auth, needed)) return ws.close(4001, 'unauthorized');
   } else {
-    if (auth !== viewerBearer && auth !== adminBearer) {
-      return ws.close(4001, 'unauthorized');
-    }
+    const viewerOk = tokenEqual(auth, viewerBearer);
+    const adminOk = adminBearer && tokenEqual(auth, adminBearer);
+    if (!viewerOk && !adminOk) return ws.close(4001, 'unauthorized');
   }
   if (role !== 'daemon' && role !== 'viewer' && role !== 'workflow_viewer' && role !== 'metrics_viewer') {
     return ws.close(4003, 'invalid role');
@@ -1748,8 +1768,10 @@ function attachUpgrade(server, getCtx) {
   if (server._fleetUpgradeAttached) return;
   server._fleetUpgradeAttached = true;
   // Accept bearer.<token> subprotocol so browsers (no header API) can authenticate.
+  // C3: per-frame cap (see attach() for rationale).
   const wss = new WebSocketServer({
     noServer: true,
+    maxPayload: 4 * 1024 * 1024,
     handleProtocols: (protos) => {
       for (const p of protos) if (p.startsWith('bearer.')) return p;
       return false;

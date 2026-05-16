@@ -192,7 +192,10 @@ services:
       - FORGEJO__database__PASSWD=${VAULT_RAG_PG_PASSWORD}
     ports:
       - "127.0.0.1:3000:3000"
-      - "222:22"
+      # H7 (audit pass 2): loopback bind — public 222:22 exposed Forgejo SSH
+      # to the internet on hosts with a public IP. Operators who need remote
+      # git-over-ssh should reverse-proxy via Caddy or whitelist explicitly.
+      - "127.0.0.1:222:22"
     volumes:
       - vault-rag-forgejo-data:/data
     networks:

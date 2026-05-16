@@ -27,7 +27,11 @@ jobs:
       - name: Override version (if dispatched manually)
         if: ${{ github.event.inputs.version != '' }}
         working-directory: agent-fleet/daemon
-        run: npm version "${{ github.event.inputs.version }}" --no-git-tag-version
+        # H3 (audit pass 2): pass via env so shell-quote escapes in the
+        # workflow_dispatch input can't break out of the npm version argv.
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: npm version "$VERSION_INPUT" --no-git-tag-version
 
       - name: Install dpkg + rpm tooling
         run: sudo apt-get update && sudo apt-get install -y dpkg rpm
@@ -41,7 +45,9 @@ jobs:
 
       - name: Upload to release
         if: startsWith(github.ref, 'refs/tags/daemon-v')
-        uses: softprops/action-gh-release@v2
+        # H2 (audit pass 2): SHA-pin third-party actions so a maintainer
+        # compromise can't swap the tag. v2 → 3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |
             agent-fleet/daemon/dist/agent-fleet-daemon.tar.gz
