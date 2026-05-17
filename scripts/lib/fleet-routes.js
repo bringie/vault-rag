@@ -113,6 +113,10 @@ function requireAdmin(req, res, ctx) {
 const WS_TICKET_TTL_MS = parseInt(process.env.VAULT_RAG_WS_TICKET_TTL_MS || '60000', 10);
 const WS_TICKET_DERIVATION = 'fleet-ws-ticket-v1';
 const _consumedTickets = new Map();
+// vt-0337: per-host timestamp of the last fleet_tmux_sessions GC run.
+// Debounces the GC sweep to ≤ once / 60s per host, so a daemon polling
+// every 30s doesn't fire two DELETEs/min for no reason.
+const _muxLastGc = new Map();
 // vt-0295: hard cap defends against operators who set
 // WS_TICKET_TTL_MS=86400000 for convenience and then leak xterm tabs:
 // the Map would grow unbounded across the long TTL window.
@@ -1439,6 +1443,7 @@ function _getSubRoutes() {
     require('./fleet/agent-roles'),
     require('./fleet/prices'),
     require('./fleet/workflows'),
+    require('./fleet/mux'),
   ];
   const extDeps = {
     ...deps,
@@ -1793,6 +1798,23 @@ async function handleDaemonWs(ws, params, ctx) {
         // Emit session_exit so handleExec waiters (and any attached viewer)
         // unblock instead of waiting for the timeout.
         ctx.bus.broadcastViewers(f.session_id, { type: 'session_exit', exit_code: -1 });
+        return;
+      }
+      // vt-0337: tmux session discovery frames from daemon mux-poller.
+      // Upsert into fleet_tmux_sessions; debounced GC of stale rows
+      // (max once per 60s per host).
+      if (f.type === 'mux_sessions') {
+        if (!Array.isArray(f.items)) return;
+        try {
+          await fleetDb.upsertTmuxSessions(ctx.db, host.id, f.items);
+          const lastGc = _muxLastGc.get(host.id) || 0;
+          if (Date.now() - lastGc > 60_000) {
+            _muxLastGc.set(host.id, Date.now());
+            await fleetDb.gcStaleTmuxSessions(ctx.db, host.id);
+          }
+        } catch (e) {
+          log.error('mux_sessions_upsert_failed', { host_id: host.id, msg: e.message });
+        }
         return;
       }
       if (f.type === 'pty_data') {
