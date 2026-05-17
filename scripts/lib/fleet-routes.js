@@ -221,7 +221,9 @@ async function handleWsTicket({ req, res, body, ctx }) {
   // refuse to mint daemon tickets via this endpoint to avoid future bypass.
   const requested = (body && body.role) ? String(body.role) : 'viewer';
   const callerId = _workflowCallerFp(req);
-  const callerIp = req.socket?.remoteAddress || null;
+  // vt-0364: use realClientIp helper so audit records the real X-Forwarded-For
+  // (Caddy preserves the client IP), not the docker bridge address.
+  const callerIp = realClientIp(req);
   const userAgent = (req.headers['user-agent'] || '').slice(0, 200);
   async function audit(outcome, detail) {
     if (!ctx.db) return;
@@ -432,13 +434,9 @@ function makeBus() {
 // sub-modules). The runner + concurrency-cap stateful helpers (next
 // def block) stay in this file and are passed as deps to the workflows
 // sub-module via _getSubRoutes above.
-function _workflowCallerFp(req) {
-  if (!req) return null;
-  const auth = (req.headers?.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (!auth) return null;
-  try { return crypto.createHash('sha256').update(auth).digest('hex').slice(0, 12); }
-  catch { return null; }
-}
+// vt-0364: callerFingerprint moved to lib/shared-auth.js; alias kept
+// for the sub-module deps bundle.
+const { callerFingerprint: _workflowCallerFp, realClientIp } = require('./shared-auth');
 
 async function ensureWorkflowRunner(ctx) {
   if (ctx.workflowRunner) return ctx.workflowRunner;

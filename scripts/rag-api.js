@@ -257,13 +257,9 @@ function secretsBackend() {
 // vt-0142: audit every secret operation. Lives in rag-api (where the
 // HTTP auth + bearer are visible) so the standalone vault-rag-secrets
 // container per vt-0134 keeps its minimal capability set.
-function callerFingerprint(req) {
-  if (!req) return null;
-  const auth = req.headers?.authorization || '';
-  const token = auth.replace(/^Bearer\s+/i, '');
-  if (!token) return null;
-  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 12);
-}
+// vt-0364: callerFingerprint moved to lib/shared-auth.js (was duplicated
+// in fleet-routes.js as _workflowCallerFp).
+const { callerFingerprint, realClientIp } = require('./lib/shared-auth');
 async function auditSecret(req, op, name, outcome) {
   try {
     await withPg(c => c.query(

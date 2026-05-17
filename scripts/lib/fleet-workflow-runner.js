@@ -276,24 +276,47 @@ function createRunner(deps) {
   async function execNotify(node, ctx, runId) {
     const url = substituteTemplates(node.webhook_url, ctx);
     if (!url) throw new Error('notify: webhook_url required');
-    // vt-0279: SSRF guard — same rationale as execHttpRequest.
-    const { isPrivateHost } = require('./webhooks');
+    // vt-0279/vt-0362: SSRF guard — same rationale + DNS-pinning hardening
+    // already in execHttpRequest. Without the connect-time lookup hook a
+    // DNS-rebinding attacker can return a public IP at validation and a
+    // private one at fetch.
+    const { isPrivateHost, resolveAndCheck, isPrivateIp } = require('./webhooks');
     let urlObj;
     try { urlObj = new URL(url); }
     catch (e) { throw new Error(`notify: bad webhook_url: ${e.message}`); }
     if (!/^https?:$/.test(urlObj.protocol) || isPrivateHost(urlObj.hostname)) {
       throw new Error('notify: private host blocked (SSRF guard)');
     }
+    // Pre-resolve and bail if private — fast-fail before opening a socket.
+    try { await resolveAndCheck(urlObj.hostname); }
+    catch (e) { throw new Error(`notify: ${e.message}`); }
     const message = substituteTemplates(node.message_template || '', ctx);
     const controller = new AbortController();
     activeControllers.set(runId, controller);
     const t = setTimeout(() => controller.abort(), 10000);
+    // Connect-time IP re-check via undici Agent — same as execHttpRequest.
+    const { Agent } = require('undici');
+    const dns = require('node:dns');
+    const dispatcher = new Agent({
+      connect: {
+        lookup(hostname, opts, cb) {
+          dns.lookup(hostname, opts, (err, address, family) => {
+            if (err) return cb(err);
+            if (process.env.VAULT_RAG_WEBHOOK_ALLOW_PRIVATE !== '1' && isPrivateIp(address)) {
+              return cb(new Error(`hostname ${hostname} resolved to private IP ${address} at connect time (SSRF / DNS rebinding guard)`));
+            }
+            cb(null, address, family);
+          });
+        },
+      },
+    });
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: message, message }),
         signal: controller.signal,
+        dispatcher,
       });
       return { output: `notify status=${res.status}`, exit_code: 0, status: res.status };
     } catch (e) {
@@ -301,6 +324,7 @@ function createRunner(deps) {
       return { output: `notify failed: ${e.message}`, exit_code: 0, error: e.message };
     } finally {
       clearTimeout(t);
+      try { dispatcher.close().catch(() => {}); } catch {}
       activeControllers.delete(runId);
     }
   }
@@ -689,7 +713,16 @@ function createRunner(deps) {
           deps.broadcast(runId, { type: 'run_state', run_id: runId, status: 'cancelled' });
           return;
         }
-        deps.broadcast(runId, { type: 'node_progress', run_id: runId, node_id: current, status: 'failed', error: e.message });
+        // vt-0357: surface typed-error signals from resolveCandidates and
+        // friends so future retry/escalation logic can distinguish a
+        // permanent config error (group typo, host gone) from a transient
+        // infrastructure blip. Today's runner has no retry path — this is
+        // a forward-looking hook.
+        const errorClass = e.notFound ? `not_found:${e.notFound}` : (e.code || 'runtime');
+        deps.broadcast(runId, {
+          type: 'node_progress', run_id: runId, node_id: current, status: 'failed',
+          error: e.message, error_class: errorClass,
+        });
         await wfDb.updateRunStatus(deps.db, runId, 'failed', `${current}: ${e.message}`, current);
         deps.broadcast(runId, { type: 'run_state', run_id: runId, status: 'failed' });
         return;

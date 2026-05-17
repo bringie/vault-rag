@@ -19,6 +19,7 @@ function basenameOnly(p) {
 }
 
 function register({ fleetDb, checkAdminAuth, callerFp }) {
+  const { realClientIp } = require('../shared-auth');
   return [
     // ---- GET list of tmux sessions on a host ----
     {
@@ -98,7 +99,7 @@ function register({ fleetDb, checkAdminAuth, callerFp }) {
                VALUES ('tmux_attach', 'admin', $1, $2, $3, 'ok', $4)`,
               [
                 callerFp ? callerFp(req) : null,
-                req.socket?.remoteAddress || null,
+                realClientIp(req),
                 (req.headers['user-agent'] || '').slice(0, 200),
                 JSON.stringify({
                   host_id: hostId,

@@ -53,6 +53,20 @@ function validateSpawnFrame(f) {
       if (!f.cwd.startsWith(home + '/') && f.cwd !== home && !f.cwd.startsWith('/tmp/') && f.cwd !== '/tmp') {
         throw new Error(`cwd outside $HOME and /tmp: ${f.cwd}`);
       }
+      // vt-0361 (security audit H4): resolve symlinks and re-verify the
+      // prefix. Without this a symlink farm under $HOME pointing at /etc,
+      // /var, or another protected root would let a hub-admin spawn claude
+      // there (post-exploitation after admin-token compromise but trivial
+      // hardening). Missing-path is allowed — the PTY spawn would fail
+      // with a clean ENOENT instead of the realpath check faking a refusal.
+      try {
+        const real = fs.realpathSync(f.cwd);
+        if (!real.startsWith(home + '/') && real !== home && !real.startsWith('/tmp/') && real !== '/tmp') {
+          throw new Error(`cwd resolves outside $HOME and /tmp via symlink: ${f.cwd} → ${real}`);
+        }
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
     }
   }
   if (f.args !== undefined && f.args !== null) {

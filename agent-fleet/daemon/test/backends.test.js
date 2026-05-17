@@ -71,12 +71,20 @@ test('pick falls back to default, then to any registered', () => {
   assert.strictEqual(pick(registry, null, 'also-missing').name, 'claude');
 });
 
-test('loadBackends: malformed config → claude-only, no throw', () => {
+test('loadBackends: malformed config → throws with .parseError flag (vt-0183)', () => {
+  // vt-0183 changed the contract: parse error during hot-reload must NOT
+  // silently fall back to claude-only (would drop already-loaded third-party
+  // backends). It throws; the caller (reloadBackends or startup wrapper in
+  // ws-client.js) is expected to catch and keep the prior good registry.
+  // This test asserts the new contract.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'backends-'));
   fs.writeFileSync(path.join(tmp, 'backends.json'), 'NOT JSON {{{');
-  const { registry } = loadBackends({ configPath: path.join(tmp, 'backends.json') });
-  assert.ok(registry.has('claude'));
-  assert.strictEqual(registry.size, 1);
+  let thrown = null;
+  try { loadBackends({ configPath: path.join(tmp, 'backends.json') }); }
+  catch (e) { thrown = e; }
+  assert.ok(thrown, 'expected loadBackends to throw');
+  assert.strictEqual(thrown.parseError, true, 'expected .parseError flag for caller-side classification');
+  assert.match(thrown.message, /failed to parse/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
