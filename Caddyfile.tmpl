@@ -75,6 +75,27 @@ ${VAULT_RAG_DOMAIN} {
 			events 20
 			window 10s
 		}
+		# vt-0213: secrets endpoints had ZERO throttle (catch-all reverse_proxy
+		# at the bottom). A leaked viewer bearer could enumerate secret_list +
+		# pull every value at full pipe. Key is Authorization header (Bearer
+		# token) AND remote IP, so neither alone defeats the limit. Tight:
+		# 30/min, 10/10s burst.
+		zone secrets_min {
+			match {
+				path /api/secrets/*
+			}
+			key {http.request.header.Authorization}{http.request.remote.host}
+			events 30
+			window 1m
+		}
+		zone secrets_burst {
+			match {
+				path /api/secrets/*
+			}
+			key {http.request.header.Authorization}{http.request.remote.host}
+			events 10
+			window 10s
+		}
 		zone anon_min {
 			match {
 				path /healthz /metrics

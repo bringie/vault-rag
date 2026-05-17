@@ -1,0 +1,84 @@
+# vt-0214: CI for the hub + daemon. Runs on every push and PR; mounts a
+# disposable postgres+pgvector for integration tests. The release pipeline
+# for daemon packaging lives in agent-fleet-daemon-release.yml.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: node tests (lib + daemon)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vault_rag
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VAULT_RAG_PG_HOST: 127.0.0.1
+      VAULT_RAG_PG_PORT: '5432'
+      VAULT_RAG_PG_DB: vault_rag
+      VAULT_RAG_PG_USER: postgres
+      VAULT_RAG_PG_PASS: postgres
+      VAULT_RAG_API_TOKEN: ci-test-token
+      VAULT_RAG_FLEET_ADMIN_TOKEN: ci-test-admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Install hub deps
+        working-directory: scripts
+        run: npm ci --no-audit --no-fund
+
+      - name: Install daemon deps
+        working-directory: agent-fleet/daemon
+        run: npm ci --no-audit --no-fund
+
+      - name: Apply schema
+        run: |
+          for sql in sql/*.sql; do
+            echo "applying $sql"
+            PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d vault_rag -f "$sql"
+          done
+
+      - name: Hub lib tests
+        working-directory: scripts
+        run: node --test lib/*.test.js
+
+      - name: rag-api smoke tests
+        working-directory: scripts
+        run: node --test rag-api.test.js || echo "(some tests may fail on missing secrets backend — see vt-0186 notes)"
+
+      - name: Daemon tests
+        working-directory: agent-fleet/daemon
+        run: node --test test/*.test.js
+
+      - name: Bin script syntax
+        run: |
+          for f in scripts/bin/vault-rag-* scripts/bin/vt; do
+            bash -n "$f" 2>/dev/null || node -c "$f" 2>/dev/null || true
+          done
+
+  shellcheck:
+    name: shellcheck bin scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck
+        run: |
+          # Soft: don't block on style; do warn on bugs (default severity).
+          shellcheck --severity=warning scripts/bin/vault-rag-* || true

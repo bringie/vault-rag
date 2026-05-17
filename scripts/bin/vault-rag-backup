@@ -37,11 +37,12 @@ vault-rag-backup [flags]
   --vault-repo <path>            obsidian-vault repo (default: /root/obsidian-vault)
   --force-host-mismatch          allow restore even when bundle manifest.host
                                  doesn't match this hostname (use for migrations)
-  --pg-dump                      include `pg_dumpall` of the vault-rag postgres
-                                 container (audit / sessions / events / etc.)
-                                 inside the bundle (--restore replays it)
+  --pg-dump                      include `pg_dump` of the vault-rag database
+                                 (audit / sessions / events / etc.) inside
+                                 the bundle (--restore replays it)
   --pg-container <name>          docker container name (default: vault-rag-postgres)
   --pg-user <name>               psql user (default: postgres)
+  --pg-db <name>                 database name (default: vault_rag)
   --dry-run                      print actions, don't write
   -h, --help
 
@@ -62,6 +63,7 @@ FORCE_HOST_MISMATCH=""
 PG_DUMP=""
 PG_CONTAINER="vault-rag-postgres"
 PG_USER="postgres"
+PG_DB="vault_rag"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     --pg-dump) PG_DUMP=1; shift;;
     --pg-container) PG_CONTAINER="$2"; shift 2;;
     --pg-user) PG_USER="$2"; shift 2;;
+    --pg-db) PG_DB="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "unknown flag: $1" >&2; usage >&2; exit 2;;
@@ -142,13 +145,17 @@ backup() {
   local HAS_PG_DUMP=""
   if [[ -n "$PG_DUMP" ]]; then
     command -v docker >/dev/null || { echo "docker not found — required for --pg-dump" >&2; exit 1; }
-    if ! docker exec "$PG_CONTAINER" pg_dumpall -U "$PG_USER" --no-password > "$BK_STAGING/pg-dumpall.sql" 2>/dev/null; then
-      echo "pg_dumpall failed (container=$PG_CONTAINER user=$PG_USER) — refusing partial backup" >&2
+    # pg_dump (per-database) instead of pg_dumpall — we don't need globals
+    # (roles), and pg_dumpall's CREATE ROLE statements fail on restore when
+    # the user dumping is also a current role on the target ("cannot drop
+    # current user"). The vault-rag schema lives in one DB; this is enough.
+    if ! docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" --no-password --clean --if-exists "$PG_DB" > "$BK_STAGING/pg-dumpall.sql" 2>/dev/null; then
+      echo "pg_dump failed (container=$PG_CONTAINER user=$PG_USER db=$PG_DB) — refusing partial backup" >&2
       rm -f "$BK_STAGING/pg-dumpall.sql"
       exit 1
     fi
     HAS_PG_DUMP=1
-    echo "pg_dumpall: $(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes"
+    echo "pg_dump: $(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes"
   fi
 
   printf '{"created":"%s","host":"%s","age_key":"%s","vault_repo":"%s","pg_dump":%s}\n' \
@@ -261,7 +268,7 @@ restore() {
     if [[ -n "$PG_DUMP" ]]; then
       command -v docker >/dev/null || { echo "docker not found — required for pg replay" >&2; exit 1; }
       echo "replaying pg-dumpall ($(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes) into $PG_CONTAINER…"
-      if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -v ON_ERROR_STOP=1 < "$BK_STAGING/pg-dumpall.sql" > /dev/null; then
+      if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 < "$BK_STAGING/pg-dumpall.sql" > /dev/null; then
         echo "WARNING: pg replay failed — bundle file kept for manual recovery at $BK_STAGING/pg-dumpall.sql" >&2
         # Don't delete BK_STAGING so the operator can salvage the dump.
         trap - EXIT

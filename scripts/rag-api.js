@@ -337,6 +337,21 @@ async function handleNotesIndex(req, res) {
   send(res, 200, { byBase, byBaseLower, all, truncated: all.length >= MAX });
 }
 
+// vt-0209: readiness probe. Returns 200 only when all hard dependencies
+// answer; 503 otherwise. Kept lightweight (no git, no inventory) so it
+// can be hit every 5-10s by an orchestrator without load.
+async function handleReadyz(req, res) {
+  const checks = {};
+  let ok = true;
+  // pg
+  try { await pg.query('SELECT 1'); checks.pg = 'ok'; }
+  catch (e) { ok = false; checks.pg = 'fail: ' + scrubError(e.message); }
+  // secrets backend (use a fast probe — list, not get)
+  try { await secretsBackend().list(); checks.secrets = 'ok'; }
+  catch (e) { ok = false; checks.secrets = 'fail: ' + scrubError(e.message); }
+  send(res, ok ? 200 : 503, { ready: ok, checks });
+}
+
 // vt-0193: aggregated health snapshot for the Health dashboard.
 // Returns per-subsystem traffic-light status without forcing the UI to
 // query each endpoint separately. All checks are best-effort with short
@@ -895,9 +910,62 @@ const TASK_ROUTES = {
 
 const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, adminToken: FLEET_ADMIN_TOKEN, db: null, version: '0.1.0' });
 
+// vt-0210: structured logger + request-id correlation. Set
+// VAULT_RAG_LOG_FORMAT=json on prod to get parseable lines for log
+// aggregators; default 'text' keeps `docker logs` human-readable.
+const log = require('./lib/log').for('rag-api');
+const { requestId } = require('./lib/log');
+
+// vt-0211: Prometheus metrics.
+const metrics = require('./lib/metrics');
+const _reqCount = metrics.counter('rag_api_requests_total', 'HTTP requests by method+status', ['method', 'status']);
+const _reqDur = metrics.histogram('rag_api_request_duration_ms', 'HTTP request duration', ['path'],
+  [10, 25, 50, 100, 250, 500, 1000, 2500, 10000]);
+const _pgPool = metrics.gauge('rag_api_pg_pool_total', 'pg pool size (total / idle)', ['state']);
+metrics.counter('rag_api_secret_ops_total', 'Secret ops by op+outcome', ['op', 'outcome']);
+setInterval(() => {
+  if (pg && pg.totalCount !== undefined) {
+    _pgPool.set({ state: 'total' }, pg.totalCount);
+    _pgPool.set({ state: 'idle' }, pg.idleCount);
+    _pgPool.set({ state: 'waiting' }, pg.waitingCount);
+  }
+}, 5000).unref?.();
+
 const server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);
+  // Tag every request with an id; emit one JSON line per response.
+  const reqId = requestId(req.headers);
+  res.setHeader('X-Request-Id', reqId);
+  const t0 = Date.now();
+  res.on('finish', () => {
+    const path = (req.url || '').split('?')[0];
+    // Skip noisy probes from request log.
+    if (path === '/healthz' || path === '/readyz' || path === '/metrics') return;
+    const ms = Date.now() - t0;
+    _reqCount.inc({ method: req.method, status: String(res.statusCode) });
+    _reqDur.observe({ path }, ms);
+    log.info('http_request', { req_id: reqId, method: req.method, path, status: res.statusCode, ms });
+  });
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
+  // vt-0211: prometheus scrape endpoint. No auth — exposes only counts/
+  // durations/pool stats, not data. Should be IP-allowlisted by the
+  // reverse proxy if exposed publicly.
+  if (req.method === 'GET' && req.url === '/metrics') {
+    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
+    res.end(metrics.exposition());
+    return;
+  }
+  // vt-0209: /readyz returns 503 until pg + secrets backend are reachable.
+  // Separate from /healthz (which is liveness — "process is alive"); readyz
+  // is readiness — "process can serve requests". Container orchestrators
+  // (docker-compose healthcheck, k8s readinessProbe) should target THIS
+  // endpoint to avoid routing traffic to a half-booted hub.
+  if (req.method === 'GET' && req.url === '/readyz') {
+    return handleReadyz(req, res).catch(e => {
+      console.error('[rag-api] /readyz', e.stack || e.message);
+      send(res, 503, { ok: false, error: scrubError(e.message) });
+    });
+  }
   // vt-0193: detailed health endpoint for the Health dashboard UI.
   // Reports per-subsystem status without requiring secret-store reveals;
   // viewer bearer suffices.
@@ -1196,7 +1264,38 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
   process.exit(1);
 });
 
-process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
+// vt-0212: graceful shutdown. The naive `server.close` left WS clients
+// dangling (keeps the loop alive past close), pg connections orphaned,
+// and any pending event-batcher writes lost on hub restart.
+let _shuttingDown = false;
+async function shutdown(signal) {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
+  console.log(`[rag-api] ${signal} received — graceful shutdown`);
+  const deadline = Date.now() + 10_000;  // 10s hard timeout
+  // Stop accepting new connections + close idle keep-alives.
+  server.closeIdleConnections?.();
+  server.close((err) => {
+    if (err) console.error(`[rag-api] server.close error: ${err.message}`);
+  });
+  // Close every WS so .close() actually returns.
+  try {
+    const wss = server._fleetWss;
+    if (wss) for (const ws of wss.clients) {
+      try { ws.close(1001, 'shutdown'); } catch {}
+    }
+  } catch (e) { console.error(`[rag-api] WS drain error: ${e.message}`); }
+  // Flush event batcher (pty transcript queue) before pg closes.
+  try { await fleetCtx?.batcher?.flush?.(); }
+  catch (e) { console.error(`[rag-api] batcher flush error: ${e.message}`); }
+  // Cleanup pg pools.
+  await cleanup();
+  const remaining = deadline - Date.now();
+  if (remaining > 0) await new Promise(r => setTimeout(r, Math.min(remaining, 500)));
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 // vt-0141 prereq: export `server` so tests can read .address().port and call
 // .close(). Requires PORT=0 + VAULT_SECRETS_SKIP_PG=1 + test-pg env to be
