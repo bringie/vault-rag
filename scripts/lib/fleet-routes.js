@@ -1628,6 +1628,29 @@ async function spawnClaudeForWorkflow(ctx, node, prompt, runId, signal) {
   }
 }
 
+// vt-0287: sub-module route registry. Each per-domain file in
+// scripts/lib/fleet/ exports `register({deps}) → [{method, pattern,
+// handler}]`. Built lazily on first dispatchHttp call (so module-load
+// order doesn't matter) and memoised in _subRoutesCache.
+let _subRoutesCache = null;
+function _getSubRoutes() {
+  if (_subRoutesCache) return _subRoutesCache;
+  const deps = {
+    fleetDb,
+    fleetWorkflowDb: wfDb,
+    checkAdminAuth,
+    validateAllowedToolsField,
+    callerFp: _workflowCallerFp,
+  };
+  const modules = [
+    require('./fleet/recycle'),
+    require('./fleet/features'),
+    require('./fleet/agent-roles'),
+  ];
+  _subRoutesCache = modules.flatMap(m => m.register(deps));
+  return _subRoutesCache;
+}
+
 function dispatchHttp(req, res, ctx) {
   const method = req.method;
   const path = req.url.split('?')[0];
@@ -1725,6 +1748,18 @@ function dispatchHttp(req, res, ctx) {
     return send(res, 403, { error: 'admin token required for this operation' });
   }
 
+  // vt-0287: route-table dispatch for extracted sub-modules. Each
+  // submodule exports `register({deps}) → [{method, pattern, handler}]`.
+  // Built once and memoised. Admin gating ran above (isAdminPath), so
+  // handlers do not re-check auth. Order doesn't matter inside the
+  // table — patterns are mutually exclusive by path+method.
+  const subRoutes = _getSubRoutes();
+  for (const r of subRoutes) {
+    if (r.method !== method) continue;
+    const m = path.match(r.pattern);
+    if (m) return r.handler(req, res, ctx, m);
+  }
+
   // vt-0150: shared backend → config-files map (web UI consults this to
   // render per-host edit buttons). Static; no DB hit.
   if (method === 'GET' && path === '/fleet/backend-configs') {
@@ -1784,196 +1819,12 @@ function dispatchHttp(req, res, ctx) {
   }
   if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
 
-  // vt-0225: recycle bin endpoints. GET lists soft-deleted; POST restores.
-  // vt-0269: paginated. ?limit=&offset= (defaults 100/0, cap 500).
-  if (method === 'GET' && path.startsWith('/fleet/recycle-bin')) {
-    const u = new URL('http://x' + req.url);
-    const limit  = parseInt(u.searchParams.get('limit')  || '100', 10);
-    const offset = parseInt(u.searchParams.get('offset') || '0',  10);
-    return Promise.all([
-      fleetDb.listDeletedGroups(ctx.db, { limit, offset }),
-      require('./fleet-workflow-db').listDeletedWorkflows(ctx.db, { limit, offset }),
-    ]).then(([groups, workflows]) => send(res, 200, { groups, workflows }))
-      .catch(e => send(res, 500, { error: e.message }));
-  }
-  if (method === 'POST' && new RegExp(`^/fleet/groups/${SID_RE}/restore$`, 'i').test(path)) {
-    const id = path.split('/')[3];
-    return fleetDb.restoreGroup(ctx.db, id).then(g =>
-      g ? send(res, 200, g) : send(res, 404, { error: 'not found in trash' })
-    ).catch(e => send(res, 500, { error: e.message }));
-  }
-  if (method === 'POST' && new RegExp(`^/fleet/workflows/${SID_RE}/restore$`, 'i').test(path)) {
-    const id = path.split('/')[3];
-    return require('./fleet-workflow-db').restoreWorkflow(ctx.db, id).then(w =>
-      w ? send(res, 200, w) : send(res, 404, { error: 'not found in trash' })
-    ).catch(e => send(res, 500, { error: e.message }));
-  }
-
-  // vt-0311: feature flags. GET is viewer (SPA needs it to gate nav).
-  // PATCH is admin (toggles affect ALL operators). Cached in fleet-db
-  // for 30s — fine for personal/team scale.
-  if (method === 'GET' && path === '/fleet/features') {
-    return fleetDb.listFeatures(ctx.db).then(rs => send(res, 200, rs))
-      .catch(e => send(res, 500, { error: e.message }));
-  }
-  if (method === 'PATCH' && new RegExp(`^/fleet/features/([\\w-]{1,64})$`, 'i').test(path)) {
-    const name = path.split('?')[0].split('/')[3];
-    return readBody(req).then(async (b) => {
-      if (typeof b.enabled !== 'boolean') return send(res, 422, { error: 'enabled (boolean) required' });
-      await fleetDb.setFeature(ctx.db, name, b.enabled, _workflowCallerFp(req));
-      send(res, 200, { name, enabled: b.enabled });
-    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-
-  // vt-0259: Agent roles. List is viewer; mutations are admin (handled by
-  // the outer isAdminPath gate). assign/unassign hang under /fleet/groups/.
-  // vt-0267: viewer bearer gets the redacted shape (prompt → prompt_sha,
-  // prompt_bytes) so it never sees the raw prompt text. Admin bearer
-  // gets the full row.
-  if (method === 'GET'    && path === '/fleet/agent-roles') {
-    const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
-    const fn = isAdmin ? fleetDb.listAgentRoles : fleetDb.listAgentRolesSummary;
-    return fn(ctx.db).then(rs => send(res, 200, rs))
-      .catch(e => send(res, 500, { error: e.message }));
-  }
-  if (method === 'POST'   && path === '/fleet/agent-roles') {
-    return readBody(req).then(async (b) => {
-      if (!b.name || typeof b.name !== 'string' || b.name.length > 64) {
-        return send(res, 422, { error: 'name required (string, <=64 chars)' });
-      }
-      if (!b.prompt || typeof b.prompt !== 'string') {
-        return send(res, 422, { error: 'prompt required (string)' });
-      }
-      if (b.prompt.length > 32768) return send(res, 422, { error: 'prompt too long (max 32768 chars)' });
-      try { validateAllowedToolsField(b.allowed_tools); }
-      catch (e) { return send(res, e.statusCode || 422, { error: e.message }); }
-      try {
-        const r = await fleetDb.createAgentRole(ctx.db, {
-          name: b.name, description: b.description, prompt: b.prompt,
-          default_model: b.default_model, allowed_tools: b.allowed_tools,
-        });
-        send(res, 201, r);
-      } catch (e) {
-        if (/duplicate key|unique/i.test(e.message)) return send(res, 409, { error: 'name already exists' });
-        send(res, 500, { error: e.message });
-      }
-    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'GET'    && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
-    const id = path.split('/')[3];
-    const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
-    return fleetDb.getAgentRole(ctx.db, id).then(r => {
-      if (!r) return send(res, 404, { error: 'role not found' });
-      if (isAdmin) return send(res, 200, r);
-      // vt-0267: redact prompt for viewer; keep sha + size for "is this the
-      // role I think it is" UI checks.
-      const crypto = require('node:crypto');
-      const summary = {
-        ...r,
-        prompt_bytes: Buffer.byteLength(r.prompt || '', 'utf8'),
-        prompt_sha: crypto.createHash('sha256').update(r.prompt || '').digest('hex'),
-      };
-      delete summary.prompt;
-      send(res, 200, summary);
-    }).catch(e => send(res, 500, { error: e.message }));
-  }
-  if (method === 'PATCH'  && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
-    const id = path.split('/')[3];
-    return readBody(req).then(async (b) => {
-      if (b.prompt !== undefined && (typeof b.prompt !== 'string' || b.prompt.length > 32768)) {
-        return send(res, 422, { error: 'prompt invalid (string, <=32768)' });
-      }
-      if (b.name !== undefined && (typeof b.name !== 'string' || b.name.length > 64)) {
-        return send(res, 422, { error: 'name invalid' });
-      }
-      try { validateAllowedToolsField(b.allowed_tools); }
-      catch (e) { return send(res, e.statusCode || 422, { error: e.message }); }
-      const r = await fleetDb.updateAgentRole(ctx.db, id, b);
-      r ? send(res, 200, r) : send(res, 404, { error: 'role not found' });
-    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'DELETE' && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
-    const id = path.split('/')[3];
-    return fleetDb.deleteAgentRole(ctx.db, id).then(() => send(res, 204, {}))
-      .catch(e => send(res, 500, { error: e.message }));
-  }
-  if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
-    const id = path.split('/')[3];
-    const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
-    return fleetDb.listGroupRoles(ctx.db, id).then(rs => {
-      if (!isAdmin) {
-        // vt-0267: redact prompt for viewers.
-        const crypto = require('node:crypto');
-        for (const r of rs) {
-          r.prompt_bytes = Buffer.byteLength(r.prompt || '', 'utf8');
-          r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
-          delete r.prompt;
-        }
-      }
-      send(res, 200, rs);
-    }).catch(e => send(res, 500, { error: e.message }));
-  }
-  // vt-0271: atomic batch reorder. Caller PUTs the full ordered role-id
-  // array; we replace all assignments for the group in a single tx.
-  if (method === 'PUT'    && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
-    const groupId = path.split('/')[3];
-    return readBody(req).then(async (b) => {
-      if (!Array.isArray(b.role_ids)) return send(res, 422, { error: 'role_ids array required' });
-      if (b.role_ids.length > 8) return send(res, 422, { error: 'max 8 roles per group' });
-      // Validate each role exists and is not soft-deleted.
-      for (const rid of b.role_ids) {
-        const r = await fleetDb.getAgentRole(ctx.db, rid);
-        if (!r) return send(res, 404, { error: `role not found: ${rid}` });
-      }
-      await fleetDb.reorderGroupRoles(ctx.db, groupId, b.role_ids);
-      send(res, 200, { group_id: groupId, role_ids: b.role_ids });
-    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
-    const groupId = path.split('/')[3];
-    return readBody(req).then(async (b) => {
-      if (!b.role_id) return send(res, 422, { error: 'role_id required' });
-      const role = await fleetDb.getAgentRole(ctx.db, b.role_id);
-      if (!role) return send(res, 404, { error: 'role not found' });
-      const grp = await fleetDb.getGroup(ctx.db, groupId);
-      if (!grp) return send(res, 404, { error: 'group not found' });
-      // vt-0264: cap composition. Hard limits: ≤ MAX_ROLES_PER_GROUP roles,
-      // and combined-prompt size (brain + roles + 4 KiB headroom for the
-      // per-call refinement) ≤ MAX_COMBINED_BYTES. Reject loudly at
-      // assignment, not at dispatch (ARG_MAX-on-daemon is a confusing
-      // place to debug "too many roles").
-      const MAX_ROLES_PER_GROUP = 8;
-      const MAX_COMBINED_BYTES  = 65536;
-      const existing = await fleetDb.listGroupRoles(ctx.db, groupId);
-      if (existing.some(r => r.id === b.role_id)) {
-        // Re-assigning an existing role just updates position — skip cap.
-      } else if (existing.length >= MAX_ROLES_PER_GROUP) {
-        return send(res, 422, { error: `group already has ${MAX_ROLES_PER_GROUP} roles (max)` });
-      } else {
-        const brainBytes = Buffer.byteLength(grp.brain_prompt || '', 'utf8');
-        const existingBytes = existing.reduce((sum, r) => sum + Buffer.byteLength(r.prompt || '', 'utf8'), 0);
-        const newBytes = Buffer.byteLength(role.prompt || '', 'utf8');
-        const headroom = 4096;
-        const total = brainBytes + existingBytes + newBytes + headroom;
-        if (total > MAX_COMBINED_BYTES) {
-          return send(res, 422, {
-            error: `combined prompt would exceed ${MAX_COMBINED_BYTES} bytes (current ${brainBytes + existingBytes}, role adds ${newBytes}, +${headroom} headroom)`,
-          });
-        }
-      }
-      await fleetDb.assignRoleToGroup(ctx.db, groupId, b.role_id,
-        Number.isFinite(b.position) ? b.position : 0);
-      send(res, 201, { group_id: groupId, role_id: b.role_id });
-    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}/roles/${SID_RE}$`, 'i').test(path)) {
-    const parts = path.split('/');
-    const groupId = parts[3];
-    const roleId  = parts[5];
-    return fleetDb.unassignRoleFromGroup(ctx.db, groupId, roleId)
-      .then(() => send(res, 204, {}))
-      .catch(e => send(res, 500, { error: e.message }));
-  }
+  // vt-0287: recycle-bin (vt-0225), feature flags (vt-0311), agent-roles
+  // (vt-0259/0264/0267/0271/0284), and group→role assignment have all
+  // moved to scripts/lib/fleet/{recycle,features,agent-roles}.js. The
+  // sub-module router above (line ~1730) dispatches them BEFORE this
+  // point, so reaching here means an unhandled method/path that should
+  // fall through to the next group of inline handlers below.
 
   // Groups
   if (method === 'GET'    && path === '/fleet/groups') return handleListGroups({ req, res, ctx });
