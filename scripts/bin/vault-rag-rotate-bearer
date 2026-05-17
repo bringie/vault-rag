@@ -113,6 +113,32 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
+# vt-0271-followup: prove the NEW value actually took effect — /readyz
+# alone only says "pg+ollama reachable", not "the rotated token is in
+# the container env". Hit an auth-gated endpoint with the new bearer.
+if [[ "$NAME" == "VAULT_RAG_API_TOKEN" ]]; then
+  log "probing /api/fleet/healthz with the new viewer bearer…"
+  if curl -fsS -o /dev/null -m 5 \
+       -H "Authorization: Bearer $NEW" \
+       http://localhost:5679/fleet/healthz 2>/dev/null; then
+    ok "new viewer bearer accepted"
+  else
+    warn "new viewer bearer NOT accepted — rotation may not have taken effect."
+    warn "investigate: docker exec vault-rag-api printenv | grep VAULT_RAG_API_TOKEN"
+    exit 1
+  fi
+elif [[ "$NAME" == "VAULT_RAG_FLEET_ADMIN_TOKEN" ]]; then
+  log "probing /api/fleet/hosts with the new admin bearer…"
+  if curl -fsS -o /dev/null -m 5 \
+       -H "Authorization: Bearer $NEW" \
+       "http://localhost:5679/fleet/hosts" 2>/dev/null; then
+    ok "new admin bearer accepted"
+  else
+    warn "new admin bearer NOT accepted — rotation may not have taken effect."
+    exit 1
+  fi
+fi
+
 ok "rotation of $NAME complete"
 echo
 echo "NEXT STEPS:"

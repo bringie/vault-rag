@@ -1044,11 +1044,33 @@ const _reqDur = metrics.histogram('rag_api_request_duration_ms', 'HTTP request d
   [10, 25, 50, 100, 250, 500, 1000, 2500, 10000]);
 const _pgPool = metrics.gauge('rag_api_pg_pool_total', 'pg pool size (total / idle)', ['state']);
 metrics.counter('rag_api_secret_ops_total', 'Secret ops by op+outcome', ['op', 'outcome']);
+// vt-0271-followup: pg_backup_last_ok_seconds = mtime of the freshest
+// `/backups/vault_rag-*.dump`. Consumed by the PgBackupStale vmalert
+// rule (fires if older than 36h). Gauge stays at 0 if the directory
+// is missing / empty (alert will fire — that's the intent).
+const _pgBackupGauge = metrics.gauge('pg_backup_last_ok_seconds',
+  'epoch seconds when the freshest pg_dump was last written (0 = no backup found)');
 setInterval(() => {
   if (pg && pg.totalCount !== undefined) {
     _pgPool.set({ state: 'total' }, pg.totalCount);
     _pgPool.set({ state: 'idle' }, pg.idleCount);
     _pgPool.set({ state: 'waiting' }, pg.waitingCount);
+  }
+  try {
+    const dir = '/backups';
+    const files = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter(n => /^vault_rag-.+\.dump$/.test(n))
+      : [];
+    let newest = 0;
+    for (const n of files) {
+      try {
+        const st = fs.statSync(path.join(dir, n));
+        if (st.mtimeMs > newest) newest = st.mtimeMs;
+      } catch {}
+    }
+    _pgBackupGauge.set({}, newest ? Math.floor(newest / 1000) : 0);
+  } catch (e) {
+    log.warn('pg_backup_gauge_scan_failed', { msg: e.message });
   }
 }, 5000).unref?.();
 

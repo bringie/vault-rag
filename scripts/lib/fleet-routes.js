@@ -1614,7 +1614,24 @@ function dispatchHttp(req, res, ctx) {
   // externally (proxy lets it pass, but caller must reach the docker
   // bridge to abuse). For paranoid setups bind vmalert directly to
   // host loopback instead.
+  // vt-0271-followup: source-IP belt-and-suspenders. Only accept calls
+  // from RFC1918 + docker-bridge ranges + loopback. If you front-proxy
+  // through Caddy (which preserves the real client IP via X-Forwarded-
+  // For), set VAULT_RAG_ALERT_SINK_TRUST_XFF=1.
   if (method === 'POST' && path === '/fleet/_alert-sink') {
+    const trustXff = process.env.VAULT_RAG_ALERT_SINK_TRUST_XFF === '1';
+    const xff = trustXff ? (req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+    const ip = xff || req.socket?.remoteAddress || '';
+    const ipBare = ip.replace(/^::ffff:/, '');
+    const isLocal =
+      ipBare === '127.0.0.1' || ipBare === '::1' ||
+      /^10\./.test(ipBare) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(ipBare) ||
+      /^192\.168\./.test(ipBare);
+    if (!isLocal) {
+      log.warn('alert_sink_rejected', { ip: ipBare });
+      return send(res, 403, { error: 'alert sink accepts only local network sources' });
+    }
     return readBody(req, { maxBytes: 256 * 1024 }).then(b => {
       const alerts = Array.isArray(b?.alerts) ? b.alerts : [];
       for (const a of alerts) {

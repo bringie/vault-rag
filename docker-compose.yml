@@ -164,6 +164,10 @@ services:
       - ./agent-fleet:/agent-fleet:ro
       - ./workflow-templates:/workflow-templates:ro
       - /opt/vault-rag/.secrets/git_deploy.key:/run/secrets/git_deploy.key:ro
+      # vt-0271-followup: read-only mount so /metrics can expose the
+      # pg_backup_last_ok_seconds gauge (mtime of the freshest dump file)
+      # that the PgBackupStale vmalert rule consumes.
+      - /var/backups/vault-rag:/backups:ro
     networks:
       - vault-rag-net
     healthcheck:
@@ -543,7 +547,8 @@ services:
   # configures a single webhook (telegram bot, slack, pagerduty, etc.).
   vault-rag-vmalert:
     profiles: ["monitoring"]
-    image: victoriametrics/vmalert:v1.108.1
+    # vt-0281: pinned by digest.
+    image: victoriametrics/vmalert:v1.108.1@sha256:260b4d9c12f36031d96825e8c853aa030e527c2b5e034b28a0875a0a2dc57994
     container_name: vault-rag-vmalert
     logging: *default-logging
     restart: unless-stopped
