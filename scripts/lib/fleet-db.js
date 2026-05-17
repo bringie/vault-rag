@@ -669,6 +669,70 @@ async function reorderGroupRoles(c, groupId, roleIds) {
   }
 }
 
+// vt-0345: webhook subscription CRUD. Operator-only (admin-gated by
+// outer dispatch). Secrets are returned in full to admin; sub-module
+// route can redact for viewer if we ever expose this read-only.
+async function listWebhooks(c) {
+  const { rows } = await c.query(
+    `SELECT id, url, events, secret, format, enabled, description, created_at
+     FROM webhook_subscriptions
+     ORDER BY created_at DESC`);
+  return rows;
+}
+
+async function getWebhook(c, id) {
+  const { rows } = await c.query(
+    `SELECT id, url, events, secret, format, enabled, description, created_at
+     FROM webhook_subscriptions WHERE id = $1`,
+    [id]);
+  return rows[0] || null;
+}
+
+async function createWebhook(c, w) {
+  const events = Array.isArray(w.events) ? w.events : [];
+  const format = w.format || 'generic';
+  const { rows } = await c.query(
+    `INSERT INTO webhook_subscriptions (url, events, secret, format, enabled, description)
+     VALUES ($1, $2, $3, $4, COALESCE($5, true), $6)
+     RETURNING *`,
+    [w.url, events, w.secret || null, format, w.enabled, w.description || null]);
+  return rows[0];
+}
+
+async function updateWebhook(c, id, patch) {
+  const fields = [];
+  const args = [id];
+  let i = 2;
+  if (patch.url !== undefined)         { fields.push(`url = $${i++}`);         args.push(patch.url); }
+  if (patch.events !== undefined)      { fields.push(`events = $${i++}`);      args.push(Array.isArray(patch.events) ? patch.events : []); }
+  if (patch.secret !== undefined)      { fields.push(`secret = $${i++}`);      args.push(patch.secret); }
+  if (patch.format !== undefined)      { fields.push(`format = $${i++}`);      args.push(patch.format); }
+  if (patch.enabled !== undefined)     { fields.push(`enabled = $${i++}`);     args.push(!!patch.enabled); }
+  if (patch.description !== undefined) { fields.push(`description = $${i++}`); args.push(patch.description); }
+  if (!fields.length) return getWebhook(c, id);
+  const { rows } = await c.query(
+    `UPDATE webhook_subscriptions SET ${fields.join(', ')} WHERE id = $1 RETURNING *`,
+    args);
+  return rows[0] || null;
+}
+
+async function deleteWebhook(c, id) {
+  const { rowCount } = await c.query(
+    `DELETE FROM webhook_subscriptions WHERE id = $1`, [id]);
+  return rowCount > 0;
+}
+
+async function listWebhookDeliveries(c, subscriptionId, { limit = 50 } = {}) {
+  const { rows } = await c.query(
+    `SELECT id, subscription, event, attempt, status, error, ts
+     FROM webhook_deliveries
+     WHERE subscription = $1
+     ORDER BY ts DESC
+     LIMIT $2`,
+    [subscriptionId, Math.min(parseInt(limit, 10) || 50, 500)]);
+  return rows;
+}
+
 // vt-0337: tmux session discovery state. Hub upserts rows on every
 // daemon `mux_sessions` frame; GC drops rows not seen for 5+ minutes
 // (daemon poll cadence is 30s — five missed polls = stale).
@@ -755,4 +819,6 @@ module.exports = {
   listFeatures, isFeatureEnabled, setFeature,
   // vt-0337
   upsertTmuxSessions, gcStaleTmuxSessions, listTmuxSessions, getTmuxSession,
+  // vt-0345
+  listWebhooks, getWebhook, createWebhook, updateWebhook, deleteWebhook, listWebhookDeliveries,
 };

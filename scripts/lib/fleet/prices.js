@@ -82,6 +82,56 @@ function register({ fleetDb, fleetPrices }) {
         } catch (e) { send(res, 500, { error: e.message }); }
       },
     },
+    // vt-0346: PATCH for in-place mutation of an existing price row.
+    // Currently the only ways to change a price were "POST new + DELETE
+    // old" which left a forensic trail of soft-deleted rows. For IaaC
+    // we want declarative updates.
+    {
+      method: 'PATCH',
+      pattern: /^\/fleet\/prices\/(\d+)$/,
+      handler(req, res, ctx, match) {
+        const id = match[1];
+        return readBody(req).then(async (b) => {
+          if (!b || typeof b !== 'object') return send(res, 422, { error: 'body required' });
+          const fields = [];
+          const args = [id];
+          let i = 2;
+          const numeric = ['priority', 'input_per_mtok', 'output_per_mtok', 'cache_create_per_mtok', 'cache_read_per_mtok'];
+          for (const k of numeric) {
+            if (b[k] !== undefined) {
+              if (!Number.isFinite(b[k])) return send(res, 422, { error: `${k} must be number` });
+              fields.push(`${k} = $${i++}`); args.push(b[k]);
+            }
+          }
+          if (b.match_pattern !== undefined) {
+            if (typeof b.match_pattern !== 'string' || !b.match_pattern) {
+              return send(res, 422, { error: 'match_pattern must be non-empty string' });
+            }
+            fields.push(`match_pattern = $${i++}`); args.push(b.match_pattern);
+          }
+          if (b.valid_from !== undefined) {
+            fields.push(`valid_from = $${i++}`); args.push(b.valid_from);
+          }
+          if (b.flagged !== undefined) {
+            fields.push(`flagged = $${i++}`); args.push(!!b.flagged);
+          }
+          if (b.note !== undefined) {
+            fields.push(`note = $${i++}`); args.push(b.note);
+          }
+          if (!fields.length) return send(res, 422, { error: 'no updatable fields supplied' });
+          try {
+            const { rows } = await ctx.db.query(
+              `UPDATE fleet_model_prices SET ${fields.join(', ')}
+               WHERE id = $1 AND deleted_at IS NULL
+               RETURNING *`,
+              args);
+            if (!rows.length) return send(res, 404, { error: 'price not found or soft-deleted' });
+            fleetPrices.invalidate();
+            send(res, 200, rows[0]);
+          } catch (e) { send(res, 500, { error: e.message }); }
+        }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+      },
+    },
   ];
 }
 

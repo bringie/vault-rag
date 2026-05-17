@@ -1444,6 +1444,8 @@ function _getSubRoutes() {
     require('./fleet/prices'),
     require('./fleet/workflows'),
     require('./fleet/mux'),
+    require('./fleet/webhooks'),
+    require('./fleet/config-export'),
   ];
   const extDeps = {
     ...deps,

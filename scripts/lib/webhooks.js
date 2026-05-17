@@ -186,4 +186,26 @@ async function emit(pg, event, data) {
   }
 }
 
-module.exports = { emit, isPrivateHost: _isPrivateHost, resolveAndCheck, isPrivateIp: _isPrivateIp };
+// vt-0345: bypass the event-filter and fire a single test post against
+// a specific subscription. Used by POST /fleet/webhooks/:id/test for
+// connectivity verification before relying on real events.
+async function testSubscription(pg, subscriptionId) {
+  if (!pg) return { status: null, error: 'no pg' };
+  const { rows } = await pg.query(
+    `SELECT id, url, secret, format FROM webhook_subscriptions
+     WHERE id = $1 AND enabled = true`, [subscriptionId]);
+  if (!rows.length) return { status: null, error: 'subscription not found or disabled' };
+  const sub = rows[0];
+  const data = { subscription_id: sub.id, ts: new Date().toISOString(), note: 'manual test ping' };
+  const body = formatPayload(sub.format, 'test.ping', data);
+  const result = await post(sub.url, body, sub.secret);
+  try {
+    await pg.query(
+      `INSERT INTO webhook_deliveries (subscription, event, attempt, status, error)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [sub.id, 'test.ping', 1, result.status, result.error]);
+  } catch {}
+  return result;
+}
+
+module.exports = { emit, isPrivateHost: _isPrivateHost, resolveAndCheck, isPrivateIp: _isPrivateIp, testSubscription };

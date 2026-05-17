@@ -698,7 +698,11 @@ After install, type \`claude\` (or whichever agent) — it auto-wraps in tmux.
 
   const home = os.homedir();
   const dir = flags.dir || path.join(home, '.local', 'bin');
-  const agents = (flags.agents || 'claude,aider').split(',')
+  // vt-0344: expanded default agent set. Shim is universal (basename-
+  // based); installing for an agent the user doesn't have yet is fine
+  // — the symlink sits idle until they install the real binary.
+  const DEFAULT_AGENTS = 'claude,aider,codex,opencode,openclaw,gemini,hermes,crush,continue,cline';
+  const agents = (flags.agents || DEFAULT_AGENTS).split(',')
     .map(s => s.trim()).filter(Boolean);
   const force = !!flags.force;
   const writeRc = !!flags['write-rcfile'];
