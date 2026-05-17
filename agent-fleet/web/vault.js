@@ -921,13 +921,16 @@
       $('vault-tree').textContent = 'auth required';
       return;
     }
-    $('vault-tree').onclick = onTreeClick;
+    // vt-0318-fix: defensive `?.onclick` everywhere — if a stale index.html
+    // cache misses one of the tab buttons (e.g. vt-0316 added
+    // #vault-tab-graph), `null.onclick =` used to throw and leave the
+    // tree pane stuck on "loading…".
+    const tree = $('vault-tree'); if (tree) tree.onclick = onTreeClick;
     const reload = $('vault-reload');
     if (reload) reload.onclick = () => (state.mode === 'secrets' ? openSecretsMode() : openNotesMode());
-    $('vault-tab-notes').onclick = () => openNotesMode();
-    $('vault-tab-graph').onclick = () => openGraphMode();
-    $('vault-tab-secrets').onclick = () => openSecretsMode();
-    // vt-0316: reload graph on toolbar button + Enter in root input
+    const tNotes = $('vault-tab-notes'); if (tNotes) tNotes.onclick = () => openNotesMode();
+    const tGraph = $('vault-tab-graph'); if (tGraph) tGraph.onclick = () => openGraphMode();
+    const tSec   = $('vault-tab-secrets'); if (tSec) tSec.onclick = () => openSecretsMode();
     const gReload = document.getElementById('vault-graph-reload');
     if (gReload) gReload.onclick = () => window.openVaultGraph?.();
     const gRoot = document.getElementById('vault-graph-root');
