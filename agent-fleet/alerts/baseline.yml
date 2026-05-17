@@ -75,6 +75,14 @@ groups:
       summary: "vault-sync.sh push failed {{ $value }} times in 15 min"
       runbook: "docker logs vault-rag-api | grep push_failed. Common causes: deploy key expired, remote diverged, DNS blip, disk full on Forgejo."
 
+  - alert: AuditTableTooLarge
+    expr: audit_table_bytes > 1024 * 1024 * 1024
+    for: 30m
+    labels: { severity: warning, service: db }
+    annotations:
+      summary: "{{ $labels.table }} exceeds 1 GB"
+      runbook: "Audit retention is operator-driven for personal/team scope. Either accept the size (audit history) or add a retention policy in cleanup-vault-audit.js for this table."
+
   - alert: VaultGitSyncSilent
     expr: (vault_git_sync_last_ok_seconds == 0) or (time() - vault_git_sync_last_ok_seconds > 6 * 60 * 60)
     for: 30m

@@ -1076,6 +1076,12 @@ metrics.counter('rag_api_secret_ops_total', 'Secret ops by op+outcome', ['op', '
 // is missing / empty (alert will fire — that's the intent).
 const _pgBackupGauge = metrics.gauge('pg_backup_last_ok_seconds',
   'epoch seconds when the freshest pg_dump was last written (0 = no backup found)');
+// vt-0298: per-audit-table size gauges. No retention enforced on
+// vault_audit / secret_audit / workflow_audit / auth_audit today
+// (cleanup-vault-audit.js handles vault_audit only). Exposing size
+// lets vmalert page when any of them crosses 1 GB.
+const _auditTableBytes = metrics.gauge('audit_table_bytes',
+  'pg_total_relation_size for each audit table', ['table']);
 setInterval(() => {
   if (pg && pg.totalCount !== undefined) {
     _pgPool.set({ state: 'total' }, pg.totalCount);
@@ -1099,6 +1105,24 @@ setInterval(() => {
     log.warn('pg_backup_gauge_scan_failed', { msg: e.message });
   }
 }, 5000).unref?.();
+
+// vt-0298: refresh audit-table size gauges every 5 min — pg_total_relation_size
+// is cheap (catalog read) but no need to do it more often than that.
+setInterval(async () => {
+  if (!pg) return;
+  try {
+    const r = await pg.query(
+      `SELECT tablename, pg_total_relation_size(quote_ident(tablename))::bigint AS bytes
+         FROM pg_tables
+        WHERE schemaname = 'public'
+          AND tablename IN ('vault_audit','secret_audit','workflow_audit','auth_audit','ingest_log','webhook_deliveries')`);
+    for (const row of r.rows) {
+      _auditTableBytes.set({ table: row.tablename }, Number(row.bytes) || 0);
+    }
+  } catch (e) {
+    log.warn('audit_size_gauge_failed', { msg: e.message });
+  }
+}, 5 * 60 * 1000).unref?.();
 
 const server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);

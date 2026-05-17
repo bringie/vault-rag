@@ -46,9 +46,33 @@ services:
     container_name: vault-rag-postgres
     logging: *default-logging
     restart: unless-stopped
-    mem_limit: 400m
-    memswap_limit: 800m
-    shm_size: 128m
+    # vt-0299: tuned for a 1-5 operator team. shared_buffers=256MB lets
+    # HNSW + frequent fleet_events queries stay in cache; work_mem=16MB
+    # avoids per-query temp files for typical sort sizes;
+    # maintenance_work_mem=128MB speeds up the weekly VACUUM. mem_limit
+    # bumped from 400m → 1g to give the planner real headroom. If the
+    # host is RAM-constrained (<6 GB total) override these values in
+    # docker-compose.override.yml — defaults assume ≥8 GB host RAM.
+    mem_limit: 1g
+    memswap_limit: 2g
+    shm_size: 256m
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "effective_cache_size=512MB"
+      # vt-0299: per-statement timeout fallback (vt-0278 sets it per
+      # connection via SET; this is a backstop for any sessions that
+      # don't run through pg.Pool.on('connect')).
+      - "-c"
+      - "statement_timeout=60000"
+      - "-c"
+      - "log_min_duration_statement=1000"
     # vt-0135: postgres image drops to its own user internally but needs a few
     # caps to chown data dir on first init.
     security_opt:
