@@ -119,3 +119,47 @@ docker compose up -d vault-rag-postgres
   but the operator should also monitor `df /var/backups/vault-rag`.
 - recovery_target_time is in **UTC**. Off-by-three-hours operator
   mistakes are common.
+
+## Runbook: archive_command retry-loop on duplicate file (vt-0317)
+
+The canonical `test ! -f /backups/wal/%f && cp %p /backups/wal/%f`
+returns non-zero when the destination file ALREADY exists. Postgres
+retries the same segment every ~60 s indefinitely. This is the
+documented postgres pattern — duplicate-filename means something
+went wrong (crash mid-archive, manual `mv-back`, restored-from-base-
+backup-then-promoted) and the operator must investigate.
+
+**Symptom:** `WalArchiveStale` alert fires; `docker logs vault-rag-postgres`
+shows repeated `archive command failed with exit code 1` for the same
+filename.
+
+**Diagnosis + recovery:**
+
+```bash
+# Identify the wedged segment from postgres logs
+SEG=$(docker logs vault-rag-postgres --tail 50 2>&1 \
+  | grep -oE '[0-9A-F]{24}\.partial?|[0-9A-F]{24}' | tail -1)
+echo "wedged on: $SEG"
+
+# Compare the archived copy with what postgres is trying to push
+docker exec vault-rag-postgres bash -c "
+  diff -q /backups/wal/$SEG /var/lib/postgresql/data/pg_wal/$SEG
+"
+# Output: 'Files … differ' → operator decision (mv-aside old, re-archive)
+# Output: '(no output, exit 0)' → safe to rm the dest; postgres will re-cp
+
+# If identical, simply remove the destination — postgres advances:
+docker exec vault-rag-postgres rm /backups/wal/$SEG
+
+# Verify the archiver caught up
+docker exec vault-rag-postgres psql -U postgres -d vault_rag -c \
+  "SELECT last_archived_wal, last_failed_wal FROM pg_stat_archiver"
+```
+
+If the files **differ** (rare — implies corruption or a mismatched
+restore), move the old archive aside:
+
+```bash
+docker exec vault-rag-postgres mv /backups/wal/$SEG /backups/wal/$SEG.diff-$(date +%s)
+# Postgres re-archives the current pg_wal copy on the next retry tick.
+```
