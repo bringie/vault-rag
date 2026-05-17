@@ -608,6 +608,40 @@ async function unassignRoleFromGroup(c, groupId, roleId) {
     [groupId, roleId]);
 }
 
+// vt-0311: feature flags. Read-cached + invalidated by setFeature.
+const _featureCache = { rows: null, at: 0 };
+const FEATURE_CACHE_MS = 30_000;
+
+async function listFeatures(c) {
+  const now = Date.now();
+  if (_featureCache.rows && now - _featureCache.at < FEATURE_CACHE_MS) {
+    return _featureCache.rows;
+  }
+  const { rows } = await c.query(
+    `SELECT name, enabled, description, updated_at
+       FROM fleet_features
+       ORDER BY name ASC`);
+  _featureCache.rows = rows;
+  _featureCache.at = now;
+  return rows;
+}
+async function isFeatureEnabled(c, name) {
+  const rows = await listFeatures(c);
+  const r = rows.find(x => x.name === name);
+  return r ? r.enabled : true;  // unknown → enabled (forward-compat)
+}
+async function setFeature(c, name, enabled, updatedBy) {
+  await c.query(
+    `INSERT INTO fleet_features (name, enabled, updated_by, updated_at)
+        VALUES ($1, $2, $3, now())
+     ON CONFLICT (name) DO UPDATE SET
+       enabled    = EXCLUDED.enabled,
+       updated_by = EXCLUDED.updated_by,
+       updated_at = EXCLUDED.updated_at`,
+    [name, !!enabled, updatedBy || null]);
+  _featureCache.rows = null;
+}
+
 // vt-0271: atomic batch-reorder of group roles. Caller passes the full
 // ordered array of role IDs currently assigned; we renumber position in
 // a single transaction. Roles not in `roleIds` are removed (the UI doesn't
@@ -652,4 +686,6 @@ module.exports = {
   listAgentRolesSummary,
   // vt-0271
   reorderGroupRoles,
+  // vt-0311
+  listFeatures, isFeatureEnabled, setFeature,
 };

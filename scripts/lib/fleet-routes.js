@@ -1645,15 +1645,29 @@ function dispatchHttp(req, res, ctx) {
   // through Caddy (which preserves the real client IP via X-Forwarded-
   // For), set VAULT_RAG_ALERT_SINK_TRUST_XFF=1.
   if (method === 'POST' && path === '/fleet/_alert-sink') {
+    // vt-0309: IPv6 ULA (fc00::/7 covers fc00-fdff::/16) + IPv6 link-
+    // local (fe80::/10) + rightmost X-Forwarded-For when proxied. The
+    // earlier impl took the LEFTMOST XFF entry which is client-
+    // controlled when more than one proxy hop exists. Rightmost is
+    // the closest proxy (us). Operator who is NOT behind another
+    // proxy keeps VAULT_RAG_ALERT_SINK_TRUST_XFF unset, falling back
+    // to req.socket.remoteAddress which is unspoofable.
     const trustXff = process.env.VAULT_RAG_ALERT_SINK_TRUST_XFF === '1';
-    const xff = trustXff ? (req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+    const xffHeader = trustXff ? (req.headers['x-forwarded-for'] || '') : '';
+    const xffParts = xffHeader ? xffHeader.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const xff = xffParts.length ? xffParts[xffParts.length - 1] : '';
     const ip = xff || req.socket?.remoteAddress || '';
-    const ipBare = ip.replace(/^::ffff:/, '');
+    const ipBare = ip.replace(/^::ffff:/, '').replace(/^\[|\]$/g, '');
     const isLocal =
-      ipBare === '127.0.0.1' || ipBare === '::1' ||
+      // IPv4 loopback + RFC1918
+      ipBare === '127.0.0.1' ||
       /^10\./.test(ipBare) ||
       /^172\.(1[6-9]|2\d|3[0-1])\./.test(ipBare) ||
-      /^192\.168\./.test(ipBare);
+      /^192\.168\./.test(ipBare) ||
+      // IPv6 loopback + ULA fc00::/7 (fc/fd prefix) + link-local fe80::/10
+      ipBare === '::1' ||
+      /^f[cd][0-9a-f]{2}:/i.test(ipBare) ||
+      /^fe[89ab][0-9a-f]:/i.test(ipBare);
     if (!isLocal) {
       log.warn('alert_sink_rejected', { ip: ipBare });
       return send(res, 403, { error: 'alert sink accepts only local network sources' });
@@ -1756,6 +1770,22 @@ function dispatchHttp(req, res, ctx) {
     return require('./fleet-workflow-db').restoreWorkflow(ctx.db, id).then(w =>
       w ? send(res, 200, w) : send(res, 404, { error: 'not found in trash' })
     ).catch(e => send(res, 500, { error: e.message }));
+  }
+
+  // vt-0311: feature flags. GET is viewer (SPA needs it to gate nav).
+  // PATCH is admin (toggles affect ALL operators). Cached in fleet-db
+  // for 30s — fine for personal/team scale.
+  if (method === 'GET' && path === '/fleet/features') {
+    return fleetDb.listFeatures(ctx.db).then(rs => send(res, 200, rs))
+      .catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'PATCH' && new RegExp(`^/fleet/features/([\\w-]{1,64})$`, 'i').test(path)) {
+    const name = path.split('?')[0].split('/')[3];
+    return readBody(req).then(async (b) => {
+      if (typeof b.enabled !== 'boolean') return send(res, 422, { error: 'enabled (boolean) required' });
+      await fleetDb.setFeature(ctx.db, name, b.enabled, _workflowCallerFp(req));
+      send(res, 200, { name, enabled: b.enabled });
+    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
   // vt-0259: Agent roles. List is viewer; mutations are admin (handled by

@@ -84,7 +84,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Run shellcheck
-        run: |
-          # Soft: don't block on style; do warn on bugs (default severity).
-          shellcheck --severity=warning scripts/bin/vault-rag-* || true
+      - name: Run shellcheck (block on error, not style)
+        # vt-0308: severity=error means we block on real bugs (SC2086
+        # unquoted globs, SC2046 unquoted command substitutions, etc.)
+        # but not on style suggestions (SC2034 unused vars in heredocs,
+        # SC1091 not following sources). Style noise is opt-in via
+        # --severity=warning when fixing a specific script.
+        run: shellcheck --severity=error scripts/bin/vault-rag-*
+
+  npm-audit:
+    name: npm audit (advisory, non-blocking)
+    runs-on: ubuntu-latest
+    # vt-0307: surfaces known CVEs in our 3 runtime deps without blocking
+    # the build. continue-on-error so a fresh advisory doesn't stop a
+    # security fix from shipping; operator reviews the job summary.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: audit hub deps
+        working-directory: scripts
+        run: npm audit --omit=dev --audit-level=high
+      - name: audit daemon deps
+        working-directory: agent-fleet/daemon
+        run: npm audit --omit=dev --audit-level=high

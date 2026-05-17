@@ -986,6 +986,38 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
 }
 .setup-wizard-copy { padding:.25em .7em; flex-shrink:0; }
 
+/* vt-0316: vault graph view */
+#vault-graph-pane {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  /* Sits over the split-pane when active. The split has its own
+     position context; we use absolute relative to vaultview. */
+}
+#vaultview { position: relative; }
+.vault-graph-toolbar {
+  display: flex; gap: .5em; align-items: center;
+  padding: .5em 1em; border-bottom: 1px solid var(--line);
+  background: var(--bg-warm);
+  font: 12px/1.4 monospace;
+}
+.vault-graph-toolbar .lbl { color: var(--text-dim); font-size: 10px; letter-spacing: .1em; }
+.vault-graph-toolbar input[type="text"] {
+  flex: 1; max-width: 400px;
+  padding: 4px 8px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); font: 12px/1.4 monospace;
+}
+.vault-graph-toolbar input[type="number"] {
+  padding: 4px 6px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); font: 12px/1.4 monospace;
+}
+#vault-graph-canvas {
+  flex: 1; width: 100%; height: 100%;
+  background: var(--bg);
+  cursor: grab;
+}
+#vault-graph-canvas:active { cursor: grabbing; }
+
 /* vt-0259: agent roles edit + group→role assignment dialogs */
 dialog#agent-role-edit, dialog#group-roles-picker {
   background:transparent; border:none; padding:0; max-width:90vw;

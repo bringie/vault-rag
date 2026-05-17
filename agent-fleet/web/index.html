@@ -678,6 +678,7 @@
       <h2 data-i18n="vault.title">VAULT</h2>
       <div class="vault-tab-switch">
         <button id="vault-tab-notes" class="btn-ghost active-nav" data-i18n="vault.notes">notes</button>
+        <button id="vault-tab-graph" class="btn-ghost" data-i18n="vault.graph">graph</button>
         <button id="vault-tab-secrets" class="btn-ghost" data-i18n="vault.secrets">secrets</button>
       </div>
       <span style="flex:1"></span>
@@ -699,6 +700,21 @@
           <em data-i18n="vault.click_hint">Select an item from the tree.</em>
         </div>
       </div>
+    </div>
+    <!-- vt-0316: graph view — full-pane force-directed canvas. Hidden
+         by default; toggled by the "graph" tab. -->
+    <div id="vault-graph-pane" hidden>
+      <div class="vault-graph-toolbar">
+        <label class="lbl" data-i18n="vault.graph.root_label">root:</label>
+        <input id="vault-graph-root" type="text" spellcheck="false"
+               placeholder="path/to/note.md (blank = whole vault)" />
+        <label class="lbl" data-i18n="vault.graph.depth_label">depth:</label>
+        <input id="vault-graph-depth" type="number" min="1" max="5" value="2" style="width:3em" />
+        <button id="vault-graph-reload" class="btn-ghost" data-i18n="vault.graph.reload">↻ render</button>
+        <span style="flex:1"></span>
+        <span id="vault-graph-stats" class="lbl"></span>
+      </div>
+      <canvas id="vault-graph-canvas"></canvas>
     </div>
   </div>
 
@@ -765,6 +781,7 @@
   <script src="/fleet/static/toast.js"></script>
   <script src="/fleet/static/palette.js"></script>
   <script src="/fleet/static/vault.js"></script>
+  <script src="/fleet/static/graph-view.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
 </html>

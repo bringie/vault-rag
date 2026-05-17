@@ -590,10 +590,23 @@
     }
   }
 
+  // vt-0316: helper to switch between notes / graph / secrets panes.
+  function _showVaultPane(mode) {
+    const split = document.querySelector('.vault-split');
+    const graph = document.getElementById('vault-graph-pane');
+    if (split)  split.hidden = (mode === 'graph');
+    if (graph)  graph.hidden = (mode !== 'graph');
+    // Active-nav class on tabs
+    const tabs = { notes: 'vault-tab-notes', graph: 'vault-tab-graph', secrets: 'vault-tab-secrets' };
+    for (const [m, id] of Object.entries(tabs)) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('active-nav', m === mode);
+    }
+  }
+
   async function openNotesMode() {
     state.mode = 'notes';
-    $('vault-tab-notes').classList.add('active-nav');
-    $('vault-tab-secrets').classList.remove('active-nav');
+    _showVaultPane('notes');
     const treeEl = $('vault-tree');
     treeEl.textContent = 'loading…';
     // Reset cache so a reload sees fresh data.
@@ -634,11 +647,19 @@
     }
   }
 
+  // -------- graph mode (vt-0316) --------
+  async function openGraphMode() {
+    state.mode = 'graph';
+    _showVaultPane('graph');
+    if (typeof window.openVaultGraph === 'function') {
+      window.openVaultGraph();
+    }
+  }
+
   // -------- secrets mode --------
   async function openSecretsMode() {
     state.mode = 'secrets';
-    $('vault-tab-secrets').classList.add('active-nav');
-    $('vault-tab-notes').classList.remove('active-nav');
+    _showVaultPane('secrets');
     $('vault-viewer').innerHTML = '<em>Click a secret to reveal (auto-hide after 30 s).</em>';
     $('vault-tree').textContent = 'loading…';
     try {
@@ -904,7 +925,13 @@
     const reload = $('vault-reload');
     if (reload) reload.onclick = () => (state.mode === 'secrets' ? openSecretsMode() : openNotesMode());
     $('vault-tab-notes').onclick = () => openNotesMode();
+    $('vault-tab-graph').onclick = () => openGraphMode();
     $('vault-tab-secrets').onclick = () => openSecretsMode();
+    // vt-0316: reload graph on toolbar button + Enter in root input
+    const gReload = document.getElementById('vault-graph-reload');
+    if (gReload) gReload.onclick = () => window.openVaultGraph?.();
+    const gRoot = document.getElementById('vault-graph-root');
+    if (gRoot) gRoot.onkeydown = (e) => { if (e.key === 'Enter') window.openVaultGraph?.(); };
     wireSearch();
     await openNotesMode();
   }

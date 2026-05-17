@@ -355,6 +355,87 @@ async function handleNotesIndex(req, res) {
 
 // vt-0209: readiness probe. Returns 200 only when all hard dependencies
 // answer; 503 otherwise. Kept lightweight (no git, no inventory) so it
+// vt-0315: graph view. Returns a subgraph of the vault wiki-link graph
+// suitable for force-directed rendering. Two modes:
+//   * unrooted (no path param): all notes with at least one link, up
+//     to MAX_NODES; for small vaults this is the whole graph.
+//   * rooted (?path=foo/bar.md&depth=N): BFS up to N hops from the
+//     given path, both incoming + outgoing edges, again capped.
+// Nodes carry {path, label} only — the UI fetches detail on click via
+// existing /notes/show endpoints.
+async function handleNotesGraph(req, res) {
+  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  const u = new URL('http://x' + req.url);
+  const rootPath = u.searchParams.get('path') || '';
+  const depth = Math.min(5, Math.max(1, parseInt(u.searchParams.get('depth') || '2', 10)));
+  const MAX_NODES = Math.min(2000, parseInt(u.searchParams.get('limit') || '500', 10));
+  try {
+    let nodes = new Set();
+    let edges = [];
+    if (rootPath) {
+      // BFS rooted at rootPath, both directions. Each hop = one SQL
+      // round-trip; the index on (source) and the explicit index on
+      // (target) keep these fast for typical vault sizes.
+      nodes.add(rootPath);
+      let frontier = new Set([rootPath]);
+      for (let hop = 0; hop < depth && nodes.size < MAX_NODES; hop++) {
+        const fp = Array.from(frontier);
+        if (fp.length === 0) break;
+        const { rows } = await withPg(c => c.query(
+          `SELECT source, target FROM backlinks
+             WHERE source = ANY($1) OR target = ANY($1)`, [fp]));
+        const next = new Set();
+        for (const r of rows) {
+          if (nodes.size >= MAX_NODES) break;
+          edges.push({ source: r.source, target: r.target });
+          for (const n of [r.source, r.target]) {
+            if (!nodes.has(n)) { nodes.add(n); next.add(n); }
+          }
+        }
+        frontier = next;
+      }
+    } else {
+      // Unrooted: all backlink rows, capped. Heaviest-degree node bias
+      // would be nicer but the simple top-N-by-source covers it for
+      // personal/team vault sizes (<2k notes typical).
+      const { rows } = await withPg(c => c.query(
+        `SELECT source, target FROM backlinks LIMIT $1`, [MAX_NODES * 4]));
+      for (const r of rows) {
+        if (nodes.size >= MAX_NODES) break;
+        nodes.add(r.source);
+        nodes.add(r.target);
+        edges.push({ source: r.source, target: r.target });
+      }
+    }
+    // Dedup edges (BFS can yield same edge from both directions).
+    const seen = new Set();
+    const dedupedEdges = [];
+    for (const e of edges) {
+      const k = e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      dedupedEdges.push(e);
+    }
+    const nodeList = Array.from(nodes).map(p => ({
+      id: p,
+      label: p.split('/').pop().replace(/\.md$/, ''),
+      group: p.split('/')[0] || '_root',
+    }));
+    send(res, 200, {
+      root: rootPath || null,
+      depth: rootPath ? depth : null,
+      truncated: nodes.size >= MAX_NODES,
+      node_count: nodeList.length,
+      edge_count: dedupedEdges.length,
+      nodes: nodeList,
+      edges: dedupedEdges,
+    });
+  } catch (e) {
+    log.error('notes_graph_error', { msg: e.message });
+    send(res, 500, { error: scrubError(e.message) });
+  }
+}
+
 // can be hit every 5-10s by an orchestrator without load.
 async function handleReadyz(req, res) {
   // vt-0232: each subsystem check capped at 2s. A wedged pg/secrets
@@ -1246,6 +1327,13 @@ const server = http.createServer(async (req, res) => {
     });
   }
   // vt-0158: basename→path index for wiki-link resolution.
+  // vt-0315: graph subgraph endpoint
+  if (req.method === 'GET' && req.url.startsWith('/notes/graph')) {
+    return handleNotesGraph(req, res).catch(e => {
+      log.error('notes_graph_dispatch_error', { msg: e.stack || e.message });
+      send(res, e.statusCode || 500, { error: scrubError(e.message) });
+    });
+  }
   if (req.method === 'GET' && req.url.startsWith('/notes/index')) {
     return handleNotesIndex(req, res).catch(e => {
       log.error('notes_index_error', { msg: e.stack || e.message });

@@ -142,7 +142,9 @@ case "$cmd" in
     n=$(grep -c '^age1' "$RECIPIENTS_FILE")
     [[ "$n" -gt 1 ]] || die "only $n recipient present — removing would lock everyone out"
     # Drop the line + any preceding comment line.
-    local tmp; tmp=$(mktemp); trap "rm -f $tmp" EXIT
+    # vt-0308: removed bare `local` (we're at script-top, not in a
+    # function — shellcheck SC2168). Use a script-level variable.
+    tmp=$(mktemp); trap "rm -f $tmp" EXIT
     awk -v target="$ARG" '
       /^age1/ {
         if ($0 == target) { skip_next_comment_was = was_comment; next }
