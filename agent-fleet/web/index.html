@@ -231,6 +231,24 @@
             <h4 data-i18n="host.sessions.section">RECENT SESSIONS</h4>
             <ul id="hd-sessions" class="list list-sessions"></ul>
           </section>
+          <!-- vt-0339: live tmux sessions on this host. Populated from
+               /api/fleet/hosts/:id/tmux-sessions (top-10 by activity).
+               Each row has an [attach] button that mints a synthetic
+               fleet_sessions row + opens xterm via attachSession(). -->
+          <section class="hd-section">
+            <h4 data-i18n="host.tmux.section">TMUX SESSIONS</h4>
+            <table id="hd-tmux-table" class="hd-tmux-table">
+              <thead><tr>
+                <th data-i18n="host.tmux.col.agent">agent</th>
+                <th data-i18n="host.tmux.col.name">name</th>
+                <th data-i18n="host.tmux.col.cwd">cwd</th>
+                <th data-i18n="host.tmux.col.last_activity">last act.</th>
+                <th data-i18n="host.tmux.col.clients">clients</th>
+                <th></th>
+              </tr></thead>
+              <tbody id="hd-tmux-rows"></tbody>
+            </table>
+          </section>
         </div>
       </section>
 
