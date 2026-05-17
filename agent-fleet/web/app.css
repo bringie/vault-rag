@@ -940,6 +940,27 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   margin:0; max-height:40vh; overflow:auto;
 }
 
+/* vt-0253: setup wizard */
+.setup-wizard-frame { max-width: 560px; min-width: 420px; }
+.setup-wizard-progress {
+  display:flex; gap:6px; margin: 0 0 12px;
+}
+.setup-wizard-dot {
+  flex:1; height:3px; background:var(--line, #333); border-radius:2px;
+}
+.setup-wizard-dot.on { background:var(--accent, #6cf); }
+.setup-wizard-cmd {
+  background:var(--bg-hover, #1c1c1c); padding:8px 10px; border-radius:3px;
+  display:flex; gap:8px; align-items:flex-start;
+  margin:6px 0 10px;
+}
+.setup-wizard-cmd pre {
+  margin:0; flex:1; overflow-x:auto;
+  font:12px/1.5 "JetBrains Mono", monospace;
+  color:var(--accent, #6cf); white-space:pre-wrap; word-break:break-all;
+}
+.setup-wizard-copy { padding:.25em .7em; flex-shrink:0; }
+
 /* vt-0254: workflow template picker */
 dialog#wf-tpl-picker {
   background:transparent; border:none; padding:0; max-width:90vw;

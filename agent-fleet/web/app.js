@@ -59,41 +59,120 @@
       if (e.key === 'Enter') $('token-save').click();
     });
     setTimeout(() => $('token-input').focus(), 50);
-    // vt-0220: setup help link → instructions modal (no full wizard needed
-    // for self-host; explain where the token comes from + paste it).
+    // vt-0220 → vt-0253: setup help link opens a step-by-step wizard so
+    // operators can copy each command and tick it off before pasting the
+    // token. State lives on the overlay element so closing wipes it.
     const help = $('setup-help');
-    if (help) help.onclick = (ev) => {
-      ev.preventDefault();
-      const overlay = document.createElement('div');
-      overlay.className = 'app-dialog-overlay';
+    if (help) help.onclick = (ev) => { ev.preventDefault(); openSetupWizard(); };
+  }
+  // vt-0253: step-by-step setup wizard (replaces the single-screen modal).
+  // Three steps + final paste-and-engage. Each step has a copy-able command.
+  function openSetupWizard() {
+    const overlay = document.createElement('div');
+    overlay.className = 'app-dialog-overlay';
+    const STEPS = 4;
+    let cur = 1;
+    const ESC_HTML = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    function tr(k, fb) { return (window.fleetI18n ? window.fleetI18n.t(k) : '') || fb; }
+    function escClose(e) { if (e.key === 'Escape') closeWizard(); }
+    function closeWizard() {
+      try { overlay.remove(); } catch {}
+      document.removeEventListener('keydown', escClose);
+    }
+    function render() {
+      const stepBody = renderStep(cur);
+      const isFinal = cur === STEPS;
       overlay.innerHTML = `
-        <div class="app-dialog-frame" style="max-width:560px">
-          <div class="app-dialog-title">vault-rag setup</div>
-          <div class="app-dialog-body" style="font:12px/1.6 monospace">
-            <p><strong>1. Generate a token</strong> on the hub host:</p>
-            <pre style="background:var(--bg-hover);padding:8px;border-radius:3px;overflow-x:auto">openssl rand -hex 32 | tee -a /opt/vault-rag/.env
-# then edit the line to: VAULT_RAG_API_TOKEN=&lt;the-hex&gt;</pre>
-            <p><strong>2. Restart vault-rag-api:</strong></p>
-            <pre style="background:var(--bg-hover);padding:8px;border-radius:3px;overflow-x:auto">docker compose up -d vault-rag-api</pre>
-            <p><strong>3. Paste the token</strong> into the field above and hit ENGAGE.</p>
-            <p style="margin-top:1em;color:var(--text-dim)">
-              The token is stored only in this browser's localStorage. To rotate,
-              repeat the steps and refresh.
-              <br>For admin operations (workflow run, host PATCH, secret writes), set
-              <code>VAULT_RAG_FLEET_ADMIN_TOKEN</code> separately — see
-              <code>docs/secret-rotation.md</code>.
-            </p>
+        <div class="app-dialog-frame setup-wizard-frame">
+          <div class="app-dialog-title">
+            <span>${ESC_HTML(tr('setup.title', 'vault-rag setup'))}</span>
+            <span style="float:right; font-weight:normal; color:var(--text-dim)">${cur}/${STEPS}</span>
           </div>
+          <div class="setup-wizard-progress">
+            ${Array.from({ length: STEPS }, (_, i) =>
+              `<span class="setup-wizard-dot ${i + 1 <= cur ? 'on' : ''}"></span>`).join('')}
+          </div>
+          <div class="app-dialog-body">${stepBody}</div>
           <div class="app-dialog-buttons">
-            <button class="btn-primary" data-close>got it</button>
+            <button class="btn-ghost" data-close>${ESC_HTML(tr('setup.btn.close', 'close'))}</button>
+            <span style="flex:1"></span>
+            ${cur > 1 ? `<button class="btn-ghost" data-back>${ESC_HTML(tr('setup.btn.back', '← back'))}</button>` : ''}
+            ${!isFinal ? `<button class="btn-primary" data-next>${ESC_HTML(tr('setup.btn.next', 'next →'))}</button>` : ''}
+            ${isFinal ? `<button class="btn-primary" data-engage>${ESC_HTML(tr('setup.btn.engage', 'engage'))}</button>` : ''}
           </div>
         </div>
       `;
-      overlay.querySelector('[data-close]').onclick = () => overlay.remove();
-      overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
-      document.body.appendChild(overlay);
-    };
+      overlay.querySelectorAll('[data-copy]').forEach(b => {
+        b.onclick = async () => {
+          const txt = b.dataset.copy;
+          try { await navigator.clipboard.writeText(txt); b.textContent = tr('setup.btn.copied', '✓ copied'); }
+          catch { /* clipboard denied — operator can select manually */ }
+        };
+      });
+      const next = overlay.querySelector('[data-next]');
+      if (next) next.onclick = () => { cur = Math.min(STEPS, cur + 1); render(); };
+      const back = overlay.querySelector('[data-back]');
+      if (back) back.onclick = () => { cur = Math.max(1, cur - 1); render(); };
+      overlay.querySelector('[data-close]').onclick = closeWizard;
+      const eng = overlay.querySelector('[data-engage]');
+      if (eng) eng.onclick = () => {
+        const input = overlay.querySelector('#setup-wizard-token');
+        const v = input && input.value.trim();
+        if (!v) { input?.focus(); return; }
+        localStorage.fleetToken = v;
+        location.reload();
+      };
+      if (isFinal) setTimeout(() => overlay.querySelector('#setup-wizard-token')?.focus(), 50);
+    }
+    function renderStep(n) {
+      if (n === 1) {
+        const cmd = 'openssl rand -hex 32 | tee -a /opt/vault-rag/.env';
+        return `
+          <p><strong>${ESC_HTML(tr('setup.step1.title', '1. Generate a token'))}</strong></p>
+          <p>${ESC_HTML(tr('setup.step1.body', 'Run this on the hub host. It appends a random 32-byte hex string to .env so it survives container restarts.'))}</p>
+          <div class="setup-wizard-cmd">
+            <pre>${ESC_HTML(cmd)}</pre>
+            <button class="btn-ghost setup-wizard-copy" data-copy="${ESC_HTML(cmd)}">${ESC_HTML(tr('setup.btn.copy', 'copy'))}</button>
+          </div>
+          <p style="color:var(--text-dim)">${ESC_HTML(tr('setup.step1.note', 'Edit the appended line to read: VAULT_RAG_API_TOKEN=<the-hex>.'))}</p>
+        `;
+      }
+      if (n === 2) {
+        const cmd = 'docker compose -f /opt/vault-rag/docker-compose.yml up -d vault-rag-api';
+        return `
+          <p><strong>${ESC_HTML(tr('setup.step2.title', '2. Restart vault-rag-api'))}</strong></p>
+          <p>${ESC_HTML(tr('setup.step2.body', 'Reload the new .env. Other containers (postgres, caddy) keep running.'))}</p>
+          <div class="setup-wizard-cmd">
+            <pre>${ESC_HTML(cmd)}</pre>
+            <button class="btn-ghost setup-wizard-copy" data-copy="${ESC_HTML(cmd)}">${ESC_HTML(tr('setup.btn.copy', 'copy'))}</button>
+          </div>
+        `;
+      }
+      if (n === 3) {
+        const cmd = 'openssl rand -hex 32  # use as VAULT_RAG_FLEET_ADMIN_TOKEN';
+        return `
+          <p><strong>${ESC_HTML(tr('setup.step3.title', '3. (Optional) Admin token'))}</strong></p>
+          <p>${ESC_HTML(tr('setup.step3.body', 'For workflow runs, host PATCH, secret writes — set a separate admin token so the viewer bearer cannot perform mutating ops. Skip if you trust the same bearer everywhere.'))}</p>
+          <div class="setup-wizard-cmd">
+            <pre>${ESC_HTML(cmd)}</pre>
+            <button class="btn-ghost setup-wizard-copy" data-copy="${ESC_HTML(cmd)}">${ESC_HTML(tr('setup.btn.copy', 'copy'))}</button>
+          </div>
+          <p style="color:var(--text-dim)">${ESC_HTML(tr('setup.step3.note', 'Append VAULT_RAG_FLEET_ADMIN_TOKEN=<hex> to .env, restart again, then paste this token in admin tools that require it.'))}</p>
+        `;
+      }
+      return `
+        <p><strong>${ESC_HTML(tr('setup.step4.title', '4. Paste the viewer token'))}</strong></p>
+        <p>${ESC_HTML(tr('setup.step4.body', 'Token stays only in this browser localStorage. Rotate by repeating the steps and refreshing.'))}</p>
+        <input id="setup-wizard-token" type="password" class="app-dialog-input" autocomplete="new-password"
+               placeholder="${ESC_HTML(tr('setup.step4.placeholder', 'paste hex token here'))}">
+      `;
+    }
+    overlay.onclick = (ev) => { if (ev.target === overlay) closeWizard(); };
+    document.addEventListener('keydown', escClose);
+    document.body.appendChild(overlay);
+    render();
   }
+
   function showApp() {
     $('auth').hidden = true; $('app').hidden = false;
     $('logout').onclick = () => {
