@@ -30,7 +30,7 @@ ${VAULT_RAG_DOMAIN} {
 			match {
 				path /api/search /api/search/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 30
 			window 1m
 		}
@@ -38,7 +38,7 @@ ${VAULT_RAG_DOMAIN} {
 			match {
 				path /api/search /api/search/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 10
 			window 10s
 		}
@@ -47,7 +47,7 @@ ${VAULT_RAG_DOMAIN} {
 				method GET
 				path /api/notes/* /api/backlinks/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 120
 			window 1m
 		}
@@ -56,7 +56,7 @@ ${VAULT_RAG_DOMAIN} {
 				method GET
 				path /api/notes/* /api/backlinks/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 40
 			window 10s
 		}
@@ -65,7 +65,7 @@ ${VAULT_RAG_DOMAIN} {
 				method PUT
 				path /api/notes/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 30
 			window 1m
 		}
@@ -74,7 +74,7 @@ ${VAULT_RAG_DOMAIN} {
 				method PUT
 				path /api/notes/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 10
 			window 10s
 		}
@@ -82,7 +82,7 @@ ${VAULT_RAG_DOMAIN} {
 			match {
 				path /mcp /mcp/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 60
 			window 1m
 		}
@@ -90,7 +90,7 @@ ${VAULT_RAG_DOMAIN} {
 			match {
 				path /mcp /mcp/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 20
 			window 10s
 		}
@@ -151,7 +151,7 @@ ${VAULT_RAG_DOMAIN} {
 				method POST PATCH PUT DELETE
 				path /api/fleet/* /fleet/*
 			}
-			key {http.request.header.X-Vault-Token}{http.request.remote.host}
+			key {http.request.header.Authorization}{http.request.remote.host}
 			events 60
 			window 1m
 		}
