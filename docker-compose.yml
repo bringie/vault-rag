@@ -200,6 +200,13 @@ services:
       - VAULT_RAG_PG_USER=${VAULT_RAG_PG_USER}
       - VAULT_RAG_PG_PASS=${VAULT_RAG_PG_PASSWORD}
       - VAULT_RAG_API_TOKEN=${VAULT_RAG_API_TOKEN}
+      # C1 (audit 2026-05-17): admin bearer required to gate
+      # /api/secrets/{set,delete,rotate}. Same env also drives
+      # fleet-routes.js admin gate for mutating /fleet/* endpoints.
+      # If unset the rag-api falls back to single-token mode (viewer
+      # bearer accepted everywhere) — see scripts/rag-api.js line 47
+      # boot_no_admin_token warning.
+      - VAULT_RAG_FLEET_ADMIN_TOKEN=${VAULT_RAG_FLEET_ADMIN_TOKEN:-}
       - VAULT_PATH=/vault
       # Git auto-sync (used by lib/git-sync.js). vt-0137: HOME points at the
       # tmpfs-backed dir we mount below, and a scoped deploy key replaces
