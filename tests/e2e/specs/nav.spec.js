@@ -120,9 +120,62 @@ test.describe('Health tab @health', () => {
 
 test.describe('Audit tab @audit', () => {
   test('audit-01: feed opens', async ({ page }) => {
+    // Race-safe: register the response waiter BEFORE navigation so we
+    // don't miss the audit fetch when the SPA wakes up faster than the
+    // listener attaches (the old flake source).
+    const auditResp = page.waitForResponse(
+      r => r.url().includes('/api/audit') && r.ok(),
+      { timeout: 15_000 });
     await page.goto('/fleet/#/audit');
     await expect(page.locator('#auditview')).toBeVisible({ timeout: 10_000 });
-    await page.waitForResponse(r => r.url().includes('/api/audit') && r.ok(), { timeout: 10_000 });
+    await auditResp;
+  });
+});
+
+// vt-0287 slice 5: minimal coverage for hosts sub-module dispatch.
+test.describe('Hosts REST surface @hosts', () => {
+  const { request } = require('@playwright/test');
+  const { VIEWER_TOKEN, ADMIN_TOKEN } = require('../fixtures/auth');
+  const BASE = process.env.PORTAL_URL || 'https://brain.itiswednesdaymydud.es';
+  const client = (t) => request.newContext({
+    baseURL: BASE,
+    extraHTTPHeaders: t ? { Authorization: `Bearer ${t}` } : {},
+  });
+
+  test('hosts-01: GET list viewer → 200 array', async () => {
+    const c = await client(VIEWER_TOKEN);
+    const r = await c.get('/api/fleet/hosts');
+    expect(r.status()).toBe(200);
+    expect(Array.isArray(await r.json())).toBe(true);
+    await c.dispose();
+  });
+
+  test('hosts-02: GET unknown host → 404', async () => {
+    const c = await client(VIEWER_TOKEN);
+    const r = await c.get('/api/fleet/hosts/00000000-0000-0000-0000-000000000000');
+    expect(r.status()).toBe(404);
+    await c.dispose();
+  });
+
+  test('hosts-03: DELETE without ?confirm=1 → 400 guard', async () => {
+    test.skip(!ADMIN_TOKEN, 'admin required');
+    const c = await client(ADMIN_TOKEN);
+    // Use a synthetic UUID; we expect 400 (guard) before lookup.
+    const r = await c.delete('/api/fleet/hosts/00000000-0000-0000-0000-000000000000');
+    expect(r.status()).toBe(400);
+    expect((await r.json()).error).toMatch(/confirm=1/);
+    await c.dispose();
+  });
+
+  test('hosts-04: metrics bad since → 422', async () => {
+    test.skip(!ADMIN_TOKEN, 'admin required for non-trivial host');
+    const c = await client(ADMIN_TOKEN);
+    // List hosts; pick first id; query bad since param.
+    const hosts = await (await c.get('/api/fleet/hosts')).json();
+    if (!hosts.length) { test.skip(true, 'no hosts'); await c.dispose(); return; }
+    const r = await c.get(`/api/fleet/hosts/${hosts[0].id}/metrics?since=bad`);
+    expect(r.status()).toBe(422);
+    await c.dispose();
   });
 });
 
