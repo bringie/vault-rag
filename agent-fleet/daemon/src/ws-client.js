@@ -204,11 +204,39 @@ function computeBackoff(attempt) {
 
 // vt-0290: per-session drop accounting. When the WS is down we still
 // emit pty_data into safeSend, which silently no-ops. Tracking the
-// dropped byte count lets us emit a `pty_gap` frame on reconnect so
-// the viewer can render "[N bytes lost during reconnect]" instead of
-// pretending the transcript is contiguous. Full replay (real ring
-// buffer) is tracked as vt-0299.
+// dropped byte count lets us emit a `pty_gap` frame on reconnect.
+// vt-0304: pty_data ALSO lands in a per-session ring buffer so the
+// hub can ask `replay {since_seq}` and recover the bytes that were
+// dropped during the outage. Buffer is 1 MiB per session by default
+// (env override AGENT_FLEET_PTY_RING_BYTES). Beyond the cap we
+// drop oldest frames AND emit the gap-marker — that's the upper
+// bound on what an extended outage can lose without the operator
+// even noticing.
 const _droppedBySession = new Map();
+// vt-0304: per-session ring of recent pty_data frames keyed by seq.
+const PTY_RING_BYTES = parseInt(process.env.AGENT_FLEET_PTY_RING_BYTES || String(1024 * 1024), 10);
+const _ringBySession = new Map();  // session_id → [{seq, base64, bytes}, ...]
+function _ringPush(sessionId, seq, base64Data, decodedBytes) {
+  let ring = _ringBySession.get(sessionId);
+  if (!ring) { ring = []; _ringBySession.set(sessionId, ring); }
+  ring.push({ seq, data: base64Data, bytes: decodedBytes });
+  // Evict from the front until under cap. We also account the
+  // dropped frames into _droppedBySession so the gap-marker still
+  // tells the viewer about them.
+  let total = ring.reduce((a, e) => a + e.bytes, 0);
+  while (total > PTY_RING_BYTES && ring.length > 1) {
+    const evicted = ring.shift();
+    total -= evicted.bytes;
+    _recordDrop(sessionId, evicted.bytes);
+  }
+}
+function _ringDelete(sessionId) {
+  _ringBySession.delete(sessionId);
+}
+function _ringReplayFrom(sessionId, sinceSeq) {
+  const ring = _ringBySession.get(sessionId) || [];
+  return ring.filter(e => e.seq > sinceSeq);
+}
 function _recordDrop(sessionId, bytes) {
   _droppedBySession.set(sessionId, (_droppedBySession.get(sessionId) || 0) + bytes);
 }
@@ -366,10 +394,16 @@ async function runDaemon(opts) {
   ptyMgr.on('data', ({ sessionId, seq, data }) => {
     const cur = store.get(sessionId);
     if (cur) store.put(sessionId, { ...cur, last_seq: seq });
-    safeSend(ws, { type: 'pty_data', session_id: sessionId, seq, data: data.toString('base64') });
+    const b64 = data.toString('base64');
+    // vt-0304: push into the ring BEFORE we attempt to send. If safeSend
+    // drops the frame (ws disconnected), the ring still holds it for
+    // replay on reconnect.
+    _ringPush(sessionId, seq, b64, data.length);
+    safeSend(ws, { type: 'pty_data', session_id: sessionId, seq, data: b64 });
   });
   ptyMgr.on('exit', ({ sessionId, exitCode, signal }) => {
     safeSend(ws, { type: 'session_exit', session_id: sessionId, exit_code: exitCode, signal: signal || undefined });
+    _ringDelete(sessionId);
     store.delete(sessionId);
   });
 
@@ -534,6 +568,18 @@ async function runDaemon(opts) {
             }
           } else if (f.type === 'kill') {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
+          } else if (f.type === 'replay') {
+            // vt-0304: hub asks to replay pty_data since the given seq.
+            // We send the buffered frames in order; anything that fell
+            // out of the ring was already accounted via _droppedBySession
+            // and surfaced as a pty_gap on reconnect.
+            const sid = f.session_id;
+            const sinceSeq = Number.isFinite(f.since_seq) ? f.since_seq : -1;
+            const frames = _ringReplayFrom(sid, sinceSeq);
+            for (const r of frames) {
+              ws.send(JSON.stringify({ type: 'pty_data', session_id: sid, seq: r.seq, data: r.data, replayed: true }));
+            }
+            ws.send(JSON.stringify({ type: 'replay_end', session_id: sid, since_seq: sinceSeq, count: frames.length }));
           } else if (f.type === 'resize') {
             ptyMgr.resize(f.session_id, f.cols, f.rows);
           } else if (f.type === 'read_file') {

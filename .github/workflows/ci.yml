@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # vt-0306: weekly scheduled run — exercises e2e + DR test that are
+  # otherwise opt-in. Catches regressions in scripts no one touches
+  # for months. Monday 04:00 UTC = before most operators start work.
+  schedule:
+    - cron: '0 4 * * 1'
 
 jobs:
   unit:
@@ -91,6 +96,61 @@ jobs:
         # SC1091 not following sources). Style noise is opt-in via
         # --severity=warning when fixing a specific script.
         run: shellcheck --severity=error scripts/bin/vault-rag-*
+
+  scheduled-dr-test:
+    name: DR-restore end-to-end (weekly)
+    runs-on: ubuntu-latest
+    # vt-0306: only runs on schedule and manual workflow_dispatch.
+    # Push/PR skip it — too slow + needs docker + age.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install age
+        run: sudo apt-get update && sudo apt-get install -y age
+      - name: Run dr-restore.sh
+        run: bash tests/dr-restore.sh
+        timeout-minutes: 10
+
+  scheduled-fleet-e2e:
+    name: Fleet e2e (weekly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vault_rag
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VAULT_RAG_PG_HOST: 127.0.0.1
+      VAULT_RAG_PG_PORT: '5432'
+      VAULT_RAG_PG_DB: vault_rag
+      VAULT_RAG_PG_USER: postgres
+      VAULT_RAG_PG_PASS: postgres
+      VAULT_RAG_API_TOKEN: ci-test-token
+      VAULT_RAG_FLEET_ADMIN_TOKEN: ci-test-admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Install deps
+        run: |
+          (cd scripts && npm ci --no-audit --no-fund)
+          (cd agent-fleet/daemon && npm ci --no-audit --no-fund)
+      - name: Apply schema
+        run: |
+          for sql in sql/*.sql; do
+            PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d vault_rag -f "$sql"
+          done
+      - name: Run fleet-e2e.sh
+        run: bash tests/fleet-e2e.sh
+        timeout-minutes: 10
 
   npm-audit:
     name: npm audit (advisory, non-blocking)

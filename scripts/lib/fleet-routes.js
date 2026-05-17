@@ -2146,9 +2146,13 @@ async function handleDaemonWs(ws, params, ctx) {
         const seq = Number(f.seq);
         let rb = ctx.rings.get(f.session_id);
         if (!rb) { rb = new RingBuffer(64 * 1024); ctx.rings.set(f.session_id, rb); }
-        rb.append({ seq, data: buf });
+        // vt-0304: ring.append now returns false for dup seq (replay
+        // overlap). Skip broadcasting + batcher push in that case so
+        // viewers see each byte once and audit doesn't double-store.
+        const accepted = rb.append({ seq, data: buf });
+        if (!accepted) return;
         ctx.batcher.push({ sessionId: f.session_id, kind: 'pty_out', seq, payload: buf });
-        ctx.bus.broadcastViewers(f.session_id, { type: 'pty_data', seq, data: f.data });
+        ctx.bus.broadcastViewers(f.session_id, { type: 'pty_data', seq, data: f.data, replayed: !!f.replayed });
         return;
       }
       if (f.type === 'session_exit') {
@@ -2185,6 +2189,17 @@ async function handleDaemonWs(ws, params, ctx) {
         for (const s of (f.sessions || [])) {
           if (s.alive) {
             await fleetDb.markSessionRunning(ctx.db, s.session_id, s.pid);
+            // vt-0304: ask daemon to replay anything we missed since
+            // last_seq we know about. ctx.rings has hub-side ring; the
+            // highest seq there is what we tell the daemon to replay
+            // FROM. If we have no ring (fresh hub), s.last_seq tells
+            // the daemon how far we got pre-restart.
+            try {
+              const hubRing = ctx.rings?.get(s.session_id);
+              const sinceSeq = hubRing && hubRing.lastSeq != null ? hubRing.lastSeq
+                : (Number.isFinite(s.last_seq) ? s.last_seq : -1);
+              ws.send(JSON.stringify({ type: 'replay', session_id: s.session_id, since_seq: sinceSeq }));
+            } catch (e) { log.warn('replay_request_failed', { session_id: s.session_id, msg: e.message }); }
           } else {
             const status = (s.exit_code === 137 || s.signal) ? 'killed' : 'exited';
             await fleetDb.markSessionExited(ctx.db, s.session_id, s.exit_code ?? null, status);
@@ -2193,6 +2208,11 @@ async function handleDaemonWs(ws, params, ctx) {
             ctx.bus.broadcastViewers(s.session_id, { type: 'session_exit', exit_code: s.exit_code ?? -1 });
           }
         }
+        return;
+      }
+      if (f.type === 'replay_end') {
+        // vt-0304: daemon finished replaying — log for diagnostics.
+        log.info('replay_completed', { session_id: f.session_id, since_seq: f.since_seq, count: f.count });
         return;
       }
       if (f.type === 'metrics') {
