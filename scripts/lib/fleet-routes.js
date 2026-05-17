@@ -1176,61 +1176,8 @@ async function handleTranscriptBin(req, res, ctx) {
   res.end(buf);
 }
 
-// --- Pricing handlers ---
-
-async function handleListPrices({ req, res, ctx }) {
-  const u = new URL(req.url, 'http://x');
-  const withHistory = u.searchParams.get('history') === '1';
-  const where = withHistory ? '' : 'WHERE deleted_at IS NULL';
-  const { rows } = await ctx.db.query(`
-    SELECT id, match_pattern, priority, valid_from,
-           input_per_mtok, output_per_mtok,
-           cache_create_per_mtok, cache_read_per_mtok,
-           flagged, note, deleted_at, created_at
-    FROM fleet_model_prices ${where}
-    ORDER BY priority DESC, valid_from DESC`);
-  send(res, 200, rows);
-}
-
-async function handleCreatePrice({ res, body, ctx }) {
-  if (!body || !body.match_pattern || typeof body.input_per_mtok !== 'number' || typeof body.output_per_mtok !== 'number') {
-    return send(res, 422, { error: 'match_pattern + numeric input_per_mtok + output_per_mtok required' });
-  }
-  const { rows } = await ctx.db.query(
-    `INSERT INTO fleet_model_prices
-       (match_pattern, priority, valid_from,
-        input_per_mtok, output_per_mtok, cache_create_per_mtok, cache_read_per_mtok,
-        flagged, note)
-     VALUES ($1, $2, COALESCE($3, now()), $4, $5, $6, $7, $8, $9)
-     RETURNING *`,
-    [
-      body.match_pattern,
-      Number.isFinite(body.priority) ? body.priority : 100,
-      body.valid_from || null,
-      body.input_per_mtok,
-      body.output_per_mtok,
-      Number.isFinite(body.cache_create_per_mtok) ? body.cache_create_per_mtok : 0,
-      Number.isFinite(body.cache_read_per_mtok) ? body.cache_read_per_mtok : 0,
-      Boolean(body.flagged),
-      body.note || null,
-    ]);
-  fleetPrices.invalidate();
-  send(res, 201, rows[0]);
-}
-
-async function handleDeletePrice({ req, res, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  await ctx.db.query(`UPDATE fleet_model_prices SET deleted_at = now() WHERE id = $1`, [id]);
-  fleetPrices.invalidate();
-  res.writeHead(204); res.end();
-}
-
-async function handleResolvePrice({ res, body, ctx }) {
-  if (!body || !body.model) return send(res, 422, { error: 'model required' });
-  const ts = body.at ? new Date(body.at) : new Date();
-  const matched = await fleetPrices.priceFor(ctx.db, body.model, ts);
-  send(res, 200, { matched, at: ts.toISOString() });
-}
+// vt-0287 slice 2: pricing handlers moved to scripts/lib/fleet/prices.js
+// — routed via the sub-module dispatcher in dispatchHttp.
 
 // --- Workflow handlers ---
 
@@ -1673,8 +1620,9 @@ function _getSubRoutes() {
     require('./fleet/recycle'),
     require('./fleet/features'),
     require('./fleet/agent-roles'),
+    require('./fleet/prices'),
   ];
-  _subRoutesCache = modules.flatMap(m => m.register(deps));
+  _subRoutesCache = modules.flatMap(m => m.register({ ...deps, fleetPrices }));
   return _subRoutesCache;
 }
 
@@ -1890,14 +1838,8 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path === '/fleet/cost/summary') return handleCostSummary({ req, res, ctx });
 
   // Pricing
-  if (method === 'GET'    && path === '/fleet/prices')               return handleListPrices({ req, res, ctx });
-  if (method === 'POST'   && path === '/fleet/prices') {
-    return readBody(req).then(b => handleCreatePrice({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST'   && path === '/fleet/prices/resolve') {
-    return readBody(req).then(b => handleResolvePrice({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'DELETE' && /^\/fleet\/prices\/\d+$/.test(path))    return handleDeletePrice({ req, res, ctx });
+  // vt-0287 slice 2: /fleet/prices/* moved to scripts/lib/fleet/prices.js
+  // (dispatched via sub-module table above).
 
   // Workflows
   if (method === 'GET'    && path === '/fleet/workflows') return handleListWorkflows({ res, ctx });
