@@ -2222,14 +2222,17 @@
       btn.classList.add('spin');
       refresh();
     };
-    $('nav-dashboard').onclick = () => navigate('/dashboard');
-    $('nav-archive').onclick = () => navigate('/archive');
-    $('nav-cost').onclick = () => navigate('/cost');
-    $('nav-groups').onclick = () => navigate('/groups');
-    const wfNav = $('nav-workflows'); if (wfNav) wfNav.onclick = () => navigate('/workflows');
-    const pNav = $('nav-prices'); if (pNav) pNav.onclick = () => navigate('/prices');
-    // vt-0146: vault tab
-    const vNav = $('nav-vault'); if (vNav) vNav.onclick = () => navigate('/vault');
+    // Defensive: any missing nav-* in a stale cached HTML would throw on
+    // `null.onclick =` and abort boot() mid-wire, leaving every later
+    // button (vault, roles, audit, ...) unbound with no console error.
+    const wireNav = (id, hash) => { const el = $(id); if (el) el.onclick = () => navigate(hash); };
+    wireNav('nav-dashboard', '/dashboard');
+    wireNav('nav-archive',   '/archive');
+    wireNav('nav-cost',      '/cost');
+    wireNav('nav-groups',    '/groups');
+    wireNav('nav-workflows', '/workflows');
+    wireNav('nav-prices',    '/prices');
+    wireNav('nav-vault',     '/vault');
     const vBack = $('vaultview-close'); if (vBack) vBack.onclick = () => navigate('/dashboard');
     // vt-0193: health dashboard nav
     const hNav = $('nav-health'); if (hNav) hNav.onclick = () => navigate('/health');
