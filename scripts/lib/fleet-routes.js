@@ -218,6 +218,30 @@ function pathMatch(url, prefix) {
 const SID_RE = '[0-9a-f-]{36}';
 const SID_RE_BARE = /^[0-9a-f-]{36}$/i;
 
+// vt-0284: known Claude/Codex tool names. Validated at role
+// create/update time so typos ("Reaad") fail loud instead of being
+// silently dropped at spawn. Set the env to expand:
+//   VAULT_RAG_KNOWN_TOOLS=Read,Edit,Write,Bash,…,MyCustomTool
+// If unset, this default is used. Daemons can still tighten further
+// via AGENT_FLEET_TOOLS_WHITELIST (vt-0276).
+const KNOWN_TOOLS = new Set(
+  (process.env.VAULT_RAG_KNOWN_TOOLS ||
+    'Read,Edit,Write,Bash,Grep,Glob,Task,WebFetch,WebSearch,TaskCreate,TaskList,TaskUpdate,TaskStop,TaskOutput,TaskGet,NotebookEdit,Skill,ScheduleWakeup,SendMessage,RemoteTrigger,Monitor,EnterWorktree,ExitWorktree,EnterPlanMode,ExitPlanMode,CronCreate,CronDelete,CronList,PushNotification,ToolSearch,AskUserQuestion'
+  ).split(',').map(s => s.trim()).filter(Boolean)
+);
+function validateAllowedToolsField(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value)) throw Object.assign(new Error('allowed_tools must be array'), { statusCode: 422 });
+  if (value.length > 64) throw Object.assign(new Error('allowed_tools: too many entries (max 64)'), { statusCode: 422 });
+  const bad = value.filter(t => typeof t !== 'string' || !KNOWN_TOOLS.has(t));
+  if (bad.length) {
+    throw Object.assign(
+      new Error(`allowed_tools: unknown tool(s): ${bad.join(', ')} (set VAULT_RAG_KNOWN_TOOLS to widen)`),
+      { statusCode: 422 });
+  }
+  return value;
+}
+
 function makeBus() {
   const daemonsByHost = new Map();          // host_id -> ws
   const viewersBySession = new Map();       // session_id -> Set<ws>
@@ -1711,6 +1735,8 @@ function dispatchHttp(req, res, ctx) {
         return send(res, 422, { error: 'prompt required (string)' });
       }
       if (b.prompt.length > 32768) return send(res, 422, { error: 'prompt too long (max 32768 chars)' });
+      try { validateAllowedToolsField(b.allowed_tools); }
+      catch (e) { return send(res, e.statusCode || 422, { error: e.message }); }
       try {
         const r = await fleetDb.createAgentRole(ctx.db, {
           name: b.name, description: b.description, prompt: b.prompt,
@@ -1750,6 +1776,8 @@ function dispatchHttp(req, res, ctx) {
       if (b.name !== undefined && (typeof b.name !== 'string' || b.name.length > 64)) {
         return send(res, 422, { error: 'name invalid' });
       }
+      try { validateAllowedToolsField(b.allowed_tools); }
+      catch (e) { return send(res, e.statusCode || 422, { error: e.message }); }
       const r = await fleetDb.updateAgentRole(ctx.db, id, b);
       r ? send(res, 200, r) : send(res, 404, { error: 'role not found' });
     }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
@@ -2332,7 +2360,7 @@ function acceptWsUpgrade(ws, { role, auth, params, ctx, ticket }) {
         // in _consumedTickets until its natural expiry; a replay 401s.
         const sigHash = _ticketSigHash(ticket);
         if (sigHash && _consumedTickets.has(sigHash)) {
-          console.warn(`[fleet-routes] ws ticket replay refused (sig=${sigHash})`);
+          log.warn('ws_ticket_replay_refused', { sig: sigHash });
           return ws.close(4001, 'ticket already used');
         }
         if (sigHash) _consumedTickets.set(sigHash, verified.exp);

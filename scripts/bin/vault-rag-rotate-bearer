@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# vt-0283: rotate a top-level vault-rag bearer.
+#
+# Operationalises the docs/secret-rotation.md procedures. Generates a
+# new token, updates /opt/vault-rag/.env atomically, restarts the
+# minimum container set that needs to see the new value, and prints
+# the new token ONCE so the operator can paste it into clients.
+#
+# Supported tokens (--name):
+#   VAULT_RAG_API_TOKEN          viewer bearer
+#   VAULT_RAG_FLEET_ADMIN_TOKEN  admin bearer
+#   VAULT_RAG_FLEET_WS_SECRET    HMAC key for WS tickets
+#   VAULT_RAG_SECRETS_TOKEN      rag-api → secrets-server token
+#   VAULT_RAG_TOKMON_INGEST_TOKEN tokmon shipper token
+#
+# Pre-flight:
+#   - Backup of .env taken automatically before mutation.
+#   - --dry-run prints the plan + the new token, makes no changes.
+#
+# Caveats:
+#   - Rotating VAULT_RAG_API_TOKEN logs out every browser and breaks
+#     every daemon/mcp client until they're reconfigured. Time this
+#     in a maintenance window.
+#   - age.key rotation is NOT handled here — use vault-rag-recipients
+#     (vt-0275) for that.
+
+set -Eeuo pipefail
+
+REPO_DIR="${VAULT_RAG_DIR:-/opt/vault-rag}"
+NAME=""
+DRY=""
+
+usage() {
+  sed -n '3,28p' "$0" | sed 's/^# \?//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name) NAME="$2"; shift 2;;
+    --dry-run) DRY=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) echo "unknown arg: $1" >&2; usage; exit 2;;
+  esac
+done
+
+case "$NAME" in
+  VAULT_RAG_API_TOKEN|VAULT_RAG_FLEET_ADMIN_TOKEN|VAULT_RAG_FLEET_WS_SECRET|VAULT_RAG_SECRETS_TOKEN|VAULT_RAG_TOKMON_INGEST_TOKEN)
+    ;;
+  "")
+    echo "missing --name. See --help for supported tokens." >&2; exit 2;;
+  *)
+    echo "unsupported token name: $NAME (see --help)" >&2; exit 2;;
+esac
+
+cd "$REPO_DIR"
+ENV_FILE="$REPO_DIR/.env"
+[[ -f "$ENV_FILE" ]] || { echo ".env not found at $ENV_FILE" >&2; exit 1; }
+
+NEW=$(openssl rand -hex 32)
+
+log() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
+
+# Containers to restart per token. Conservative — we err on the side
+# of restarting too much rather than leaving a stale value in memory.
+case "$NAME" in
+  VAULT_RAG_API_TOKEN)              CONTAINERS=("vault-rag-api" "vault-rag-mcp" "vault-rag-tokmon-ingest");;
+  VAULT_RAG_FLEET_ADMIN_TOKEN)      CONTAINERS=("vault-rag-api");;
+  VAULT_RAG_FLEET_WS_SECRET)        CONTAINERS=("vault-rag-api");;
+  VAULT_RAG_SECRETS_TOKEN)          CONTAINERS=("vault-rag-api" "vault-rag-secrets");;
+  VAULT_RAG_TOKMON_INGEST_TOKEN)    CONTAINERS=("vault-rag-api" "vault-rag-tokmon-ingest");;
+esac
+
+log "planning rotation of $NAME"
+log "containers to restart: ${CONTAINERS[*]}"
+log "new value (save NOW — printed once, not stored anywhere by the script):"
+echo
+echo "  $NAME=$NEW"
+echo
+
+if [[ -n "$DRY" ]]; then
+  log "dry-run — no changes made"
+  exit 0
+fi
+
+# Backup .env
+BAK="$ENV_FILE.bak.$(date +%Y%m%d-%H%M%S)"
+cp "$ENV_FILE" "$BAK"
+ok "backup: $BAK"
+
+# Replace or append the line. The sed is intentionally precise — only
+# the matching name + delimiter. Quotes around the value handle accident-
+# al whitespace in operator-supplied env files.
+if grep -qE "^${NAME}=" "$ENV_FILE"; then
+  # Use a different delimiter so the hex (which can theoretically
+  # contain / depending on alphabet — here always [0-9a-f], so / is
+  # safe; using # for paranoia anyway) doesn't confuse sed.
+  sed -i.tmp "s#^${NAME}=.*#${NAME}=${NEW}#" "$ENV_FILE" && rm -f "$ENV_FILE.tmp"
+else
+  printf '\n%s=%s\n' "$NAME" "$NEW" >> "$ENV_FILE"
+fi
+ok ".env updated"
+
+log "restarting containers…"
+docker compose up -d --force-recreate "${CONTAINERS[@]}" 2>&1 | tail -10
+
+log "polling /readyz on hub…"
+for i in $(seq 1 30); do
+  if curl -fsS -o /dev/null -m 2 http://localhost:5679/readyz 2>/dev/null; then
+    ok "ready after ${i}s"
+    break
+  fi
+  sleep 1
+done
+
+ok "rotation of $NAME complete"
+echo
+echo "NEXT STEPS:"
+echo "  - Update every client that uses this token (browser localStorage,"
+echo "    daemon /etc/agent-fleet/daemon.env, MCP config, automation)."
+echo "  - The previous value is no longer valid. Old browser sessions will"
+echo "    see 401 on next request and prompt for a new token."
+echo "  - Backup of the prior .env is at $BAK — delete after verifying"
+echo "    the rotation worked (it contains the old secret in plaintext)."

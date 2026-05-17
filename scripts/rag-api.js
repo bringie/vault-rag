@@ -44,9 +44,9 @@ if (!TOKEN) {
   process.exit(1);
 }
 if (!FLEET_ADMIN_TOKEN) {
-  console.warn('[rag-api] WARN: VAULT_RAG_FLEET_ADMIN_TOKEN not set — fleet writes/exec/workflow-CRUD share the viewer bearer (RCE-capable). Set this token to require separate admin credentials for mutating ops.');
+  log.warn('boot_no_admin_token', { msg: 'VAULT_RAG_FLEET_ADMIN_TOKEN not set — fleet writes/exec/workflow-CRUD share the viewer bearer (RCE-capable). Set this token to require separate admin credentials for mutating ops.' });
 } else if (FLEET_ADMIN_TOKEN === TOKEN) {
-  console.warn('[rag-api] WARN: VAULT_RAG_FLEET_ADMIN_TOKEN equals VAULT_RAG_API_TOKEN — admin/viewer split is not meaningful. Rotate one of them.');
+  log.warn('boot_admin_token_equals_viewer', { msg: 'VAULT_RAG_FLEET_ADMIN_TOKEN equals VAULT_RAG_API_TOKEN — admin/viewer split is not meaningful. Rotate one of them.' });
 }
 
 const PG = {
