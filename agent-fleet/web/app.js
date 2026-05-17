@@ -1798,7 +1798,8 @@
 
   // vt-0259: Agent roles list page + create/edit dialog.
   async function openAgentRolesView() {
-    const body = $('ar-rows');
+    // vt-0333: was $('ar-rows') which collided with the archive tbody.
+    const body = $('agent-roles-rows');
     if (!body) return;
     body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-dim)">loading…</td></tr>`;
     let roles;

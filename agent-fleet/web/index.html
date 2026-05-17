@@ -55,12 +55,12 @@
         <div class="stat"><span class="lbl" data-i18n="topbar.spend7d">7D SPEND</span><span id="stat-cost" class="val val-warn">$—</span></div>
       </div>
       <div class="controls">
+        <!-- vt-0333: groups + workflows moved to footer settings cluster
+             alongside agent-roles. Header stays lean: ops surfaces only. -->
         <button id="nav-dashboard" class="btn-ghost active-nav" data-i18n="nav.dashboard">⊞ dashboard</button>
         <button id="nav-vault"     class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
         <button id="nav-archive"   class="btn-ghost" data-i18n="nav.archive">📜 archive</button>
         <button id="nav-cost"      class="btn-ghost" data-i18n="nav.cost">$ trends</button>
-        <button id="nav-groups"    class="btn-ghost" data-i18n="nav.groups">⌘ groups</button>
-        <button id="nav-workflows" class="btn-ghost" data-i18n="nav.workflows">⎇ workflows</button>
         <!-- vt-0192: aria-label on icon buttons for screen readers -->
         <button id="reload" data-i18n-title="nav.refresh" title="refresh" aria-label="refresh" class="btn-icon">⟳</button>
         <button id="stack-dot" class="btn-ghost stack-dot" data-state="unknown" data-i18n-title="stack.dot_tip" title="docker stack status" aria-label="docker stack status"><span class="stack-dot-icon">●</span> <span class="stack-dot-text" data-i18n="stack.checking">—</span></button>
@@ -272,6 +272,8 @@
     <footer class="footbar">
       <div class="footbar-row footbar-settings">
         <span class="lbl" data-i18n="footer.settings_label">SETTINGS //</span>
+        <button id="nav-groups"      class="btn-ghost" data-i18n="nav.groups">⌘ groups</button>
+        <button id="nav-workflows"   class="btn-ghost" data-i18n="nav.workflows">⎇ workflows</button>
         <button id="nav-prices"      class="btn-ghost" data-i18n="nav.prices">$ prices</button>
         <button id="nav-health"      class="btn-ghost" data-i18n="nav.health">🩺 health</button>
         <button id="nav-audit"       class="btn-ghost" data-i18n="nav.audit">📋 audit</button>
@@ -497,7 +499,10 @@
           <th data-i18n="agent_roles.col.default_model">model</th>
           <th data-i18n="agent_roles.col.actions">actions</th>
         </tr></thead>
-        <tbody id="ar-rows"></tbody>
+        <!-- vt-0333: was id="ar-rows" colliding with the archive tbody
+             at line ~334. The collision caused renders to land in the
+             wrong panel — user-visible bleed when switching tabs. -->
+        <tbody id="agent-roles-rows"></tbody>
       </table>
     </div>
   </div>
