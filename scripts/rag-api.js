@@ -1107,8 +1107,10 @@ setInterval(() => {
 }, 5000).unref?.();
 
 // vt-0298: refresh audit-table size gauges every 5 min — pg_total_relation_size
-// is cheap (catalog read) but no need to do it more often than that.
-setInterval(async () => {
+// is cheap (catalog read) but no need to do it more often than that. Initial
+// run scheduled 30s after boot so the metric is populated quickly (pg may
+// not be ready at module init).
+async function _refreshAuditSizes() {
   if (!pg) return;
   try {
     const r = await pg.query(
@@ -1122,7 +1124,9 @@ setInterval(async () => {
   } catch (e) {
     log.warn('audit_size_gauge_failed', { msg: e.message });
   }
-}, 5 * 60 * 1000).unref?.();
+}
+setInterval(_refreshAuditSizes, 5 * 60 * 1000).unref?.();
+setTimeout(_refreshAuditSizes, 30_000).unref?.();
 
 const server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);
