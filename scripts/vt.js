@@ -664,6 +664,150 @@ async function cmdDoctor(_cfg, args) {
   console.log('\nAll critical checks passed.');
 }
 
+// vt-0335: install agent-shim symlinks into ~/.local/bin/ (or --dir)
+// so the user can type `claude`, `aider`, etc. and have them auto-
+// wrap in tmux. PATH-verifies after install (fail-loud if shim isn't
+// resolved first) and emits shell-specific snippet on mismatch.
+function cmdSetupShims(_cfg, args) {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const { execFileSync } = require('child_process');
+  const { flags } = args;
+
+  if (flags.help || flags.h) {
+    process.stdout.write(`vt setup-shims — install agent-shim symlinks for fleet attach.
+
+Usage:
+  vt setup-shims [--dir DIR] [--agents A,B,C] [--write-rcfile] [--force]
+  vt setup-shims --uninstall [--dir DIR] [--agents A,B,C]
+
+Flags:
+  --dir DIR              Install dir (default: ~/.local/bin)
+  --agents A,B,C         Comma-separated agent names (default: claude,aider)
+  --write-rcfile         Append PATH line to your shell rcfile if missing
+  --force                Overwrite non-symlink files at target paths
+  --no-verify-path       Skip post-install PATH resolution check
+  --uninstall            Remove symlinks
+  --help                 This message
+
+After install, type \`claude\` (or whichever agent) — it auto-wraps in tmux.
+`);
+    return;
+  }
+
+  const home = os.homedir();
+  const dir = flags.dir || path.join(home, '.local', 'bin');
+  const agents = (flags.agents || 'claude,aider').split(',')
+    .map(s => s.trim()).filter(Boolean);
+  const force = !!flags.force;
+  const writeRc = !!flags['write-rcfile'];
+  const noVerify = !!flags['no-verify-path'];
+  const uninstall = !!flags.uninstall;
+
+  // Resolve shim source path: agent-fleet/bin/agent-shim relative to vt.js.
+  const shimSrc = path.resolve(__dirname, '..', 'agent-fleet', 'bin', 'agent-shim');
+  if (!uninstall && !fs.existsSync(shimSrc)) {
+    die(`shim source not found at ${shimSrc}`);
+  }
+  if (!uninstall && !(fs.statSync(shimSrc).mode & 0o111)) {
+    die(`shim source ${shimSrc} is not executable`);
+  }
+
+  fs.mkdirSync(dir, { recursive: true });
+
+  const results = [];
+  for (const agent of agents) {
+    const link = path.join(dir, agent);
+    let action;
+    try {
+      const exists = fs.existsSync(link) || (() => { try { fs.lstatSync(link); return true; } catch { return false; } })();
+      if (uninstall) {
+        if (exists) { fs.unlinkSync(link); action = 'removed'; }
+        else action = 'already-absent';
+      } else {
+        if (exists) {
+          let isSymlink = false;
+          try { isSymlink = fs.lstatSync(link).isSymbolicLink(); } catch {}
+          if (!isSymlink && !force) {
+            results.push({ agent, action: 'skip (non-symlink exists; --force to overwrite)' });
+            continue;
+          }
+          fs.unlinkSync(link);
+        }
+        fs.symlinkSync(shimSrc, link);
+        action = 'installed';
+      }
+    } catch (e) {
+      action = `error: ${e.message}`;
+    }
+    results.push({ agent, action });
+  }
+
+  // PATH verification.
+  // v0.2 fix: fail-loud (exit 1) when first-resolved binary isn't the
+  // shim symlink we placed — otherwise users get the silent-no-op
+  // outcome architects flagged as MAJOR #5.
+  if (!noVerify && !uninstall) {
+    let failed = false;
+    for (const agent of agents) {
+      const expected = path.join(dir, agent);
+      let resolved = '';
+      try {
+        resolved = execFileSync('sh', ['-c', `command -v ${agent}`],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch { resolved = ''; }
+      if (resolved !== expected) {
+        if (!failed) {
+          process.stderr.write('\nvt setup-shims: PATH verification FAILED\n\n');
+          failed = true;
+        }
+        process.stderr.write(`  ${agent}:\n`);
+        process.stderr.write(`    expected first hit: ${expected}\n`);
+        process.stderr.write(`    actual first hit:   ${resolved || '(not in PATH)'}\n\n`);
+      }
+    }
+    if (failed) {
+      const shell = process.env.SHELL || '';
+      let snippet, rcfile;
+      if (shell.endsWith('fish')) {
+        snippet = `fish_add_path ${dir}`;
+        rcfile = path.join(home, '.config', 'fish', 'config.fish');
+      } else if (shell.endsWith('zsh')) {
+        snippet = `export PATH="${dir}:$PATH"`;
+        rcfile = path.join(home, '.zshrc');
+      } else {
+        snippet = `export PATH="${dir}:$PATH"`;
+        rcfile = path.join(home, '.bashrc');
+      }
+      process.stderr.write(`Add the following line to ${rcfile} (or run --write-rcfile):\n`);
+      process.stderr.write(`  ${snippet}\n\n`);
+
+      if (writeRc) {
+        const marker = '# vt-0334: agent-fleet shims';
+        let cur = '';
+        try { cur = fs.readFileSync(rcfile, 'utf8'); } catch {}
+        if (!cur.includes(marker)) {
+          fs.mkdirSync(path.dirname(rcfile), { recursive: true });
+          fs.appendFileSync(rcfile, `\n${marker}\n${snippet}\n`);
+          process.stderr.write(`Appended PATH line to ${rcfile}. Open a new shell to apply.\n`);
+        } else {
+          process.stderr.write(`(${rcfile} already contains the shim PATH marker.)\n`);
+        }
+      }
+      process.exit(1);
+    }
+  }
+
+  // Pretty-print results.
+  for (const r of results) {
+    process.stdout.write(`${r.agent.padEnd(12)} ${r.action}\n`);
+  }
+  if (!uninstall && results.some(r => r.action === 'installed')) {
+    process.stdout.write(`\nReload your shell or open a new terminal, then type \`${agents[0]}\` — it will auto-wrap in tmux.\n`);
+  }
+}
+
 const COMMANDS = {
   create: cmdCreate,
   list: cmdList,
@@ -679,6 +823,7 @@ const COMMANDS = {
   secrets: cmdSecrets,
   remote: cmdRemote,
   doctor: cmdDoctor,           // vt-0218
+  'setup-shims': cmdSetupShims, // vt-0335
   prime: cmdPrime,
   help: cmdPrime,
   '--help': cmdPrime,
@@ -693,6 +838,13 @@ async function main() {
   if (!fn) die(`unknown command: ${cmd}. Run 'vt prime' for help.`, 2);
   if (cmd === 'prime' || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     fn();
+    return;
+  }
+  // vt-0335: setup-shims is filesystem-only (symlinks + PATH check),
+  // doesn't need vault dir or apiBase/token. Run with empty config.
+  if (cmd === 'setup-shims') {
+    const args = parseArgs(argv.slice(1));
+    try { await fn({}, args); } catch (e) { die(e.stack || e.message); }
     return;
   }
   let cfg;
