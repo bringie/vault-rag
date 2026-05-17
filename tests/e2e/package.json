@@ -1,0 +1,14 @@
+{
+  "name": "vault-rag-oss-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright e2e suite for brain.itiswednesdaymydud.es portal.",
+  "scripts": {
+    "test": "playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:rest": "playwright test specs/rest.spec.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
