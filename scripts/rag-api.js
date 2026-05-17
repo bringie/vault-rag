@@ -201,6 +201,17 @@ function checkAuth(req) {
   } catch { return false; }
 }
 
+// vt-0332 (audit 2026-05-17): viewer-or-admin gate. Pre-fix, the
+// /notes/* handlers each called `if (!checkAuth(req))` which only
+// accepted the viewer bearer; once a deployment enabled
+// FLEET_ADMIN_TOKEN (C1 hardening) and the SPA switched to the
+// admin token for everything, vault notes started returning 401
+// because the admin bearer didn't match TOKEN. Use this helper at
+// every read-path that wants "any authenticated caller".
+function _checkAnyAuth(req) {
+  return checkAuth(req) || (FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx));
+}
+
 function safeRel(p) {
   if (!p) throw new Error('path required');
   if (p.includes('..') || p.startsWith('/') || p.includes('\\')) throw new Error('bad path');
@@ -271,7 +282,7 @@ function mapOutcome(e) {
 // (vault_files table never existed). Auth: viewer Bearer enough — readers
 // only. Tag overlay from chunks table is best-effort.
 async function handleNotesList(req, res) {
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  if (!_checkAnyAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
   const prefix = (u.searchParams.get('prefix') || '').replace(/^\/+/, '').replace(/\/+$/, '');
   const depth = Math.min(Math.max(parseInt(u.searchParams.get('depth') || '2', 10), 0), 5);
@@ -328,7 +339,7 @@ async function handleNotesList(req, res) {
 // Used by the Fleet UI vault tab to resolve [[name]] / [[folder/name]] /
 // [[name|alias]] links on click without an extra round-trip per click.
 async function handleNotesIndex(req, res) {
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  if (!_checkAnyAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const all = [];
   const byBase = {};
   const byBaseLower = {};
@@ -377,7 +388,7 @@ async function handleNotesIndex(req, res) {
 // Nodes carry {path, label} only — the UI fetches detail on click via
 // existing /notes/show endpoints.
 async function handleNotesGraph(req, res) {
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  if (!_checkAnyAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL('http://x' + req.url);
   const rootPath = u.searchParams.get('path') || '';
   const depth = Math.min(5, Math.max(1, parseInt(u.searchParams.get('depth') || '2', 10)));
@@ -693,7 +704,7 @@ function safeGitPath(rel) {
   return rel;
 }
 async function handleNotesHistory(req, res) {
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  if (!_checkAnyAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
   const rel = safeGitPath((u.searchParams.get('path') || '').replace(/^\/+/, ''));
   if (!rel) return send(res, 422, { error: 'bad path' });
@@ -732,7 +743,7 @@ async function handleNotesHistory(req, res) {
 // file at sha X" without checking out anything. Plain text only; binary
 // blobs return 422.
 async function handleNotesShow(req, res) {
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  if (!_checkAnyAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
   const rel = safeGitPath((u.searchParams.get('path') || '').replace(/^\/+/, ''));
   const sha = u.searchParams.get('sha') || '';
@@ -774,7 +785,7 @@ async function handleNotesShow(req, res) {
 //                             B may be the literal "HEAD" or "WORK" (working tree)
 // Auth: viewer Bearer. Read-only.
 async function handleNotesDiff(req, res) {
-  if (!checkAuth(req)) return send(res, 401, { error: 'unauthorized' });
+  if (!_checkAnyAuth(req)) return send(res, 401, { error: 'unauthorized' });
   const u = new URL(req.url, 'http://x');
   const rel = safeGitPath((u.searchParams.get('path') || '').replace(/^\/+/, ''));
   if (!rel) return send(res, 422, { error: 'bad path' });
