@@ -7,26 +7,8 @@
 //   GET /fleet/sessions/:id/transcript.txt
 //   GET /fleet/sessions/:id/transcript.bin
 
-const { SID_RE, send } = require('./_shared');
-
-// Strip both CSI sequences (\x1b[...) — including private-prefix variants like
-// \x1b[?2004h — and 2-byte ESC sequences (\x1b7, \x1b8, \x1b], etc.), and OSC
-// strings. Also flattens TUI cursor-control noise that survives ANSI removal:
-//   - bare \r (cursor-to-col-0) → drop, otherwise renders as newline in <pre>
-//   - \b (backspace) → drop
-//   - BEL → drop
-// Result: readable for archive transcript view. For full TUI fidelity use
-// xterm replay (see vt-0116 follow-up).
-function stripAnsi(s) {
-  return s
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')   // OSC ...BEL or ...ST
-    .replace(/\x1b\[[\d;?<>]*[A-Za-z]/g, '')              // CSI ...final
-    .replace(/\x1b[()][\x20-\x7e]/g, '')                  // charset designate
-    .replace(/\x1b[78=>cDEHMNOPVZ\\]/g, '')               // simple 2-byte ESC
-    .replace(/\r\n/g, '\n')                               // CRLF → LF
-    .replace(/\r/g, '')                                   // lone CR drop
-    .replace(/[\x07\x08]/g, '');                          // BEL + BS drop
-}
+// vt-0353: stripAnsi moved to _shared.js (shared with dispatch.js).
+const { SID_RE, send, stripAnsi } = require('./_shared');
 
 function register({ fleetDb }) {
   return [
@@ -59,4 +41,4 @@ function register({ fleetDb }) {
   ];
 }
 
-module.exports = { register, stripAnsi };
+module.exports = { register };

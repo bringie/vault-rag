@@ -9,10 +9,10 @@
 //                           group brain_prompt + role composition + ARG_MAX cap
 //   POST /fleet/exec      — synchronous claude --print, returns transcript
 
-const { send, readBody } = require('./_shared');
+// vt-0353: STRUCTURED_SPAWN_FIELDS + stripAnsi moved into _shared.js so
+// dispatch.js no longer has to require sibling sub-modules.
+const { send, readBody, STRUCTURED_SPAWN_FIELDS, stripAnsi } = require('./_shared');
 const log = require('../log').for('fleet/dispatch');
-const { STRUCTURED_SPAWN_FIELDS } = require('./sessions');
-const { stripAnsi } = require('./transcripts');
 
 // vt-0133: cap concurrent exec sessions per host. Without this, 100 parallel
 // /fleet/exec POSTs pin every host to its slowest task, each holding a

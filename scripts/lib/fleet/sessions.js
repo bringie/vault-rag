@@ -13,16 +13,8 @@
 //   POST   /fleet/sessions/:id/input
 //   POST   /fleet/sessions/:id/kill        — handles orphan/pending degrade
 
-const { SID_RE, send, readBody } = require('./_shared');
-
-// Spawn schema (vt-0102). Two shapes accepted:
-//   Legacy:  { host_id, cwd, args:[...], env? }
-//   Generic: { host_id, cwd, agent?, prompt?, model?, system_prompt?,
-//              allowed_tools?, resume_session_id?, dangerous?, args?, env? }
-const STRUCTURED_SPAWN_FIELDS = [
-  'agent', 'prompt', 'model', 'system_prompt',
-  'allowed_tools', 'resume_session_id', 'dangerous',
-];
+// vt-0353: STRUCTURED_SPAWN_FIELDS moved to _shared.js (shared with dispatch.js).
+const { SID_RE, send, readBody, STRUCTURED_SPAWN_FIELDS } = require('./_shared');
 
 // Allowlist for older_than: avoids users bypassing intent (e.g. '0 seconds'
 // would delete every closed session). Also blocks confusing Postgres errors
@@ -242,4 +234,4 @@ function register({ fleetDb }) {
   ];
 }
 
-module.exports = { register, STRUCTURED_SPAWN_FIELDS };
+module.exports = { register };
