@@ -608,6 +608,69 @@ async function unassignRoleFromGroup(c, groupId, roleId) {
     [groupId, roleId]);
 }
 
+// vt-0370 (epic vt-0369): per-host role assignment. Same shape as
+// listGroupRoles/assignRoleToGroup but keyed on host_id. Resolution
+// precedence (group replaces host) is in resolveEffectiveRoles below.
+async function listHostRoles(c, hostId) {
+  const { rows } = await c.query(
+    `SELECT r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools, hr.position, hr.added_at
+       FROM fleet_host_roles hr
+       JOIN fleet_agent_roles r ON r.id = hr.role_id
+      WHERE hr.host_id = $1 AND r.deleted_at IS NULL
+      ORDER BY hr.position ASC, hr.added_at ASC`, [hostId]);
+  return rows;
+}
+
+async function assignRoleToHost(c, hostId, roleId, position = 0) {
+  await c.query(
+    `INSERT INTO fleet_host_roles (host_id, role_id, position)
+       VALUES ($1,$2,$3)
+     ON CONFLICT (host_id, role_id) DO UPDATE SET position = EXCLUDED.position`,
+    [hostId, roleId, position]);
+}
+
+async function unassignRoleFromHost(c, hostId, roleId) {
+  await c.query(
+    `DELETE FROM fleet_host_roles WHERE host_id = $1 AND role_id = $2`,
+    [hostId, roleId]);
+}
+
+// Resolve effective role list for spawn — group roles REPLACE host roles
+// when the host belongs to any group with roles. See sql/030-fleet-host-roles.sql
+// for rationale. Returns the same row shape as listGroupRoles/listHostRoles
+// so the dispatch/workflow caller doesn't care which source won.
+async function resolveEffectiveRoles(c, hostId) {
+  // Collect every group this host belongs to with at least one role.
+  const { rows: groupRows } = await c.query(
+    `SELECT DISTINCT g.id
+       FROM fleet_host_groups hg
+       JOIN fleet_groups g ON g.id = hg.group_id
+       JOIN fleet_group_roles gr ON gr.group_id = g.id
+       JOIN fleet_agent_roles r  ON r.id = gr.role_id AND r.deleted_at IS NULL
+      WHERE hg.host_id = $1`, [hostId]);
+  if (groupRows.length === 0) {
+    // No group with roles → fall back to host's own.
+    return await listHostRoles(c, hostId);
+  }
+  // Group(s) with roles → union of those group roles, in (group, position) order.
+  // If two groups both define a role with the same role_id, dedupe keeping the
+  // earliest position. This shouldn't happen in practice (operator typically
+  // assigns a role to one group) but the SQL is cheap.
+  const { rows } = await c.query(
+    `SELECT DISTINCT ON (r.id)
+            r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools,
+            gr.position, gr.added_at
+       FROM fleet_host_groups hg
+       JOIN fleet_groups g       ON g.id = hg.group_id
+       JOIN fleet_group_roles gr ON gr.group_id = g.id
+       JOIN fleet_agent_roles r  ON r.id = gr.role_id AND r.deleted_at IS NULL
+      WHERE hg.host_id = $1
+      ORDER BY r.id, gr.position ASC, gr.added_at ASC`, [hostId]);
+  // Re-order by position now that dedupe is done.
+  rows.sort((a, b) => (a.position - b.position) || (a.added_at - b.added_at));
+  return rows;
+}
+
 // vt-0311: feature flags. Read-cached + invalidated by setFeature.
 const _featureCache = { rows: null, at: 0 };
 const FEATURE_CACHE_MS = 30_000;
@@ -811,6 +874,8 @@ module.exports = {
   // vt-0259
   listAgentRoles, getAgentRole, createAgentRole, updateAgentRole, deleteAgentRole,
   listGroupRoles, assignRoleToGroup, unassignRoleFromGroup,
+  // vt-0370 (epic vt-0369)
+  listHostRoles, assignRoleToHost, unassignRoleFromHost, resolveEffectiveRoles,
   // vt-0267
   listAgentRolesSummary,
   // vt-0271

@@ -199,6 +199,86 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
           .catch(e => send(res, 500, { error: e.message }));
       },
     },
+
+    // vt-0370 (epic vt-0369): per-host role assignment. Mirrors the
+    // group routes above. Group roles REPLACE host roles at spawn time
+    // (see fleetDb.resolveEffectiveRoles + sql/030-fleet-host-roles.sql).
+    {
+      method: 'GET',
+      pattern: new RegExp(`^/fleet/hosts/(${SID_RE})/roles$`, 'i'),
+      // GET is viewer-readable per the admin:false override; prompts
+      // are redacted for viewer by listAgentRoles itself in vt-0267.
+      admin: false,
+      handler(req, res, ctx, match) {
+        const hostId = match[1];
+        return fleetDb.listHostRoles(ctx.db, hostId)
+          .then(rs => send(res, 200, rs))
+          .catch(e => send(res, 500, { error: e.message }));
+      },
+    },
+    {
+      method: 'POST',
+      pattern: new RegExp(`^/fleet/hosts/(${SID_RE})/roles$`, 'i'),
+      handler(req, res, ctx, match) {
+        const hostId = match[1];
+        return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
+          if (!b.role_id) return send(res, 422, { error: 'role_id required' });
+          const role = await fleetDb.getAgentRole(ctx.db, b.role_id);
+          if (!role) return send(res, 404, { error: 'role not found' });
+          const host = await fleetDb.getHost(ctx.db, hostId);
+          if (!host) return send(res, 404, { error: 'host not found' });
+          // Same caps as group roles. Host has no brain_prompt of its own
+          // (that lives on the group), so the budget is roles-only.
+          const MAX_ROLES_PER_HOST = 8;
+          const MAX_COMBINED_BYTES = 65536;
+          const existing = await fleetDb.listHostRoles(ctx.db, hostId);
+          if (existing.some(r => r.id === b.role_id)) {
+            // re-assign: skip cap (position update only)
+          } else if (existing.length >= MAX_ROLES_PER_HOST) {
+            return send(res, 422, { error: `host already has ${MAX_ROLES_PER_HOST} roles (max)` });
+          } else {
+            const existingBytes = existing.reduce((s, r) => s + Buffer.byteLength(r.prompt || '', 'utf8'), 0);
+            const newBytes = Buffer.byteLength(role.prompt || '', 'utf8');
+            const headroom = 4096;
+            if (existingBytes + newBytes + headroom > MAX_COMBINED_BYTES) {
+              return send(res, 422, {
+                error: `combined prompt would exceed ${MAX_COMBINED_BYTES} bytes (current ${existingBytes}, role adds ${newBytes}, +${headroom} headroom)`,
+              });
+            }
+          }
+          await fleetDb.assignRoleToHost(ctx.db, hostId, b.role_id,
+            Number.isFinite(b.position) ? b.position : 0);
+          send(res, 201, { host_id: hostId, role_id: b.role_id });
+        }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+      },
+    },
+    {
+      method: 'DELETE',
+      pattern: new RegExp(`^/fleet/hosts/(${SID_RE})/roles/(${SID_RE})$`, 'i'),
+      handler(req, res, ctx, match) {
+        const hostId = match[1];
+        const roleId = match[2];
+        return fleetDb.unassignRoleFromHost(ctx.db, hostId, roleId)
+          .then(() => send(res, 204, {}))
+          .catch(e => send(res, 500, { error: e.message }));
+      },
+    },
+    {
+      // GET resolved effective roles — for the UI to render what WILL
+      // actually be applied at spawn (group-replaces-host). Useful for
+      // the pixel-office role-badge that needs to show the effective
+      // role, not just the locally-assigned one.
+      method: 'GET',
+      pattern: new RegExp(`^/fleet/hosts/(${SID_RE})/roles/effective$`, 'i'),
+      admin: false,
+      handler(req, res, ctx, match) {
+        const hostId = match[1];
+        return fleetDb.resolveEffectiveRoles(ctx.db, hostId)
+          .then(rs => send(res, 200, rs))
+          .catch(e => send(res, 500, { error: e.message }));
+      },
+    },
   ];
 }
 

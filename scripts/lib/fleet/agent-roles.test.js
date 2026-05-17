@@ -25,16 +25,67 @@ function fakeRes() {
   return r;
 }
 
-test('agent-roles: register() returns 9 routes', () => {
+test('agent-roles: register() returns 13 routes (5 agent + 4 group + 4 host roles)', () => {
   const routes = register({
     fleetDb: {},
     checkAdminAuth: () => true,
     validateAllowedToolsField: () => {},
   });
-  assert.strictEqual(routes.length, 9);
+  assert.strictEqual(routes.length, 13);
   assert.strictEqual(routes[0].method, 'GET');
   assert.match(routes[0].pattern.source, /agent-roles/);
   assert.strictEqual(routes[1].method, 'POST');
+});
+
+// vt-0370 (epic vt-0369): per-host role assignment routes.
+test('agent-roles: POST /fleet/hosts/:id/roles empty body returns 422', async () => {
+  const routes = register({
+    fleetDb: {
+      getAgentRole: async () => ({ id: 'r', prompt: 'p' }),
+      getHost: async () => ({ id: 'h' }),
+      listHostRoles: async () => [],
+      assignRoleToHost: async () => {},
+    },
+    checkAdminAuth: () => true,
+    validateAllowedToolsField: () => {},
+  });
+  const hostPost = routes.find(r => r.method === 'POST' && /hosts.*roles\$$/.test(r.pattern.source));
+  assert.ok(hostPost, 'host-role POST route registered');
+  const req = fakeReq({ body: null, url: '/fleet/hosts/abc/roles' });
+  const res = fakeRes(); res.req = req;
+  await hostPost.handler(req, res, { db: {} }, ['/fleet/hosts/abc/roles', 'abc']);
+  assert.strictEqual(res.statusCode, 422);
+  assert.match(res.body.error, /body required/);
+});
+
+test('agent-roles: POST /fleet/hosts/:id/roles missing role_id returns 422', async () => {
+  const routes = register({
+    fleetDb: {
+      getAgentRole: async () => ({ id: 'r', prompt: 'p' }),
+      getHost: async () => ({ id: 'h' }),
+      listHostRoles: async () => [],
+      assignRoleToHost: async () => {},
+    },
+    checkAdminAuth: () => true,
+    validateAllowedToolsField: () => {},
+  });
+  const hostPost = routes.find(r => r.method === 'POST' && /hosts.*roles\$$/.test(r.pattern.source));
+  const req = fakeReq({ body: {}, url: '/fleet/hosts/abc/roles' });
+  const res = fakeRes(); res.req = req;
+  await hostPost.handler(req, res, { db: {} }, ['/fleet/hosts/abc/roles', 'abc']);
+  assert.strictEqual(res.statusCode, 422);
+  assert.match(res.body.error, /role_id required/);
+});
+
+test('agent-roles: GET /fleet/hosts/:id/roles/effective is viewer-readable (admin:false)', () => {
+  const routes = register({
+    fleetDb: { resolveEffectiveRoles: async () => [] },
+    checkAdminAuth: () => false,
+    validateAllowedToolsField: () => {},
+  });
+  const effective = routes.find(r => r.method === 'GET' && /effective\$$/.test(r.pattern.source));
+  assert.ok(effective, 'effective-roles GET route registered');
+  assert.strictEqual(effective.admin, false);
 });
 
 test('agent-roles: POST /fleet/agent-roles with empty body returns 422', async () => {

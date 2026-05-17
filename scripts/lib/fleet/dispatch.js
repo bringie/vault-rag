@@ -178,11 +178,15 @@ function register({ fleetDb, fleetCost }) {
             // <brain>\n\n<role1>\n\n<role2>\n\n<per-call>. The assignment-time
             // cap (≤8 roles, ≤64 KiB) prevents most bloat; the ARG_MAX trim
             // below is the belt-and-suspenders.
+            // vt-0370 (epic vt-0369): resolveEffectiveRoles now handles the
+            // host-vs-group precedence. Group roles REPLACE host roles when
+            // either source has something; falls through to host roles only
+            // when no group with roles exists. The `resolvedGroup` reference
+            // still drives brain_prompt injection above.
             let appliedRoleNames = [];
-            if (resolvedGroup) {
-              try {
-                const roles = await fleetDb.listGroupRoles(ctx.db, resolvedGroup.id);
-                if (roles.length) {
+            try {
+              const roles = await fleetDb.resolveEffectiveRoles(ctx.db, host.id);
+              if (roles.length) {
                   const roleBlob = roles.map(r => r.prompt).filter(Boolean).join('\n\n');
                   if (roleBlob) {
                     structured.system_prompt = structured.system_prompt
@@ -212,9 +216,12 @@ function register({ fleetDb, fleetCost }) {
                     }
                   }
                 }
-              } catch (e) {
-                log.error('group_roles_lookup_failed', { group: resolvedGroup.name, msg: e.message });
-              }
+            } catch (e) {
+              log.error('effective_roles_lookup_failed', {
+                host: host.id,
+                group: resolvedGroup ? resolvedGroup.name : null,
+                msg: e.message,
+              });
             }
             if (structured.system_prompt
                 && Buffer.byteLength(structured.system_prompt, 'utf8') > MAX_DISPATCH_SYSTEM_PROMPT_BYTES) {
