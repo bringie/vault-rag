@@ -122,23 +122,28 @@ const _consumedSweepTimer = setInterval(() => {
   for (const [sig, exp] of _consumedTickets) if (exp < now) _consumedTickets.delete(sig);
 }, 30_000);
 _consumedSweepTimer.unref?.();
+// H1 (audit 2026-05-17): when the consumed-ticket Map is full, NEVER
+// evict a live (unexpired) entry — that opens a replay window for the
+// evicted sig until its natural expiry. Previously the cap hit triggered
+// FIFO eviction of the oldest insertion regardless of expiry. Now we
+// sweep expired entries first; if no room can be made, the new ticket
+// is REFUSED (returns false) and the caller closes the WS upgrade.
+// Returns true when the ticket was recorded, false otherwise.
 function _recordConsumedTicket(sigHash, exp) {
   if (_consumedTickets.size >= CONSUMED_TICKETS_MAX) {
     log.warn('consumed_tickets_cap_hit', { size: _consumedTickets.size, cap: CONSUMED_TICKETS_MAX });
-    // Drop the oldest by sweeping expired first; if still over, drop
-    // the head of the insertion order (FIFO via Map iteration).
     const now = Date.now();
     for (const [sig, e] of _consumedTickets) {
       if (e < now) _consumedTickets.delete(sig);
       if (_consumedTickets.size < CONSUMED_TICKETS_MAX) break;
     }
-    while (_consumedTickets.size >= CONSUMED_TICKETS_MAX) {
-      const first = _consumedTickets.keys().next().value;
-      if (first === undefined) break;
-      _consumedTickets.delete(first);
+    if (_consumedTickets.size >= CONSUMED_TICKETS_MAX) {
+      log.error('consumed_tickets_refused', { size: _consumedTickets.size, cap: CONSUMED_TICKETS_MAX });
+      return false;
     }
   }
   _consumedTickets.set(sigHash, exp);
+  return true;
 }
 // vt-0187: transactional helper for write pairs that must land together.
 // Each ctx.db is a pg.Pool (vt-0186) so we acquire a dedicated client for
@@ -173,8 +178,14 @@ function wsTicketSecret(ctx) {
   const base = process.env.VAULT_RAG_FLEET_WS_SECRET || ctx.token || '';
   return crypto.createHmac('sha256', base).update(WS_TICKET_DERIVATION).digest();
 }
-function signWsTicket(ctx, role) {
-  const payload = { role, exp: Date.now() + WS_TICKET_TTL_MS };
+// H4 (audit 2026-05-17): tickets now carry a `scope` string the caller
+// commits to at mint time. acceptWsUpgrade matches it against the
+// URL's resource id (session_id for role=viewer, run_id for
+// workflow_viewer, host_id for metrics_viewer). Empty scope still
+// passes legacy clients but emits a warn log — once the SPA always
+// supplies scope, the empty-scope branch can be removed.
+function signWsTicket(ctx, role, scope) {
+  const payload = { role, scope: scope || '', exp: Date.now() + WS_TICKET_TTL_MS };
   const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = crypto.createHmac('sha256', wsTicketSecret(ctx)).update(b64).digest('hex');
   return `${b64}.${sig}`;
@@ -192,6 +203,7 @@ function verifyWsTicket(ctx, ticket) {
   catch { return null; }
   if (!payload || typeof payload.role !== 'string' || typeof payload.exp !== 'number') return null;
   if (Date.now() > payload.exp) return null;
+  if (payload.scope !== undefined && typeof payload.scope !== 'string') return null;
   return payload;
 }
 
@@ -223,12 +235,18 @@ async function handleWsTicket({ req, res, body, ctx }) {
     await audit('denied', { reason: 'unknown_role' });
     return send(res, 422, { error: `unknown role: ${requested}` });
   }
+  // H4: scope the ticket to a specific resource id. Caller (SPA) sends
+  // body.scope_id = session/run/host id; signed into the ticket and
+  // re-checked at WS upgrade. Empty scope is accepted for back-compat
+  // but warn-logged so we can spot non-upgraded callers.
+  const scope = body && typeof body.scope_id === 'string' ? body.scope_id.slice(0, 64) : '';
   // Admin-bearer holders may request any viewer role; viewer-bearer holders
   // may only request the same. Auth check is uniform — we already passed
   // checkAuth in dispatchHttp.
-  const ticket = signWsTicket(ctx, requested);
-  await audit('ok');
-  send(res, 200, { ticket, role: requested, expires_in_ms: WS_TICKET_TTL_MS });
+  const ticket = signWsTicket(ctx, requested, scope);
+  if (!scope) log.warn('ws_ticket_unscoped', { role: requested, caller: callerId });
+  await audit('ok', scope ? { scope } : null);
+  send(res, 200, { ticket, role: requested, scope, expires_in_ms: WS_TICKET_TTL_MS });
 }
 
 function pathMatch(url, prefix) {
@@ -2369,7 +2387,32 @@ function acceptWsUpgrade(ws, { role, auth, params, ctx, ticket }) {
           log.warn('ws_ticket_replay_refused', { sig: sigHash });
           return ws.close(4001, 'ticket already used');
         }
-        if (sigHash) _recordConsumedTicket(sigHash, verified.exp);
+        // H1: refuse the upgrade when the consumed-ticket Map can't
+        // make room without evicting still-live entries. Forces the
+        // operator to bump CONSUMED_TICKETS_MAX or shorten WS_TICKET_TTL
+        // rather than silently weakening the single-use guarantee.
+        if (sigHash && !_recordConsumedTicket(sigHash, verified.exp)) {
+          return ws.close(4001, 'ticket store full — retry shortly');
+        }
+        // H4 (audit 2026-05-17): when the ticket carries a non-empty
+        // scope, it must match the resource id in the URL. Each WS
+        // role binds to a different param: viewer → session_id,
+        // workflow_viewer → run_id, metrics_viewer → host_id. Empty
+        // scope ('') is accepted for legacy clients while we roll
+        // the SPA upgrade — a warn log fires server-side to surface
+        // the laggards.
+        if (verified.scope) {
+          const paramName = role === 'viewer' ? 'session_id'
+            : role === 'workflow_viewer' ? 'run_id'
+            : role === 'metrics_viewer' ? 'host_id' : null;
+          const urlScope = paramName ? params.get(paramName) : null;
+          if (urlScope !== verified.scope) {
+            log.warn('ws_ticket_scope_mismatch', {
+              role, ticket_scope: verified.scope, url_scope: urlScope,
+            });
+            return ws.close(4001, 'ticket scope mismatch');
+          }
+        }
         // Ticket role must match (or be a generic 'viewer' that fits the requested role).
         if (verified.role === role || verified.role === 'viewer') ticketOk = true;
       }

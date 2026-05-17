@@ -699,12 +699,12 @@
   // raw token no longer lands in DevTools / reverse-proxy logs. Falls back to
   // legacy bearer.<token> if the server doesn't ship the ws-ticket endpoint
   // yet (rolling upgrade).
-  async function fetchWsTicket(role = 'viewer') {
+  async function fetchWsTicket(role = 'viewer', scopeId = '') {
     try {
       const r = await fetch('/api/fleet/auth/ws-ticket', {
         method: 'POST',
         headers: { 'authorization': 'Bearer ' + state.token, 'content-type': 'application/json' },
-        body: JSON.stringify({ role }),
+        body: JSON.stringify({ role, scope_id: scopeId }),
       });
       if (!r.ok) return null;
       const j = await r.json();
@@ -715,7 +715,9 @@
   async function connectWs(id) {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/fleet/ws?role=viewer&session_id=${id}`;
-    const ticket = await fetchWsTicket('viewer');
+    // H4: bind ticket to this session_id — server rejects upgrade if the
+    // ticket is replayed against a different session within its 60s TTL.
+    const ticket = await fetchWsTicket('viewer', id);
     const subProto = ticket ? ['ticket.' + ticket] : ['bearer.' + state.token];
     const ws = new WebSocket(url, subProto);
     state.ws = ws;

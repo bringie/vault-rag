@@ -88,7 +88,8 @@
         const r = await fetch('/api/fleet/auth/ws-ticket', {
           method: 'POST',
           headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ role: 'workflow_viewer' }),
+          // H4: bind ticket to this run_id.
+          body: JSON.stringify({ role: 'workflow_viewer', scope_id: runId }),
         });
         if (r.ok) {
           const j = await r.json();

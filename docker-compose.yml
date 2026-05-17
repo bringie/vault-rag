@@ -207,6 +207,11 @@ services:
       # bearer accepted everywhere) — see scripts/rag-api.js line 47
       # boot_no_admin_token warning.
       - VAULT_RAG_FLEET_ADMIN_TOKEN=${VAULT_RAG_FLEET_ADMIN_TOKEN:-}
+      # H3 (audit 2026-05-17): when set to 'prod', the rag-api refuses
+      # to boot without VAULT_RAG_FLEET_ADMIN_TOKEN. Operators with a
+      # local dev setup leave VAULT_RAG_ENV unset → boot continues with
+      # a warn log (single-token fallback for convenience).
+      - VAULT_RAG_ENV=${VAULT_RAG_ENV:-}
       - VAULT_PATH=/vault
       # Git auto-sync (used by lib/git-sync.js). vt-0137: HOME points at the
       # tmpfs-backed dir we mount below, and a scoped deploy key replaces

@@ -44,6 +44,17 @@ if (!TOKEN) {
   process.exit(1);
 }
 if (!FLEET_ADMIN_TOKEN) {
+  // H3 (audit 2026-05-17): in prod environments, single-token mode means
+  // a leaked viewer bearer = RCE on every host (daemon WS + workflow CRUD
+  // both fall back to the viewer token). Refuse to boot with a hard
+  // error so an operator who skipped the env var sees it on day one,
+  // not after the first incident.
+  if (process.env.VAULT_RAG_ENV === 'prod') {
+    log.fatal('boot_no_admin_token_prod', {
+      msg: 'VAULT_RAG_FLEET_ADMIN_TOKEN must be set when VAULT_RAG_ENV=prod. Single-token mode (viewer bearer gates writes) is RCE-capable and not acceptable for prod. Set the env var, restart, then try again.',
+    });
+    process.exit(1);
+  }
   log.warn('boot_no_admin_token', { msg: 'VAULT_RAG_FLEET_ADMIN_TOKEN not set — fleet writes/exec/workflow-CRUD share the viewer bearer (RCE-capable). Set this token to require separate admin credentials for mutating ops.' });
 } else if (FLEET_ADMIN_TOKEN === TOKEN) {
   log.warn('boot_admin_token_equals_viewer', { msg: 'VAULT_RAG_FLEET_ADMIN_TOKEN equals VAULT_RAG_API_TOKEN — admin/viewer split is not meaningful. Rotate one of them.' });
