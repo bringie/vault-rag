@@ -1,61 +1,86 @@
 'use strict';
-// vt-0369 / vt-0371 (Phase 2): pixel-office SPA module — skeleton.
-// Boot-time wiring: hash route `#/pixel-office` invokes
-// window.openPixelOfficeView (set at end of IIFE).
+// vt-0369 / vt-0371 / vt-0372: pixel-office SPA module.
 //
-// This phase ships ONLY the canvas + nav routing + feature-flag gate.
-// Avatar rendering and WS state come in vt-0372 (Phase 3); click-to-prompt
-// in vt-0373 (Phase 4); role picker in vt-0374; animations in vt-0375.
+// Phase 2 (vt-0371): SPA shell + feature flag + skeleton canvas.
+// Phase 3 (vt-0372): avatars + room layout + 5s state poll.
+//
+// Single canvas, no engine, no sprites. Avatars are drawn from canvas
+// primitives — head/torso/legs blocks colored deterministically from a
+// 4-byte hash of host.id (4 bits hat hue, 4 bits shirt hue, 4 bits skin
+// tone, 4 bits accessory).
+//
+// State refresh: poll /fleet/hosts + /fleet/sessions?status=running every
+// 5 s while the view is open. Cheap, no new server-side roles required.
+// A WS-driven path can be added if/when latency matters (the existing
+// fleet WS subscriptions are scoped to individual session/run/host ids,
+// not fleet-wide events).
 (function () {
   function token() { return localStorage.fleetToken || ''; }
+  async function api(path) {
+    const r = await fetch('/fleet' + path, {
+      headers: { authorization: `Bearer ${token()}` },
+    });
+    if (!r.ok) throw new Error(`${r.status}: ${path}`);
+    return r.json();
+  }
   function esc(s) {
     return (s == null ? '' : String(s)).replace(/[&<>"]/g,
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   }
 
-  // Single canvas — caller passes #po-canvas. Coordinates are absolute
-  // pixels within the canvas (no scrolling viewport for v1).
+  // --- Layout constants -----------------------------------------------------
   const CANVAS_W = 960;
   const CANVAS_H = 540;
+  const TILE = 32;
+  const AVATAR_W = 16;
+  const AVATAR_H = 24;
+  const DESK_W = 48;
+  const DESK_H = 24;
+  // Desk grid: rows of 4 desks, evenly spaced. Computed at view-open time
+  // from host count so we don't waste space.
+  const DESKS_PER_ROW = 4;
+  const ROW_GAP_Y = 96;
+  const COL_GAP_X = 192;
+  const OFFICE_TOP = 96;   // leave space for header band
 
-  let _state = null;          // { ctx, hosts, running, raf, dpr }
-  let _running = false;       // animation loop guard
+  // --- Module state ---------------------------------------------------------
+  let _ctx = null;          // CanvasRenderingContext2D
+  let _running = false;
+  let _pollTimer = null;
+  let _hosts = [];          // [{ id, name, display_name, status, ... }]
+  let _runningById = {};    // host_id → count of running sessions
+
+  // -------------------------------------------------------------------------
 
   async function openPixelOfficeView() {
-    document.getElementById('pixelofficeview-close').onclick = () => location.hash = '#/dashboard';
+    document.getElementById('pixelofficeview-close').onclick = closePixelOfficeView;
+
     const canvas = document.getElementById('po-canvas');
     if (!canvas) return;
-
-    // Crisp pixel rendering on retina: scale backing store but keep CSS px.
     const dpr = window.devicePixelRatio || 1;
     canvas.width  = CANVAS_W * dpr;
     canvas.height = CANVAS_H * dpr;
     canvas.style.width  = `${CANVAS_W}px`;
     canvas.style.height = `${CANVAS_H}px`;
-    const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
-    ctx.scale(dpr, dpr);
+    _ctx = canvas.getContext('2d');
+    _ctx.imageSmoothingEnabled = false;
+    _ctx.scale(dpr, dpr);
 
-    _state = { ctx, hosts: [], running: [], dpr };
+    updateStatus('— loading —');
+    await refreshState();
+    render();
 
-    drawPlaceholder(ctx);
-    updateStatus('— booting —');
-
-    // Skeleton: just paint once. Phase 3 will load hosts + start the rAF loop.
-    if (!_running) {
-      _running = true;
-      // Stub frame loop so toggling the page off stops it cleanly.
-      const tick = () => {
-        if (!_running) return;
-        // No-op for skeleton; Phase 3 fills this in.
-      };
-      requestAnimationFrame(tick);
-    }
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(async () => {
+      try { await refreshState(); render(); } catch (e) { /* swallow */ }
+    }, 5000);
+    _running = true;
   }
 
   function closePixelOfficeView() {
     _running = false;
-    _state = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    location.hash = '#/dashboard';
   }
 
   function updateStatus(text) {
@@ -63,34 +88,169 @@
     if (el) el.textContent = text;
   }
 
-  function drawPlaceholder(ctx) {
-    // Office floor (already CSS-bg'd to #1a1f2c). Draw a grid + a "coming
-    // soon" banner so the skeleton is visibly alive.
+  async function refreshState() {
+    const [hosts, sessions] = await Promise.all([
+      api('/hosts'),
+      api('/sessions?status=running'),
+    ]);
+    // Stable order — keeps each host on the same desk between polls. Sort by
+    // name so a fresh-up host slots in alphabetically rather than jumping.
+    _hosts = hosts.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    _runningById = {};
+    for (const s of sessions) {
+      _runningById[s.host_id] = (_runningById[s.host_id] || 0) + 1;
+    }
+    const online = _hosts.filter(h => h.status === 'online').length;
+    const working = _hosts.filter(h => (_runningById[h.id] || 0) > 0).length;
+    updateStatus(`${_hosts.length} hosts · ${online} online · ${working} working`);
+  }
+
+  // --- Drawing -------------------------------------------------------------
+
+  // 32-bit deterministic hash of a string. Simple FNV-1a — enough to
+  // generate stable palette indices, not security-grade.
+  function hash32(s) {
+    let h = 0x811c9dc5 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h >>> 0;
+  }
+
+  // Palette derived from hash. Returns hex strings for hat/shirt/skin/accent.
+  function paletteFor(hostId) {
+    const h = hash32(hostId);
+    const hats   = ['#e74c3c','#f39c12','#27ae60','#2980b9','#8e44ad','#d35400','#16a085','#c0392b','#7f8c8d','#34495e'];
+    const shirts = ['#3498db','#2ecc71','#e67e22','#9b59b6','#1abc9c','#e91e63','#ff5722','#607d8b','#795548','#009688'];
+    const skins  = ['#fce4c4','#f1c27d','#e0ac69','#c68642','#8d5524'];
+    const accents = ['#f1c40f','#ecf0f1','#bdc3c7','#1abc9c'];
+    return {
+      hat:    hats   [(h >>>  0) & 0x0f] || '#777',
+      shirt:  shirts [(h >>>  4) & 0x0f] || '#888',
+      skin:   skins  [(h >>>  8) % skins.length],
+      accent: accents[(h >>> 12) % accents.length],
+      hasHat: ((h >>> 16) & 0x07) > 1,   // ~75% of avatars wear a hat
+    };
+  }
+
+  // Desk + avatar position for host at index i.
+  function deskPos(i) {
+    const row = Math.floor(i / DESKS_PER_ROW);
+    const col = i % DESKS_PER_ROW;
+    const totalWidthForRow = (DESKS_PER_ROW - 1) * COL_GAP_X + DESK_W;
+    const startX = Math.floor((CANVAS_W - totalWidthForRow) / 2);
+    return {
+      x: startX + col * COL_GAP_X,
+      y: OFFICE_TOP + row * ROW_GAP_Y,
+    };
+  }
+
+  function drawRoom(ctx) {
+    // Background: dark office floor.
     ctx.fillStyle = '#1a1f2c';
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-
-    // Faint grid (32 px tile, matching what Phase 3 will use).
+    // Tile grid for visual rhythm.
     ctx.strokeStyle = 'rgba(255,255,255,0.04)';
     ctx.lineWidth = 1;
-    for (let x = 0; x <= CANVAS_W; x += 32) {
+    for (let x = 0; x <= CANVAS_W; x += TILE) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_H); ctx.stroke();
     }
-    for (let y = 0; y <= CANVAS_H; y += 32) {
+    for (let y = 0; y <= CANVAS_H; y += TILE) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CANVAS_W, y); ctx.stroke();
     }
-
-    // Centered banner — vt-style monospace, low brightness.
-    ctx.fillStyle = '#8ab4f8';
-    ctx.font = 'bold 24px "JetBrains Mono", "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('PIXEL OFFICE — Phase 2 skeleton', CANVAS_W / 2, CANVAS_H / 2 - 8);
+    // Top header band — gives a "window" feel to the floor.
+    ctx.fillStyle = '#0e1320';
+    ctx.fillRect(0, 0, CANVAS_W, 64);
     ctx.fillStyle = '#506075';
-    ctx.font = '14px "JetBrains Mono", "Courier New", monospace';
-    ctx.fillText('avatars + room layout land in vt-0372', CANVAS_W / 2, CANVAS_H / 2 + 16);
+    ctx.font = '11px "JetBrains Mono", "Courier New", monospace';
+    ctx.fillText('— FLEET OFFICE —', 16, 24);
+    ctx.fillText('avatars per host · darker = offline · monitor lit = working', 16, 42);
+  }
+
+  function drawDesk(ctx, x, y, working) {
+    // Desktop slab.
+    ctx.fillStyle = '#3e2a1a';
+    ctx.fillRect(x, y + AVATAR_H + 4, DESK_W, 6);
+    // Legs.
+    ctx.fillRect(x + 2, y + AVATAR_H + 10, 4, 10);
+    ctx.fillRect(x + DESK_W - 6, y + AVATAR_H + 10, 4, 10);
+    // Monitor.
+    ctx.fillStyle = '#222';
+    ctx.fillRect(x + 8, y + AVATAR_H - 14, 20, 16);
+    // Screen (green if working, dark if idle).
+    ctx.fillStyle = working ? '#3affb0' : '#0a1a18';
+    ctx.fillRect(x + 10, y + AVATAR_H - 12, 16, 12);
+    // Keyboard.
+    ctx.fillStyle = '#555';
+    ctx.fillRect(x + 8, y + AVATAR_H + 2, 20, 3);
+  }
+
+  function drawAvatar(ctx, x, y, palette, alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // Head.
+    ctx.fillStyle = palette.skin;
+    ctx.fillRect(x + 4, y, 8, 8);
+    // Eyes.
+    ctx.fillStyle = '#000';
+    ctx.fillRect(x + 6, y + 4, 1, 1);
+    ctx.fillRect(x + 9, y + 4, 1, 1);
+    // Hat.
+    if (palette.hasHat) {
+      ctx.fillStyle = palette.hat;
+      ctx.fillRect(x + 3, y - 2, 10, 3);
+      ctx.fillRect(x + 5, y - 4, 6, 2);
+    }
+    // Torso.
+    ctx.fillStyle = palette.shirt;
+    ctx.fillRect(x + 2, y + 8, 12, 10);
+    // Accent stripe across chest.
+    ctx.fillStyle = palette.accent;
+    ctx.fillRect(x + 2, y + 13, 12, 1);
+    // Arms.
+    ctx.fillStyle = palette.shirt;
+    ctx.fillRect(x, y + 9, 2, 7);
+    ctx.fillRect(x + 14, y + 9, 2, 7);
+    // Legs.
+    ctx.fillStyle = '#222';
+    ctx.fillRect(x + 4, y + 18, 3, 6);
+    ctx.fillRect(x + 9, y + 18, 3, 6);
+    ctx.restore();
+  }
+
+  function drawNameTag(ctx, x, y, name, badge) {
+    ctx.fillStyle = '#c8d4e2';
+    ctx.font = '10px "JetBrains Mono", "Courier New", monospace';
+    ctx.textAlign = 'center';
+    const t = (name || '').slice(0, 14);
+    ctx.fillText(t, x + AVATAR_W / 2, y + AVATAR_H + 32);
+    if (badge) {
+      ctx.fillStyle = '#3affb0';
+      ctx.fillText(badge, x + AVATAR_W / 2, y + AVATAR_H + 44);
+    }
     ctx.textAlign = 'left';
   }
 
-  // Export — app.js router calls this when #/pixel-office is opened.
+  function render() {
+    if (!_ctx) return;
+    const ctx = _ctx;
+    drawRoom(ctx);
+    _hosts.forEach((h, i) => {
+      const pos = deskPos(i);
+      const running = _runningById[h.id] || 0;
+      const isOnline = h.status === 'online';
+      const isWorking = isOnline && running > 0;
+      drawDesk(ctx, pos.x + 0, pos.y, isWorking);
+      const palette = paletteFor(h.id);
+      drawAvatar(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y, palette,
+        isOnline ? 1.0 : 0.35);
+      const badge = isWorking ? `${running} session${running > 1 ? 's' : ''}` : '';
+      drawNameTag(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y,
+        h.display_name || h.name, badge);
+    });
+  }
+
   window.openPixelOfficeView = openPixelOfficeView;
   window.closePixelOfficeView = closePixelOfficeView;
 })();
