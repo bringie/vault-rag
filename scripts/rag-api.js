@@ -1178,6 +1178,15 @@ const _pgBackupGauge = metrics.gauge('pg_backup_last_ok_seconds',
 // lets vmalert page when any of them crosses 1 GB.
 const _auditTableBytes = metrics.gauge('audit_table_bytes',
   'pg_total_relation_size for each audit table', ['table']);
+// vt-0303: WAL archive observability.
+//   pg_wal_archive_lag_seconds = now - mtime of newest WAL file.
+//   pg_wal_archive_bytes       = total size of /backups/wal/ dir.
+// Stale archive (lag > 10 min) means archive_command is failing OR
+// archive_timeout is misconfigured. Alert fires per vmalert rule.
+const _walLag   = metrics.gauge('pg_wal_archive_lag_seconds',
+  'seconds since the newest WAL segment in /backups/wal/ (0 = no segments yet)');
+const _walBytes = metrics.gauge('pg_wal_archive_bytes',
+  'total size of /backups/wal/');
 setInterval(() => {
   if (pg && pg.totalCount !== undefined) {
     _pgPool.set({ state: 'total' }, pg.totalCount);
@@ -1199,6 +1208,29 @@ setInterval(() => {
     _pgBackupGauge.set({}, newest ? Math.floor(newest / 1000) : 0);
   } catch (e) {
     log.warn('pg_backup_gauge_scan_failed', { msg: e.message });
+  }
+  // vt-0303: WAL archive lag + total size.
+  try {
+    const walDir = '/backups/wal';
+    if (fs.existsSync(walDir)) {
+      let newestMtime = 0, totalBytes = 0, count = 0;
+      for (const n of fs.readdirSync(walDir)) {
+        try {
+          const st = fs.statSync(path.join(walDir, n));
+          if (!st.isFile()) continue;
+          count += 1;
+          totalBytes += st.size;
+          if (st.mtimeMs > newestMtime) newestMtime = st.mtimeMs;
+        } catch {}
+      }
+      _walLag.set({}, newestMtime ? Math.max(0, Math.floor((Date.now() - newestMtime) / 1000)) : 0);
+      _walBytes.set({}, totalBytes);
+    } else {
+      _walLag.set({}, 0);
+      _walBytes.set({}, 0);
+    }
+  } catch (e) {
+    log.warn('wal_gauge_scan_failed', { msg: e.message });
   }
 }, 5000).unref?.();
 

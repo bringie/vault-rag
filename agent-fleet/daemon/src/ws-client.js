@@ -377,6 +377,7 @@ async function runDaemon(opts) {
   // reconnects, which can happen many times per day). Opt-in: only when
   // AGENT_FLEET_TOKMON_ENABLED=1 + token is set + the hub URL parses cleanly.
   let tokmonWatcher = null;
+  let _hubFeatures = null;  // vt-0313: most recent feature mask from hub
   if (process.env.AGENT_FLEET_TOKMON_ENABLED === '1') {
     try {
       const { TokmonWatcher } = require('./tokmon-watcher');
@@ -481,6 +482,29 @@ async function runDaemon(opts) {
           if (f.type === 'welcome' && f.host_id) {
             hostId = f.host_id;
             fs.writeFileSync(cfgPath, JSON.stringify({ host_id: hostId, host_name: opts.hostName }));
+            // vt-0313: react to hub feature mask. Daemon stops tokmon
+            // collector if `tokmon` is disabled, and skips metrics if
+            // `fleet` is off (rare — disabling fleet usually kills the
+            // daemon too, but we don't trust the hub to be consistent).
+            if (f.features && typeof f.features === 'object') {
+              try {
+                if (f.features.tokmon === false && tokmonWatcher) {
+                  tokmonWatcher.stop();
+                  tokmonWatcher = null;
+                  console.log('[daemon] tokmon disabled by hub feature mask');
+                }
+                if (f.features.tokmon === true && !tokmonWatcher && tokmonToken) {
+                  tokmonWatcher = new TokmonWatcher({ hubUrl: hubUrl.toString().replace(/\/$/, ''), token: tokmonToken });
+                  tokmonWatcher.start().catch(e => console.error('[daemon] tokmon-watcher restart:', e.message));
+                  console.log('[daemon] tokmon re-enabled by hub feature mask');
+                }
+                // Stash for future spawn-time checks (workflows feature
+                // flag could refuse fan_out etc. on the daemon).
+                _hubFeatures = f.features;
+              } catch (e) {
+                console.error('[daemon] feature toggle apply failed:', e.message);
+              }
+            }
           } else if (f.type === 'spawn') {
             // Two payload shapes:
             //   Legacy:   { args: [...], env, cwd } — args are pre-built by the

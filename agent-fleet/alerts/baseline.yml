@@ -75,6 +75,22 @@ groups:
       summary: "vault-sync.sh push failed {{ $value }} times in 15 min"
       runbook: "docker logs vault-rag-api | grep push_failed. Common causes: deploy key expired, remote diverged, DNS blip, disk full on Forgejo."
 
+  - alert: WalArchiveStale
+    expr: pg_wal_archive_lag_seconds > 60 * 30
+    for: 10m
+    labels: { severity: critical, service: backup }
+    annotations:
+      summary: "WAL archive lag {{ $value }}s (cap is archive_timeout=300)"
+      runbook: "docker logs vault-rag-postgres | grep archive. Either archive_command is failing (cp / disk-full / mount RO) or postgres is idle and archive_timeout isn't firing. PITR window is broken until restored."
+
+  - alert: WalArchiveTooLarge
+    expr: pg_wal_archive_bytes > 30 * 1024 * 1024 * 1024
+    for: 30m
+    labels: { severity: warning, service: backup }
+    annotations:
+      summary: "WAL archive exceeds 30 GiB"
+      runbook: "Either reduce archive_timeout (more frequent files but smaller residency window), tighten wal-prune mtime in docker-compose.yml, or grow the /var/backups/vault-rag mount."
+
   - alert: AuditTableTooLarge
     expr: audit_table_bytes > 1024 * 1024 * 1024
     for: 30m

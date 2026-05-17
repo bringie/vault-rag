@@ -73,6 +73,27 @@ services:
       - "statement_timeout=60000"
       - "-c"
       - "log_min_duration_statement=1000"
+      # vt-0303: WAL archiving for PITR. archive_mode=on requires
+      # wal_level=replica (default). archive_command copies each
+      # filled WAL segment into /backups/wal/ (bind-mounted host dir).
+      # archive_timeout=300 forces a WAL switch every 5 min even on a
+      # quiet system, capping RPO at ~5 min (was ~24h with daily dump).
+      # max_wal_senders + wal_keep_size sized for "single replica or
+      # operator-driven pg_basebackup" — no streaming replication
+      # configured at this scope, but the slots are reserved so future
+      # warm-standby is a knob away.
+      - "-c"
+      - "wal_level=replica"
+      - "-c"
+      - "archive_mode=on"
+      - "-c"
+      - "archive_command=test ! -f /backups/wal/%f && cp %p /backups/wal/%f"
+      - "-c"
+      - "archive_timeout=300"
+      - "-c"
+      - "max_wal_senders=4"
+      - "-c"
+      - "wal_keep_size=512MB"
     # vt-0135: postgres image drops to its own user internally but needs a few
     # caps to chown data dir on first init.
     security_opt:
@@ -123,6 +144,15 @@ services:
       ofelia.job-exec.pg-vacuum-fleet-events.schedule: "0 30 4 * * 0"
       ofelia.job-exec.pg-vacuum-fleet-events.command: "/bin/sh -c 'psql -U $$POSTGRES_USER -d vault_rag -c \"VACUUM (ANALYZE) fleet_events\" && echo vacuum_ok fleet_events'"
       ofelia.job-exec.pg-vacuum-fleet-events.no-overlap: "true"
+      # vt-0303: WAL retention. archive_command above writes every WAL
+      # segment to /backups/wal/. They're 16 MiB each and accumulate
+      # fast (≈ a few hundred per day on a quiet system). Keep 7 days
+      # — that's the PITR window; anything beyond that is dead weight
+      # because the daily pg_dump rotation is the real long-term
+      # backup. Daily 02:30 UTC, before the pg-backup at 03:30.
+      ofelia.job-exec.wal-prune.schedule: "0 30 2 * * *"
+      ofelia.job-exec.wal-prune.command: "/bin/sh -c 'find /backups/wal -type f -mtime +7 -delete; echo wal_pruned'"
+      ofelia.job-exec.wal-prune.no-overlap: "true"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${VAULT_RAG_PG_USER} -d vault_rag"]
       interval: 10s

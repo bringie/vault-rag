@@ -2040,7 +2040,21 @@ async function handleDaemonWs(ws, params, ctx) {
     name: hostName,
     daemonVersion: params.get('daemon_version') || null,
   });
-  ws.send(JSON.stringify({ type: 'welcome', host_id: host.id, server_version: ctx.version || '0.0.1' }));
+  // vt-0313: forward the current feature mask in the welcome frame.
+  // Daemon uses this to skip collectors for disabled modules.
+  let features = {};
+  try {
+    const rows = await fleetDb.listFeatures(ctx.db);
+    for (const r of rows) features[r.name] = !!r.enabled;
+  } catch (e) {
+    log.warn('welcome_features_lookup_failed', { msg: e.message });
+  }
+  ws.send(JSON.stringify({
+    type: 'welcome',
+    host_id: host.id,
+    server_version: ctx.version || '0.0.1',
+    features,
+  }));
   ctx.bus.registerDaemon(host.id, ws);
   ws.on('close', async () => {
     try { await fleetDb.setHostOffline(ctx.db, host.id); } catch {}

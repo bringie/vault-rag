@@ -23,15 +23,54 @@ class PtyManager extends EventEmitter {
 
     // Per-spawn bin override (chosen by backend registry, vt-0096). Falls back
     // to claudeBin so legacy callers keep working.
-    const bin = binOverride || this.claudeBin;
+    let bin = binOverride || this.claudeBin;
     // Inject --session-id <fleet sid> for exact tokmon cost attribution.
     // Only when running claude AND caller didn't already pass --session-id.
-    const finalArgs = args.slice();
+    let finalArgs = args.slice();
     const looksLikeClaude = /claude(\.|$)/i.test(bin);
     const hasSessionFlag = finalArgs.some(a => a === '--session-id' || a.startsWith('--session-id='));
     if (looksLikeClaude && !hasSessionFlag && /^[0-9a-f-]{36}$/i.test(sessionId)) {
       finalArgs.unshift('--session-id', sessionId);
     }
+
+    // vt-0305: opt-in sandbox. When AGENT_FLEET_SANDBOX is set to
+    // "firejail" / "bwrap" the spawn is wrapped in a profile that
+    // restricts what the agent process can read/write/network.
+    // Operator gets defence-in-depth against Claude going rogue
+    // (intentional or via prompt injection):
+    //   - firejail: needs `firejail` binary on PATH; --quiet --net=none
+    //     --private-tmp by default. Override with AGENT_FLEET_SANDBOX_ARGS.
+    //   - bwrap:    minimal user-namespace; --ro-bind / etc by default.
+    //   - none (default): legacy behaviour, no wrap.
+    const sandboxMode = process.env.AGENT_FLEET_SANDBOX || 'none';
+    if (sandboxMode === 'firejail') {
+      const extra = (process.env.AGENT_FLEET_SANDBOX_ARGS || '--quiet --private-tmp').split(/\s+/).filter(Boolean);
+      finalArgs = [...extra, '--', bin, ...finalArgs];
+      bin = 'firejail';
+    } else if (sandboxMode === 'bwrap') {
+      // Read-only system, writable HOME + cwd, no network unless overridden.
+      const defaultBwrap = [
+        '--unshare-pid', '--unshare-ipc', '--unshare-uts',
+        '--die-with-parent',
+        '--ro-bind', '/usr', '/usr',
+        '--ro-bind', '/bin', '/bin',
+        '--ro-bind', '/lib', '/lib',
+        '--ro-bind', '/lib64', '/lib64',
+        '--ro-bind', '/etc/ssl', '/etc/ssl',
+        '--bind', resolvedCwd, resolvedCwd,
+        '--bind', home, home,
+        '--proc', '/proc',
+        '--dev', '/dev',
+        '--tmpfs', '/tmp',
+      ];
+      const extra = process.env.AGENT_FLEET_SANDBOX_ARGS
+        ? process.env.AGENT_FLEET_SANDBOX_ARGS.split(/\s+/).filter(Boolean)
+        : defaultBwrap;
+      finalArgs = [...extra, '--', bin, ...finalArgs];
+      bin = 'bwrap';
+    }
+    // sandboxMode other than known values is treated as 'none' (don't
+    // crash on typos — daemon would refuse to spawn anything).
 
     const proc = pty.spawn(bin, finalArgs, {
       name: 'xterm-color', cols: 120, rows: 30, cwd: resolvedCwd,

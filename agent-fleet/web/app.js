@@ -1219,6 +1219,22 @@
   };
   const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview','recyclebinview','agentrolesview'];
   const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit','agent-roles'];
+  // vt-0312: feature-flag map. Nav buttons + page routes are hidden
+  // when their feature is `enabled=false`. Map from feature name →
+  // nav id(s). `null` means "core, never gated".
+  const NAV_FEATURE = {
+    dashboard: null,
+    archive: 'fleet',
+    cost: 'tokmon',
+    groups: 'fleet',
+    workflows: 'workflows',
+    prices: 'tokmon',
+    vault: 'vault_rag',
+    health: null,
+    audit: 'audit',
+    'agent-roles': 'agent_roles',
+  };
+  let _featureMap = {};  // populated by loadFeatures(); default empty → all visible
 
   function setPage(name, arg) {
     const p = PAGES[name] || PAGES.dashboard;
@@ -1243,6 +1259,42 @@
   window.addEventListener('hashchange', applyRoute);
   // Re-render dynamic content when language changes (inspector innerHTML etc.).
   window.addEventListener('fleet-langchange', () => applyRoute());
+
+  // vt-0312: poll feature flags + gate the nav. 60s cadence — fast
+  // enough that toggling a flag in /fleet/features is visible to all
+  // tabs within a minute, slow enough not to thrash.
+  async function loadFeatures() {
+    try {
+      const r = await fetch('/api/fleet/features', {
+        headers: { authorization: 'Bearer ' + state.token },
+      });
+      if (!r.ok) return;
+      const rows = await r.json();
+      const next = {};
+      for (const f of rows) next[f.name] = !!f.enabled;
+      _featureMap = next;
+      applyFeatureGates();
+    } catch { /* silent — non-critical */ }
+  }
+  function applyFeatureGates() {
+    for (const [navId, featureKey] of Object.entries(NAV_FEATURE)) {
+      const el = $('nav-' + navId);
+      if (!el) continue;
+      const hidden = featureKey && _featureMap[featureKey] === false;
+      el.hidden = !!hidden;
+    }
+    // If the currently-displayed page is for a feature that just got
+    // disabled, kick the user back to /dashboard so they don't sit on
+    // a half-broken view.
+    const r = currentRoute();
+    const featureKey = NAV_FEATURE[r.name];
+    if (featureKey && _featureMap[featureKey] === false && r.name !== 'dashboard') {
+      navigate('/dashboard');
+    }
+  }
+  // Initial load + periodic refresh
+  loadFeatures();
+  setInterval(loadFeatures, 60_000);
 
   // ============ Archive ============
   let archiveState = { offset: 0, limit: 50, filter: {}, total: 0 };
