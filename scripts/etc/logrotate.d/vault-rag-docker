@@ -1,0 +1,29 @@
+# vt-0258: 7-day retention for Docker json-file logs on the vault-rag host.
+#
+# Docker's json-file driver only supports size+count rotation (max-size,
+# max-file in docker-compose.yml). On an active hub a 30 MiB cap per
+# container is hit in hours, not days, so older context disappears too
+# fast for postmortems. This logrotate config layers time-based retention
+# on top: rotate daily, keep 7 rotations, then prune.
+#
+# copytruncate is required — Docker keeps the original FD open; renaming
+# the file would leave the daemon writing to a moved inode that never
+# gets reclaimed until container restart.
+#
+# Install on the host:
+#   cp scripts/etc/logrotate.d/vault-rag-docker /etc/logrotate.d/
+#   logrotate -d /etc/logrotate.d/vault-rag-docker   # dry-run
+#
+# Run cadence: /etc/cron.daily/logrotate handles it on Debian/Ubuntu.
+
+/var/lib/docker/containers/*/*-json.log {
+  daily
+  rotate 7
+  maxage 7
+  missingok
+  notifempty
+  compress
+  delaycompress
+  copytruncate
+  su root root
+}
