@@ -1573,7 +1573,12 @@
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="7"><em>loading…</em></td></tr>';
     try {
-      const r = await api('GET', '/audit?' + auditQueryString());
+      // /audit lives on rag-api root, not /fleet/* — bypass the api() helper.
+      const resp = await fetch('/api/audit?' + auditQueryString(), {
+        headers: { 'authorization': 'Bearer ' + state.token },
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const r = await resp.json();
       const rows = r.rows || [];
       if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-faint);padding:2em">no rows</td></tr>'; return; }
       tbody.innerHTML = rows.map(r => `
