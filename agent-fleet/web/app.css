@@ -991,10 +991,12 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
   background: var(--bg);
-  /* Sits over the split-pane when active. The split has its own
-     position context; we use absolute relative to vaultview. */
+  /* Sits over the split-pane when active. The fixed-overlay rule on
+     #vaultview (line ~432) already establishes a positioning context;
+     a separate `position: relative` declaration HERE used to override
+     it and break vault-tab visibility (the panel rendered inline
+     below the viewport because the fixed rule was lost). */
 }
-#vaultview { position: relative; }
 .vault-graph-toolbar {
   display: flex; gap: .5em; align-items: center;
   padding: .5em 1em; border-bottom: 1px solid var(--line);
