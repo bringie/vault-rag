@@ -1606,9 +1606,14 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     // Retention runs only after pg is bound. If pg failed to connect at boot,
     // retention never starts — rag-api must restart once pg is reachable.
     try {
-      const { startRetention } = require('./lib/fleet-retention');
+      const { startRetention, startSessionEventPurge } = require('./lib/fleet-retention');
       startRetention(pg);
       console.log('[rag-api] fleet metrics retention started');
+      // vt-0340: hourly purge of fleet_events for closed sessions
+      // outside the per-host top-10 keep window. PTY transcripts drop;
+      // fleet_sessions rows (duration / cost / exit_code) stay.
+      startSessionEventPurge(pg);
+      console.log('[rag-api] fleet session-event purge started');
     } catch (e) {
       log.error('retention_start_failed', { msg: e.message });
     }

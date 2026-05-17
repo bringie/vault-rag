@@ -42,6 +42,56 @@ async function runRetention(pool) {
   }
 }
 
+// vt-0340: per-host session event retention. Keep PTY content
+// (fleet_events transcript + ring) for the top-N most-recently
+// completed sessions per host; drop older. fleet_sessions rows
+// are preserved (duration / cost / exit_code stay for analytics).
+// Synthetic mux_attach rows excluded — they're operational, not
+// content-worth-keeping.
+const SESSION_KEEP_PER_HOST = parseInt(
+  process.env.VAULT_RAG_SESSION_KEEP_PER_HOST || '10', 10);
+const SESSION_PURGE_BATCH = parseInt(
+  process.env.VAULT_RAG_SESSION_PURGE_BATCH || '5000', 10);
+
+async function purgeOldSessionEvents(pg) {
+  // Identify hosts with > N closed sessions.
+  const { rows: hosts } = await pg.query(
+    `SELECT host_id, COUNT(*)::int AS n
+     FROM fleet_sessions
+     WHERE status IN ('done','failed','cancelled','exited','killed','orphaned')
+       AND COALESCE(metadata->>'kind','') != 'mux_attach'
+     GROUP BY host_id
+     HAVING COUNT(*) > $1`,
+    [SESSION_KEEP_PER_HOST]);
+
+  let totalPurged = 0;
+  for (const h of hosts) {
+    // Per-host: collect ids beyond the top-N keep window, then
+    // batch-delete their fleet_events. Two queries (planner picks the
+    // partial index from migration 029).
+    const { rows: toDelete } = await pg.query(`
+      WITH ranked AS (
+        SELECT id, row_number() OVER (
+          PARTITION BY host_id
+          ORDER BY COALESCE(ended_at, started_at) DESC
+        ) AS rn
+        FROM fleet_sessions
+        WHERE host_id = $1
+          AND status IN ('done','failed','cancelled','exited','killed','orphaned')
+          AND COALESCE(metadata->>'kind','') != 'mux_attach'
+      )
+      SELECT id FROM ranked WHERE rn > $2 LIMIT $3`,
+      [h.host_id, SESSION_KEEP_PER_HOST, SESSION_PURGE_BATCH]);
+    if (!toDelete.length) continue;
+    const ids = toDelete.map(r => r.id);
+    const { rowCount } = await pg.query(
+      `DELETE FROM fleet_events WHERE session_id = ANY($1::uuid[])`,
+      [ids]);
+    totalPurged += rowCount || 0;
+  }
+  return totalPurged;
+}
+
 function startRetention(db, intervalMs = 5 * 60 * 1000) {
   // Run once at boot, then every 5 min.
   runRetention(db).catch(e => log.error('boot_failed', { msg: e.message }));
@@ -52,4 +102,22 @@ function startRetention(db, intervalMs = 5 * 60 * 1000) {
   return t;
 }
 
-module.exports = { runRetention, startRetention };
+// vt-0340: session-event purge runs hourly (independent of metrics
+// rollup which is 5-min cadence). Two timers keep them decoupled.
+function startSessionEventPurge(pg, intervalMs = 60 * 60 * 1000) {
+  // Run once at boot (~ 30s after) so a hot deploy doesn't stampede.
+  setTimeout(() => {
+    purgeOldSessionEvents(pg)
+      .then(n => { if (n > 0) log.info('session_events_purged', { rows: n, keep: SESSION_KEEP_PER_HOST }); })
+      .catch(e => log.error('session_event_purge_boot_failed', { msg: e.message }));
+  }, 30_000);
+  const t = setInterval(() => {
+    purgeOldSessionEvents(pg)
+      .then(n => { if (n > 0) log.info('session_events_purged', { rows: n, keep: SESSION_KEEP_PER_HOST }); })
+      .catch(e => log.error('session_event_purge_tick_failed', { msg: e.message }));
+  }, intervalMs);
+  t.unref?.();
+  return t;
+}
+
+module.exports = { runRetention, startRetention, purgeOldSessionEvents, startSessionEventPurge };
