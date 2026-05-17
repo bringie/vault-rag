@@ -1263,11 +1263,21 @@
   // vt-0312: poll feature flags + gate the nav. 60s cadence — fast
   // enough that toggling a flag in /fleet/features is visible to all
   // tabs within a minute, slow enough not to thrash.
+  // vt-0317: back off + surface 401 instead of silent silently-retry-
+  // every-60s. On 401 we skip polling entirely until the api()
+  // helper's re-auth dialog re-fills state.token.
+  let _featuresAuthLost = false;
   async function loadFeatures() {
+    if (_featuresAuthLost) return;
     try {
       const r = await fetch('/api/fleet/features', {
         headers: { authorization: 'Bearer ' + state.token },
       });
+      if (r.status === 401) {
+        _featuresAuthLost = true;
+        console.warn('[features] auth lost — polling paused until token refresh');
+        return;
+      }
       if (!r.ok) return;
       const rows = await r.json();
       const next = {};
@@ -1276,6 +1286,11 @@
       applyFeatureGates();
     } catch { /* silent — non-critical */ }
   }
+  // Re-enable polling whenever the operator pastes a fresh token
+  // (api()'s inputDialog flow writes state.token directly).
+  window.addEventListener('storage', (ev) => {
+    if (ev.key === 'fleetToken') { _featuresAuthLost = false; loadFeatures(); }
+  });
   function applyFeatureGates() {
     for (const [navId, featureKey] of Object.entries(NAV_FEATURE)) {
       const el = $('nav-' + navId);

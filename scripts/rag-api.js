@@ -1122,6 +1122,30 @@ const ROUTES = {
   '/secrets/verify':  handleSecretVerify,
 };
 
+// vt-0317: server-side feature enforcement. Without this map, disabling
+// `vault_rag` via PATCH /fleet/features hid the nav but /api/search
+// kept responding — operator's "off" wasn't off. Map route → feature
+// name. Routes not listed here are core (always on). Lookup goes
+// through fleet-db's 30s feature cache → negligible per-request cost.
+const ROUTE_FEATURES = {
+  '/search':          'vault_rag',
+  '/get':             'vault_rag',
+  '/backlinks':       'vault_rag',
+  '/put':             'vault_rag',
+  '/secrets/get':     'secrets',
+  '/secrets/list':    'secrets',
+  '/secrets/set':     'secrets',
+  '/secrets/delete':  'secrets',
+  '/secrets/rotate':  'secrets',
+  '/secrets/verify':  'secrets',
+};
+const fleetDbLib = require('./lib/fleet-db');
+async function _featureEnabled(name) {
+  if (!pg) return true;  // pre-pg-boot → don't block
+  try { return await fleetDbLib.isFeatureEnabled(pg, name); }
+  catch { return true; }  // fail-open: don't lock operator out on a feature-table glitch
+}
+
 const TASK_ROUTES = {
   '/task/create':  'create',
   '/task/list':    'list',
@@ -1210,6 +1234,10 @@ setInterval(() => {
     log.warn('pg_backup_gauge_scan_failed', { msg: e.message });
   }
   // vt-0303: WAL archive lag + total size.
+  // vt-0317: sentinel value (10 years) when no segments exist so the
+  // WalArchiveStale alert fires on a TOTAL archive failure instead of
+  // staying silent at 0. archive_mode=on with 0 segments after boot
+  // is a real failure mode (archive_command broken from line 1).
   try {
     const walDir = '/backups/wal';
     if (fs.existsSync(walDir)) {
@@ -1223,10 +1251,17 @@ setInterval(() => {
           if (st.mtimeMs > newestMtime) newestMtime = st.mtimeMs;
         } catch {}
       }
-      _walLag.set({}, newestMtime ? Math.max(0, Math.floor((Date.now() - newestMtime) / 1000)) : 0);
+      if (newestMtime) {
+        _walLag.set({}, Math.max(0, Math.floor((Date.now() - newestMtime) / 1000)));
+      } else {
+        // Empty dir → "10 years stale" sentinel so the alert fires.
+        // 0 would have masked the failure.
+        _walLag.set({}, 315360000);
+      }
       _walBytes.set({}, totalBytes);
     } else {
-      _walLag.set({}, 0);
+      // /backups/wal not mounted at all — same sentinel.
+      _walLag.set({}, 315360000);
       _walBytes.set({}, 0);
     }
   } catch (e) {
@@ -1427,6 +1462,13 @@ const server = http.createServer(async (req, res) => {
 
   const handler = ROUTES[req.url];
   if (!handler) return send(res, 404, { error: 'not found' });
+  // vt-0317: feature flag gate. Reject 503 when the route's feature is
+  // disabled — operator's "off" in /fleet/features now actually means
+  // off, not "UI-hide-only". Fail-open on lookup error.
+  const featureKey = ROUTE_FEATURES[req.url];
+  if (featureKey && !(await _featureEnabled(featureKey))) {
+    return send(res, 503, { error: `feature '${featureKey}' is disabled` });
+  }
   try {
     const body = await readBody(req);
     // vt-0142: handlers may opt into receiving the raw req (for caller-id

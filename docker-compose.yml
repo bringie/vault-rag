@@ -86,6 +86,16 @@ services:
       - "wal_level=replica"
       - "-c"
       - "archive_mode=on"
+      # vt-0317: postgres-canonical archive_command. `test ! -f` exits
+      # non-zero if the target ALREADY exists (postgres docs explicitly
+      # recommend this — duplicate filename means something went very
+      # wrong and operator should investigate). The "wedge" architect
+      # flagged is the intended retry-loop alarm. Operator runbook
+      # below tells them what to check.
+      #
+      # If the wal-prune cron ever races with archive (write and delete
+      # of the same name) — physically impossible since prune only
+      # touches mtime+7d files. No fix needed for personal/team.
       - "-c"
       - "archive_command=test ! -f /backups/wal/%f && cp %p /backups/wal/%f"
       - "-c"

@@ -43,22 +43,28 @@ class PtyManager extends EventEmitter {
     //   - bwrap:    minimal user-namespace; --ro-bind / etc by default.
     //   - none (default): legacy behaviour, no wrap.
     const sandboxMode = process.env.AGENT_FLEET_SANDBOX || 'none';
-    if (sandboxMode === 'firejail') {
-      const extra = (process.env.AGENT_FLEET_SANDBOX_ARGS || '--quiet --private-tmp').split(/\s+/).filter(Boolean);
-      finalArgs = [...extra, '--', bin, ...finalArgs];
-      bin = 'firejail';
-    } else if (sandboxMode === 'bwrap') {
-      // Read-only system, writable HOME + cwd, no network unless overridden.
+    if (sandboxMode === 'bwrap') {
+      // vt-0317: hardened defaults. Earlier set bound the daemon user's
+      // full $HOME read-write — claude-in-sandbox could read .ssh/id_rsa,
+      // .gh-token, .git-credentials and exfil through stdout. NEW model:
+      // give the sandbox an empty tmpfs HOME at /sandbox-home so the
+      // host's $HOME is invisible. Network is also unshared by default
+      // (claude-in-sandbox can't curl out). cwd remains writable for
+      // the legitimate work loop.
+      // To restore the previous behaviour (host HOME visible, network
+      // available) set AGENT_FLEET_SANDBOX_ARGS to your own bwrap args.
       const defaultBwrap = [
-        '--unshare-pid', '--unshare-ipc', '--unshare-uts',
+        '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net',
         '--die-with-parent',
         '--ro-bind', '/usr', '/usr',
         '--ro-bind', '/bin', '/bin',
         '--ro-bind', '/lib', '/lib',
         '--ro-bind', '/lib64', '/lib64',
         '--ro-bind', '/etc/ssl', '/etc/ssl',
+        '--ro-bind', '/etc/resolv.conf', '/etc/resolv.conf',
         '--bind', resolvedCwd, resolvedCwd,
-        '--bind', home, home,
+        '--tmpfs', '/sandbox-home',
+        '--setenv', 'HOME', '/sandbox-home',
         '--proc', '/proc',
         '--dev', '/dev',
         '--tmpfs', '/tmp',
@@ -68,6 +74,15 @@ class PtyManager extends EventEmitter {
         : defaultBwrap;
       finalArgs = [...extra, '--', bin, ...finalArgs];
       bin = 'bwrap';
+    } else if (sandboxMode === 'firejail') {
+      // vt-0317: firejail also unshares net by default + private-tmp +
+      // private-home (overlay). Operator who needs network grants it
+      // via AGENT_FLEET_SANDBOX_ARGS="--net=none" override OR keeps
+      // the default below which already disables it.
+      const extra = (process.env.AGENT_FLEET_SANDBOX_ARGS
+        || '--quiet --private-tmp --private --net=none').split(/\s+/).filter(Boolean);
+      finalArgs = [...extra, '--', bin, ...finalArgs];
+      bin = 'firejail';
     }
     // sandboxMode other than known values is treated as 'none' (don't
     // crash on typos — daemon would refuse to spawn anything).

@@ -410,21 +410,33 @@ async function runDaemon(opts) {
   // vt-0140: jsonl watcher starts ONCE per daemon process (survives WS
   // reconnects, which can happen many times per day). Opt-in: only when
   // AGENT_FLEET_TOKMON_ENABLED=1 + token is set + the hub URL parses cleanly.
+  // vt-0317: hubUrl + tokmonToken hoisted out of the if-block so the
+  // welcome-frame feature toggle (vt-0313) can re-arm the watcher
+  // without ReferenceError. Previously hub flipping `tokmon` from off
+  // to on hit the `if (!tokmonWatcher && tokmonToken)` branch where
+  // tokmonToken was out of scope → caught + logged → toggle silently
+  // ignored.
   let tokmonWatcher = null;
   let _hubFeatures = null;  // vt-0313: most recent feature mask from hub
-  if (process.env.AGENT_FLEET_TOKMON_ENABLED === '1') {
+  let tokmonHubUrl = null;
+  let tokmonToken = null;
+  let TokmonWatcherCls = null;
+  try {
+    TokmonWatcherCls = require('./tokmon-watcher').TokmonWatcher;
+    const hubUrl = new URL(opts.hub);
+    hubUrl.protocol = hubUrl.protocol === 'wss:' ? 'https:' : 'http:';
+    hubUrl.pathname = '';
+    hubUrl.search = '';
+    tokmonHubUrl = hubUrl.toString().replace(/\/$/, '');
+    tokmonToken = process.env.AGENT_FLEET_TOKMON_TOKEN || opts.token;
+  } catch (e) {
+    console.error('[daemon] tokmon-watcher init context failed:', e.message);
+  }
+  if (process.env.AGENT_FLEET_TOKMON_ENABLED === '1' && TokmonWatcherCls && tokmonHubUrl) {
     try {
-      const { TokmonWatcher } = require('./tokmon-watcher');
-      // Hub URL is the WS endpoint (wss://.../api/fleet/ws). Strip the path
-      // + flip scheme back to http(s) for the REST POST target.
-      const hubUrl = new URL(opts.hub);
-      hubUrl.protocol = hubUrl.protocol === 'wss:' ? 'https:' : 'http:';
-      hubUrl.pathname = '';
-      hubUrl.search = '';
-      const tokmonToken = process.env.AGENT_FLEET_TOKMON_TOKEN || opts.token;
-      tokmonWatcher = new TokmonWatcher({ hubUrl: hubUrl.toString().replace(/\/$/, ''), token: tokmonToken });
+      tokmonWatcher = new TokmonWatcherCls({ hubUrl: tokmonHubUrl, token: tokmonToken });
       tokmonWatcher.start().catch(e => console.error('[daemon] tokmon-watcher start:', e.message));
-      console.log(`[daemon] tokmon-watcher armed → ${hubUrl.toString().replace(/\/$/, '')}/api/tokmon/ingest`);
+      console.log(`[daemon] tokmon-watcher armed → ${tokmonHubUrl}/api/tokmon/ingest`);
     } catch (e) {
       console.error('[daemon] tokmon-watcher init failed:', e.message);
     }
@@ -527,8 +539,8 @@ async function runDaemon(opts) {
                   tokmonWatcher = null;
                   console.log('[daemon] tokmon disabled by hub feature mask');
                 }
-                if (f.features.tokmon === true && !tokmonWatcher && tokmonToken) {
-                  tokmonWatcher = new TokmonWatcher({ hubUrl: hubUrl.toString().replace(/\/$/, ''), token: tokmonToken });
+                if (f.features.tokmon === true && !tokmonWatcher && TokmonWatcherCls && tokmonHubUrl) {
+                  tokmonWatcher = new TokmonWatcherCls({ hubUrl: tokmonHubUrl, token: tokmonToken });
                   tokmonWatcher.start().catch(e => console.error('[daemon] tokmon-watcher restart:', e.message));
                   console.log('[daemon] tokmon re-enabled by hub feature mask');
                 }
@@ -549,6 +561,13 @@ async function runDaemon(opts) {
             //             and asks it to build argv. Falls back to default
             //             backend if `agent` is unknown.
             try {
+              // vt-0317: feature-mask gate. If hub disabled `fleet` (rare —
+              // would normally kill the daemon), refuse spawn here too —
+              // defence in depth against the hub being inconsistent
+              // with what the operator toggled.
+              if (_hubFeatures && _hubFeatures.fleet === false) {
+                throw new Error('hub feature mask: fleet disabled');
+              }
               applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin: opts.claudeBin });
             } catch (e) {
               safeSend(ws, { type: 'spawn_err', session_id: f.session_id, error: e.message });
