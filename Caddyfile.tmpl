@@ -96,6 +96,17 @@ ${VAULT_RAG_DOMAIN} {
 			events 10
 			window 10s
 		}
+		# vt-0236: token-only zone in addition to (token+IP). Defeats a
+		# leaked bearer rotating across a proxy chain / Tor / residential
+		# proxies to circumvent the per-(token,IP) limit.
+		zone secrets_token_only {
+			match {
+				path /api/secrets/*
+			}
+			key {http.request.header.Authorization}
+			events 300
+			window 1m
+		}
 		zone anon_min {
 			match {
 				path /healthz /metrics
@@ -157,6 +168,25 @@ ${VAULT_RAG_DOMAIN} {
 
 	handle /grafana/* {
 		reverse_proxy 127.0.0.1:3001
+	}
+
+	# vt-0235: /api/metrics exposes secret-op rates as a passive timing
+	# oracle. IP-allowlist to LAN + loopback only. Operators scraping
+	# from a Prometheus that runs OUTSIDE these ranges can override via
+	# Caddy environment substitution or a custom config block.
+	@metrics_internal {
+		path /api/metrics /metrics
+		remote_ip 127.0.0.1/32 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	}
+	@metrics_external {
+		path /api/metrics /metrics
+		not remote_ip 127.0.0.1/32 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	}
+	handle @metrics_internal {
+		reverse_proxy 127.0.0.1:5679
+	}
+	handle @metrics_external {
+		respond "metrics restricted to LAN/loopback" 403
 	}
 
 	handle {

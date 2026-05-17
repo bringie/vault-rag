@@ -1156,7 +1156,11 @@ async function handlePatchWorkflow({ req, res, body, ctx }) {
 
 async function handleDeleteWorkflow({ req, res, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
-  await wfDb.deleteWorkflow(ctx.db, id);
+  const r = await wfDb.deleteWorkflow(ctx.db, id);
+  if (!r.deleted) {
+    await auditWorkflow(ctx, req, { op: 'delete', workflow_id: id, outcome: 'denied', detail: { reason: r.reason || 'not_found' } });
+    return send(res, 409, { error: r.reason || 'not found or already deleted' });
+  }
   await auditWorkflow(ctx, req, { op: 'delete', workflow_id: id });
   res.writeHead(204); res.end();
 }
@@ -1221,6 +1225,9 @@ async function handleCancelRun({ req, res, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
   const runner = await ensureWorkflowRunner(ctx);
   if (runner) runner.cancel(id);
+  // vt-0231: audit. Cancel is an admin-only op (admin gate at outer
+  // dispatch); record it so a brief admin compromise leaves a trail.
+  await auditWorkflow(ctx, req, { op: 'cancel', run_id: id });
   send(res, 200, { ok: true });
 }
 
@@ -1340,14 +1347,22 @@ async function handleApprovalDecision({ req, res, body, ctx }) {
   const row = await wfDb.recordApprovalDecision(ctx.db, m[1], m[2], {
     decision: body.decision, decided_by: body.by, note: body.note,
   });
-  if (!row) return send(res, 409, { error: 'no pending approval matches (already decided?)' });
+  if (!row) {
+    await auditWorkflow(ctx, req, { op: body.decision, run_id: m[1], outcome: 'denied', detail: { node: m[2], reason: 'already_decided' } });
+    return send(res, 409, { error: 'no pending approval matches (already decided?)' });
+  }
+  // vt-0231: audit approval/reject — these gate whether an RCE-capable
+  // workflow continues. By definition needs the same forensic trail.
+  await auditWorkflow(ctx, req, { op: body.decision, run_id: m[1], detail: { node: m[2], by: body.by } });
   send(res, 200, row);
 }
 
-async function handleFireWorkflowEvent({ res, body, ctx }) {
+async function handleFireWorkflowEvent({ req, res, body, ctx }) {
   // POST /fleet/workflow-events  {name, payload}
   if (!body || !body.name) return send(res, 422, { error: 'name required' });
   const n = await wfDb.fireEvent(ctx.db, body.name, body.payload);
+  // vt-0231: audit event fire — can unblock waiting workflows.
+  await auditWorkflow(ctx, req, { op: 'fire_event', detail: { name: body.name, fired: n } });
   send(res, 200, { fired: n });
 }
 
@@ -1363,6 +1378,9 @@ async function handleSetWorkflowTrigger({ req, res, body, ctx }) {
     }
   }
   await wfDb.setWorkflowTrigger(ctx.db, m[1], trigger);
+  // vt-0231: audit trigger changes — adding a recurring trigger to a
+  // malicious workflow is the classic post-compromise persistence move.
+  await auditWorkflow(ctx, req, { op: trigger ? 'trigger_set' : 'trigger_clear', workflow_id: m[1], detail: trigger || {} });
   send(res, 200, { ok: true, trigger });
 }
 

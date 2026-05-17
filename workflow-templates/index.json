@@ -1,54 +1,56 @@
 {
+  "_note": "Starter templates. Each is a working minimal definition that the runner's validateDefinition accepts. After instantiation operators usually customise prompts and targeting. body-string interpolation (n1.text etc.) is NOT supported in HTTP nodes today — use a `transform` node to build dynamic JSON when needed (vt-0237).",
   "templates": [
     {
       "id": "weekly-audit-review",
       "name": "Weekly Audit Review",
-      "description": "Dispatches a claude session to summarize last-week audit anomalies (denied/error rows) and post the summary to the operator's inbox vault note.",
+      "description": "Single Claude session prompted with a fixed instruction to fetch + summarise audit anomalies via its tools (Bash / Read). Output appears in the run's transcript; the operator can pipe it elsewhere by editing the template.",
       "tags": ["audit", "weekly", "summary"],
       "definition": {
-        "start": "fetch",
+        "start": "summarize",
         "nodes": [
-          { "id": "fetch", "type": "http", "url": "/api/audit?since=2026-01-01T00:00:00Z&op=&limit=500", "method": "GET" },
-          { "id": "summarize", "type": "claude", "prompt": "Summarize the audit rows in n1.body, highlighting any outcome='denied' or 'error' rows by caller_id. Output as Markdown bullets.", "model": "claude-haiku-4-5-20251001" },
-          { "id": "save", "type": "http", "url": "/api/put", "method": "POST", "body": "{\"path\":\"00-inbox/weekly-audit-review.md\",\"content\":n2.text}" }
+          {
+            "id": "summarize",
+            "type": "claude",
+            "prompt": "Fetch the last 7 days of audit rows from /api/audit?limit=500 (use Bash + curl with $VAULT_RAG_API_TOKEN). Summarize denied/error rows by caller_id as Markdown bullets. Save the summary to 00-inbox/weekly-audit-review.md via /api/put.",
+            "model": "claude-haiku-4-5-20251001",
+            "args": ["--allowed-tools", "Bash"]
+          }
         ],
-        "edges": [
-          { "from": "fetch", "to": "summarize" },
-          { "from": "summarize", "to": "save" }
-        ]
+        "edges": []
       }
     },
     {
       "id": "host-health-check",
-      "name": "Host Health Check (broadcast)",
-      "description": "Broadcasts `uptime`, free disk and last 5 lines of journalctl across every host tagged 'prod'. Aggregates results into a single Markdown report.",
-      "tags": ["operations", "monitoring", "broadcast"],
+      "name": "Host Health Check (claude)",
+      "description": "Single Claude session that ssh's into prod hosts and aggregates `uptime; df -h /; journalctl -n 5` into a Markdown table. Operator should customise the host list inside the prompt.",
+      "tags": ["operations", "monitoring"],
       "definition": {
         "start": "exec",
         "nodes": [
-          { "id": "exec", "type": "claude", "prompt": "Run on each prod host: `uptime; df -h /; journalctl -n 5 --no-pager`. Aggregate into a Markdown table.", "args": ["--allowed-tools", "Bash"] },
-          { "id": "save", "type": "http", "url": "/api/put", "method": "POST", "body": "{\"path\":\"05-logs/host-health-$(date).md\",\"content\":n1.text}" }
+          {
+            "id": "exec",
+            "type": "claude",
+            "prompt": "For each host in $PROD_HOSTS (space-separated env var), run via ssh: `uptime; df -h /; journalctl -n 5 --no-pager`. Aggregate into one Markdown table sorted by load. Save to 05-logs/host-health-$(date +%F).md via /api/put.",
+            "args": ["--allowed-tools", "Bash"]
+          }
         ],
-        "edges": [
-          { "from": "exec", "to": "save" }
-        ]
+        "edges": []
       }
     },
     {
       "id": "rotate-quarterly",
       "name": "Quarterly Secret Rotation",
-      "description": "Rotates a fixed list of secrets (GH_TOKEN, OBSIDIAN_PLUGIN_TOKEN), records the rotation in the inbox note, and emits a workflow.completed webhook.",
+      "description": "Two-node workflow: rotate GH_TOKEN, then note the rotation in the inbox. HTTP nodes hit /api/secrets/rotate with a literal {name} body (no per-run interpolation). Operator should duplicate the rotate node for each secret they want to rotate.",
       "tags": ["secrets", "rotation", "quarterly"],
       "definition": {
         "start": "rotate_gh",
         "nodes": [
           { "id": "rotate_gh", "type": "http", "url": "/api/secrets/rotate", "method": "POST", "body": "{\"name\":\"GH_TOKEN\"}" },
-          { "id": "rotate_obsidian", "type": "http", "url": "/api/secrets/rotate", "method": "POST", "body": "{\"name\":\"OBSIDIAN_PLUGIN_TOKEN\"}" },
-          { "id": "note", "type": "http", "url": "/api/put", "method": "POST", "body": "{\"path\":\"00-inbox/rotation-log.md\",\"content\":\"Rotated GH_TOKEN + OBSIDIAN_PLUGIN_TOKEN on \"+new Date().toISOString(),\"mode\":\"append\"}" }
+          { "id": "log", "type": "claude", "prompt": "Append a line to 00-inbox/rotation-log.md (via /api/put mode=append): 'Rotated GH_TOKEN on <today UTC ISO date>.'", "args": ["--allowed-tools", "Bash"] }
         ],
         "edges": [
-          { "from": "rotate_gh", "to": "rotate_obsidian" },
-          { "from": "rotate_obsidian", "to": "note" }
+          { "from": "rotate_gh", "to": "log" }
         ]
       }
     }

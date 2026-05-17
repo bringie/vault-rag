@@ -16,6 +16,7 @@ const RETAIN_DAYS         = parseInt(process.env.AUDIT_RETAIN_DAYS         || '9
 const SECRET_RETAIN_DAYS  = parseInt(process.env.SECRET_AUDIT_RETAIN_DAYS  || String(RETAIN_DAYS), 10);
 const WORKFLOW_RETAIN_DAYS= parseInt(process.env.WORKFLOW_AUDIT_RETAIN_DAYS|| String(RETAIN_DAYS), 10);
 const INGEST_RETAIN_DAYS  = parseInt(process.env.INGEST_LOG_RETAIN_DAYS    || '30', 10);
+const WEBHOOK_RETAIN_DAYS = parseInt(process.env.WEBHOOK_DELIVERY_RETAIN_DAYS || '30', 10);
 
 async function prune(pg, table, retainDays, where = 'true') {
   try {
@@ -43,6 +44,9 @@ async function prune(pg, table, retainDays, where = 'true') {
     // ingest_log keeps errors longer (their retention window controls the
     // 'detail' jsonb column for non-error rows only).
     await prune(pg, 'ingest_log', INGEST_RETAIN_DAYS, "level <> 'error'");
+    // vt-0240: webhook_deliveries grows per attempt per subscription per
+    // event — easy to amass millions of rows on a busy hub.
+    await prune(pg, 'webhook_deliveries', WEBHOOK_RETAIN_DAYS);
   } finally {
     await pg.end();
   }

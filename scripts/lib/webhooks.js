@@ -43,11 +43,39 @@ function sign(secret, body) {
   return 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex');
 }
 
+// vt-0229: SSRF guard. Reject RFC1918 / loopback / link-local / multicast
+// hostnames. Admin-only attack surface, but the threat model includes
+// "limit blast radius of admin compromise". Operators who legitimately
+// need to webhook to an internal host can set
+// VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1.
+function _isPrivateHost(host) {
+  if (process.env.VAULT_RAG_WEBHOOK_ALLOW_PRIVATE === '1') return false;
+  const h = host.toLowerCase();
+  if (h === 'localhost' || h === '0.0.0.0' || h === '::1' || h === '[::1]') return true;
+  // IPv4 literal
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a >= 224) return true;  // multicast + reserved
+  }
+  // Hostnames matching docker-compose service names are private by convention.
+  if (/^vault-rag-/.test(h)) return true;
+  return false;
+}
+
 function post(url, body, secret) {
   return new Promise((resolve) => {
     let urlObj;
     try { urlObj = new URL(url); }
     catch (e) { return resolve({ status: null, error: 'bad url: ' + e.message }); }
+    if (_isPrivateHost(urlObj.hostname)) {
+      return resolve({ status: null, error: 'private host blocked (SSRF guard) — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1 to override' });
+    }
     const opts = {
       method: 'POST',
       hostname: urlObj.hostname,
@@ -60,7 +88,11 @@ function post(url, body, secret) {
       },
       timeout: TIMEOUT_MS,
     };
-    if (secret) opts.headers['x-vault-signature'] = sign(secret, body);
+    // vt-0249: always emit x-vault-signature so the receiver can enforce
+    // a policy of "reject unsigned"; explicit 'none' beats silently
+    // omitting the header (receiver can't tell signed-but-unverified
+    // from never-signed).
+    opts.headers['x-vault-signature'] = secret ? sign(secret, body) : 'none';
     const lib = urlObj.protocol === 'https:' ? https : http;
     const req = lib.request(opts, (res) => {
       // Drain body to free socket

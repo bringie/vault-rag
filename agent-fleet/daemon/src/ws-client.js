@@ -66,9 +66,26 @@ function validateSpawnFrame(f) {
     if (typeof f.env !== 'object' || Array.isArray(f.env)) throw new Error('env must be object');
     // vt-0202: refuse env keys that select wrapper binaries — hub-side
     // bug or compromise must not let the daemon resolve PATH to a shell.
-    const DENY = new Set(['OPENCLAW_BIN', 'NANOCLAW_BIN', 'HERMES_BIN', 'AGENT_FLEET_CLAUDE_BIN',
-                         'AGENT_FLEET_CODEX_BIN', 'AGENT_FLEET_OPENCODE_BIN', 'AGENT_FLEET_HERMES_BIN',
-                         'PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'NODE_OPTIONS']);
+    // vt-0238: extended loader/runtime denylist. Anything that can hijack
+    // dynamic linker behaviour or pre-load scripting runtimes must NOT be
+    // accepted from a (potentially compromised) hub frame.
+    const DENY = new Set([
+      // *_BIN — wrapper-binary selectors
+      'OPENCLAW_BIN', 'NANOCLAW_BIN', 'HERMES_BIN',
+      'AGENT_FLEET_CLAUDE_BIN', 'AGENT_FLEET_CODEX_BIN',
+      'AGENT_FLEET_OPENCODE_BIN', 'AGENT_FLEET_HERMES_BIN',
+      // glibc/macOS dynamic loader
+      'PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LD_BIND_NOW',
+      'LD_DEBUG_OUTPUT', 'LD_PROFILE', 'LD_DYNAMIC_WEAK',
+      'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH',
+      'GCONV_PATH', 'MALLOC_CONF',
+      // Node
+      'NODE_OPTIONS', 'NODE_PATH',
+      // Python
+      'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'PYTHONINSPECT',
+      // Ruby / Perl
+      'RUBYLIB', 'RUBYOPT', 'PERL5LIB', 'PERL5OPT',
+    ]);
     for (const k of Object.keys(f.env)) {
       if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) throw new Error(`env key invalid: ${k}`);
       if (DENY.has(k)) throw new Error(`env key denied: ${k}`);

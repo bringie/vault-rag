@@ -15,6 +15,22 @@ function isPlausibleTs(ts) {
 async function ingestBulk(tokmonPg, events) {
   if (!events.length) return { inserted: 0, dup: 0, tools: 0 };
 
+  // vt-0226: ingestBulk was written assuming a singular Client. After
+  // vt-0186 migrated the hub to pg.Pool, BEGIN/COMMIT on the Pool would
+  // dispatch each statement to a different connection — transaction
+  // silently broken. Detect Pool (has .connect()) and acquire a
+  // dedicated client for the tx; release in finally.
+  const isPool = typeof tokmonPg.connect === 'function' && typeof tokmonPg.release !== 'function';
+  const client = isPool ? await tokmonPg.connect() : tokmonPg;
+  try {
+    return await _ingestBulkOnClient(client, events);
+  } finally {
+    if (isPool) { try { client.release(); } catch {} }
+  }
+}
+
+async function _ingestBulkOnClient(tokmonPg, events) {
+
   const host_id     = events.map(e => String(e.host_id || 'localhost'));
   const message_uuid= events.map(e => String(e.message_uuid));
   const ts          = events.map(e => e.ts);

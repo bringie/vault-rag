@@ -76,7 +76,9 @@ async function getGroup(c, id) {
 }
 
 async function getGroupByName(c, name) {
-  const { rows } = await c.query('SELECT * FROM fleet_groups WHERE name = $1', [name]);
+  // vt-0248: filter soft-deleted by default. Otherwise a "deleted" group
+  // still injects its brain_prompt + matches dispatch.
+  const { rows } = await c.query('SELECT * FROM fleet_groups WHERE name = $1 AND deleted_at IS NULL', [name]);
   return rows[0] || null;
 }
 
@@ -331,15 +333,23 @@ async function orphanRunningSessions(c) {
 //      offline → orphaned regardless (defensive backstop).
 // Defaults: hostStaleSec=180 (3× heartbeat), maxAgeHours=24.
 async function reapStuckSessions(c, { hostStaleSec = 180, maxAgeHours = 24 } = {}) {
+  // vt-0239: opt-out for long-running sessions (Claude tasks routinely
+  // exceed 24h per CLAUDE.md "compact survival"). Honor metadata.no_reap.
+  // Also tighten the age-only branch: only reap an old session if its
+  // host is ALSO unhealthy — pure age was too aggressive.
   const r = await c.query(`
     UPDATE fleet_sessions s
        SET status = 'orphaned', ended_at = COALESCE(s.ended_at, now())
       FROM fleet_hosts h
      WHERE s.host_id = h.id
        AND s.status = 'running'
+       AND COALESCE((s.metadata->>'no_reap')::bool, false) = false
        AND (
          h.last_seen < now() - ($1::text || ' seconds')::interval
-         OR s.started_at < now() - ($2::text || ' hours')::interval
+         OR (
+           s.started_at < now() - ($2::text || ' hours')::interval
+           AND h.last_seen < now() - interval '1 hour'
+         )
        )
    RETURNING s.id`, [String(hostStaleSec), String(maxAgeHours)]);
   return r.rowCount;

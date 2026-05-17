@@ -43,6 +43,9 @@ vault-rag-backup [flags]
   --pg-container <name>          docker container name (default: vault-rag-postgres)
   --pg-user <name>               psql user (default: postgres)
   --pg-db <name>                 database name (default: vault_rag)
+  --yes                          skip interactive confirmation on
+                                 --restore --pg-dump (DESTRUCTIVE: replays
+                                 dump → drops + recreates target tables)
   --dry-run                      print actions, don't write
   -h, --help
 
@@ -64,6 +67,7 @@ PG_DUMP=""
 PG_CONTAINER="vault-rag-postgres"
 PG_USER="postgres"
 PG_DB="vault_rag"
+YES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -79,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --pg-container) PG_CONTAINER="$2"; shift 2;;
     --pg-user) PG_USER="$2"; shift 2;;
     --pg-db) PG_DB="$2"; shift 2;;
+    --yes) YES=1; shift;;
     --dry-run) DRY=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "unknown flag: $1" >&2; usage >&2; exit 2;;
@@ -267,6 +272,18 @@ restore() {
   if [[ -f "$BK_STAGING/pg-dumpall.sql" ]]; then
     if [[ -n "$PG_DUMP" ]]; then
       command -v docker >/dev/null || { echo "docker not found — required for pg replay" >&2; exit 1; }
+      # vt-0242: DESTRUCTIVE replay (--clean --if-exists drops + recreates).
+      # Require typed confirmation on TTY; --yes for scripted DR.
+      if [[ -z "$YES" ]]; then
+        if [[ ! -t 0 ]]; then
+          echo "refusing destructive pg replay without --yes (non-interactive)" >&2; exit 1
+        fi
+        echo
+        echo "About to replay $(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes into container '$PG_CONTAINER' db '$PG_DB'."
+        echo "This will DROP and recreate every table in '$PG_DB' before reloading data."
+        read -p "Type 'restore' to proceed: " confirm
+        [[ "$confirm" == "restore" ]] || { echo "aborted." >&2; exit 1; }
+      fi
       echo "replaying pg-dumpall ($(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes) into $PG_CONTAINER…"
       if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 < "$BK_STAGING/pg-dumpall.sql" > /dev/null; then
         echo "WARNING: pg replay failed — bundle file kept for manual recovery at $BK_STAGING/pg-dumpall.sql" >&2

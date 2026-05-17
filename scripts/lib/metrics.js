@@ -20,10 +20,18 @@ const _counters   = new Map();
 const _gauges     = new Map();
 const _histograms = new Map();
 
+// vt-0234: escape both LF and CR (Prometheus exposition is line-based);
+// coerce non-primitives to a stable string instead of `[object Object]`
+// to keep the label set bounded.
 function _labelKey(labels) {
   if (!labels) return '';
   const keys = Object.keys(labels).sort();
-  return keys.map(k => `${k}="${String(labels[k]).replace(/[\\"\n]/g, '\\$&')}"`).join(',');
+  return keys.map(k => {
+    let v = labels[k];
+    if (v == null) v = '';
+    else if (typeof v === 'object') v = '_obj';   // refuse silently rather than letting JSON.stringify expand
+    return `${k}="${String(v).replace(/[\\"\n\r]/g, '\\$&')}"`;
+  }).join(',');
 }
 
 function counter(name, help, labelNames = []) {
@@ -93,6 +101,7 @@ function exposition() {
     lines.push(`# HELP ${name} ${h.help}`);
     lines.push(`# TYPE ${name} histogram`);
     for (const [labels, rec] of h.vals) {
+      // vt-0234: avoid leading-comma artifact when no other labels exist.
       const lblPrefix = labels ? labels + ',' : '';
       for (let i = 0; i < h.buckets.length; i++) {
         lines.push(`${name}_bucket{${lblPrefix}le="${h.buckets[i]}"} ${rec.bucketCounts[i]}`);

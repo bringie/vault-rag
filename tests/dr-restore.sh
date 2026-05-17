@@ -13,7 +13,10 @@
 set -euo pipefail
 
 WORK=$(mktemp -d -t dr-test.XXXXXX)
-trap 'rc=$?; rm -rf "$WORK"; docker rm -f dr-test-pg 2>/dev/null || true; exit $rc' EXIT
+# vt-0241: clean any leftover from a previous failed run BEFORE starting,
+# and catch interactive interrupt signals so the container doesn't leak.
+docker rm -f dr-test-pg 2>/dev/null || true
+trap 'rc=$?; rm -rf "$WORK"; docker rm -f dr-test-pg 2>/dev/null || true; exit $rc' EXIT INT TERM HUP
 
 echo "=== DR test workspace: $WORK ==="
 
@@ -69,7 +72,7 @@ echo "=== restoring (with pg replay) ==="
   --age-key "$WORK/restored/age.key" \
   --vault-repo "$WORK/restored" \
   --pg-dump --pg-container dr-test-pg \
-  --force-host-mismatch
+  --force-host-mismatch --yes
 
 # --- 4. Verify ---
 echo "=== verifying ==="

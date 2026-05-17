@@ -71,6 +71,9 @@
 (function () {
   function basicDialog({ title, body, buttons }) {
     return new Promise((resolve) => {
+      // vt-0244: remember the previously-focused element so we can restore
+      // focus when the dialog closes (keyboard-only users expect this).
+      const previousFocus = document.activeElement;
       const overlay = document.createElement('div');
       overlay.className = 'app-dialog-overlay';
       overlay.setAttribute('role', 'dialog');
@@ -101,12 +104,30 @@
       function cleanup() {
         document.removeEventListener('keydown', onKey);
         overlay.remove();
+        // vt-0244: restore focus to opener.
+        try { previousFocus?.focus?.(); } catch {}
+      }
+      // vt-0244: focus trap — keep Tab inside the dialog while it's open.
+      function focusables() {
+        return Array.from(frame.querySelectorAll(
+          'input, textarea, button, select, [tabindex]:not([tabindex="-1"])'
+        )).filter(el => !el.disabled && el.offsetParent !== null);
       }
       function onKey(ev) {
-        if (ev.key === 'Escape') { cleanup(); resolve(buttons.find(b => b.cancel)?.value ?? null); }
+        if (ev.key === 'Escape') { cleanup(); resolve(buttons.find(b => b.cancel)?.value ?? null); return; }
         if (ev.key === 'Enter' && ev.target.tagName !== 'TEXTAREA') {
           const primary = buttons.find(b => b.primary);
-          if (primary) { cleanup(); resolve(primary.value); }
+          if (primary) { cleanup(); resolve(primary.value); return; }
+        }
+        if (ev.key === 'Tab') {
+          const list = focusables();
+          if (!list.length) return;
+          const first = list[0], last = list[list.length - 1];
+          if (ev.shiftKey && document.activeElement === first) {
+            ev.preventDefault(); last.focus();
+          } else if (!ev.shiftKey && document.activeElement === last) {
+            ev.preventDefault(); first.focus();
+          }
         }
       }
       document.addEventListener('keydown', onKey);
@@ -141,7 +162,11 @@
     inp.placeholder = placeholder || '';
     inp.value = initialValue || '';
     inp.spellcheck = false;
-    inp.autocomplete = 'off';
+    // vt-0245: 'new-password' tells Chrome/Edge NOT to suggest stored
+    // logins for this field. Random name defeats autofill heuristics that
+    // key on the field name (e.g. 'password' triggers vault-rag-secret-...).
+    inp.autocomplete = masked ? 'new-password' : 'off';
+    if (masked && crypto?.randomUUID) inp.name = 'vault-secret-' + crypto.randomUUID();
     inp.className = 'app-dialog-input';
     body.appendChild(inp);
     const choice = await basicDialog({

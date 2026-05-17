@@ -37,9 +37,18 @@ async function restoreWorkflow(c, id) {
   return rows[0] || null;
 }
 
-async function getWorkflow(c, id) {
-  const { rows } = await c.query('SELECT * FROM fleet_workflows WHERE id = $1', [id]);
+// vt-0230: default filter excludes soft-deleted workflows so the runner
+// can't start a "deleted" workflow via trigger / cron / stale UI tab.
+// Use getWorkflowIncludingDeleted for trash UI / restore paths.
+async function getWorkflow(c, id, { includeDeleted = false } = {}) {
+  const sql = includeDeleted
+    ? 'SELECT * FROM fleet_workflows WHERE id = $1'
+    : 'SELECT * FROM fleet_workflows WHERE id = $1 AND deleted_at IS NULL';
+  const { rows } = await c.query(sql, [id]);
   return rows[0] || null;
+}
+async function getWorkflowIncludingDeleted(c, id) {
+  return getWorkflow(c, id, { includeDeleted: true });
 }
 
 async function createWorkflow(c, { name, description, definition }) {
@@ -82,8 +91,20 @@ async function updateWorkflow(c, id, patch, expectedVersion) {
 }
 
 // vt-0225: soft-delete; purgeWorkflow() for the eventual 30-day reaper.
+// vt-0230: refuse soft-delete while pending/running runs exist — runner
+// would keep executing a "deleted" workflow until completion otherwise.
+// Returns { deleted: bool, reason?: string } so the route can surface 409.
 async function deleteWorkflow(c, id) {
-  await c.query('UPDATE fleet_workflows SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+  const active = await c.query(
+    `SELECT COUNT(*)::int AS n FROM fleet_workflow_runs WHERE workflow_id = $1 AND status IN ('pending','running')`,
+    [id]
+  );
+  if (active.rows[0].n > 0) {
+    return { deleted: false, reason: `${active.rows[0].n} pending/running run(s) — cancel first` };
+  }
+  const r = await c.query(
+    'UPDATE fleet_workflows SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL RETURNING id', [id]);
+  return { deleted: r.rowCount > 0 };
 }
 async function purgeWorkflow(c, id) {
   await c.query('DELETE FROM fleet_workflows WHERE id = $1', [id]);
@@ -261,7 +282,7 @@ async function fireEvent(c, eventName, payload) {
 }
 
 module.exports = {
-  listWorkflows, getWorkflow, createWorkflow, updateWorkflow, deleteWorkflow, purgeWorkflow,
+  listWorkflows, getWorkflow, getWorkflowIncludingDeleted, createWorkflow, updateWorkflow, deleteWorkflow, purgeWorkflow,
   listDeletedWorkflows, restoreWorkflow,
   listRuns, getRun, createRun, updateRunStatus, updateRunState, orphanRunningRuns, reapStuckRuns,
   // vt-0110

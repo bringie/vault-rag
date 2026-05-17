@@ -19,7 +19,7 @@
 #   vault-rag-upgrade --check                  # dry-run: show plan only
 #   vault-rag-upgrade --backup-to /mnt/bk.age  # custom backup destination
 
-set -euo pipefail
+set -Eeuo pipefail
 
 REPO_DIR="${VAULT_RAG_DIR:-/opt/vault-rag}"
 CHECK=""
@@ -113,6 +113,13 @@ if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
     echo "  -> $sql"
     if ! cat "$sql" | docker exec -i vault-rag-postgres psql -U postgres -d vault_rag -v ON_ERROR_STOP=1 > /dev/null; then
       warn "migration $sql failed — aborting before container restart."
+      # vt-0246: print rollback recipe — repo has new code on disk but
+      # containers still run the previous binary. Operator must roll back
+      # to the recorded SHA before retrying.
+      warn ""
+      warn "ROLLBACK:"
+      warn "  git -C $REPO_DIR reset --hard $LOCAL"
+      warn "  docker compose -f $REPO_DIR/docker-compose.yml up -d --no-deps vault-rag-api vault-rag-secrets"
       exit 1
     fi
   done

