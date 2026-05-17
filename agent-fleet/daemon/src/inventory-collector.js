@@ -69,7 +69,18 @@ function parseMcpServers(home) {
 
 function detectClaudeVersion() {
   try {
-    return execFileSync('claude', ['--version'], { encoding: 'utf8', timeout: 1500 }).trim();
+    // vt-0342: claude CLI ≥ 2.1.x writes "open terminal failed: not a
+    // terminal" to stderr when invoked without a TTY (even for
+    // --version). Without TERM in the env, even the exit code can
+    // flip non-zero. Two-belt-suspenders fix:
+    //   1. set TERM=xterm-256color so claude treats us as terminal-aware
+    //   2. drop stderr (stdio[2]='ignore') so daemon logs stay clean
+    return execFileSync('claude', ['--version'], {
+      encoding: 'utf8',
+      timeout: 1500,
+      env: { ...process.env, TERM: process.env.TERM || 'xterm-256color' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
   } catch { return null; }
 }
 

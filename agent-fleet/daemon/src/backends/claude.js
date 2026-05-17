@@ -11,8 +11,11 @@ module.exports = {
 
   async detectVersion(bin) {
     try {
+      // vt-0342: ensure TERM is set so claude doesn't fail with
+      // "open terminal failed" when daemon runs without a TTY.
       const out = execFileSync(bin, ['--version'], {
         stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+        env: { ...process.env, TERM: process.env.TERM || 'xterm-256color' },
       });
       return String(out).trim().split('\n')[0] || null;
     } catch { return null; }
