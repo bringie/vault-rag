@@ -1265,9 +1265,10 @@
     audit:           { panels: ['auditview'],         nav: 'audit',     title: 'page.audit',           open: () => openAuditView() },
     'recycle-bin':   { panels: ['recyclebinview'],    nav: 'groups',    title: 'page.recycle_bin',     open: () => window.openRecycleBinView?.() },
     'agent-roles':   { panels: ['agentrolesview'],    nav: 'agent-roles', title: 'page.agent_roles',   open: () => window.openAgentRolesView?.() },
+    'pixel-office':  { panels: ['pixelofficeview'],   nav: 'pixel-office', title: 'page.pixel_office', open: () => window.openPixelOfficeView?.() },
   };
-  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview','recyclebinview','agentrolesview'];
-  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit','agent-roles'];
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview','recyclebinview','agentrolesview','pixelofficeview'];
+  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit','agent-roles','pixel-office'];
   // vt-0312: feature-flag map. Nav buttons + page routes are hidden
   // when their feature is `enabled=false`. Map from feature name →
   // nav id(s). `null` means "core, never gated".
@@ -1282,6 +1283,7 @@
     health: null,
     audit: 'audit',
     'agent-roles': 'agent_roles',
+    'pixel-office': 'pixel_office',
   };
   let _featureMap = {};  // populated by loadFeatures(); default empty → all visible
 
@@ -2245,6 +2247,7 @@
     const rcReload = $('recycle-reload'); if (rcReload) rcReload.onclick = () => window.openRecycleBinView?.();
     const rcBack = $('recyclebinview-close'); if (rcBack) rcBack.onclick = () => navigate('/groups');
     const arNav = $('nav-agent-roles'); if (arNav) arNav.onclick = () => navigate('/agent-roles');
+    const poNav = $('nav-pixel-office'); if (poNav) poNav.onclick = () => navigate('/pixel-office');
     // vt-0367: ar-new / agentrolesview-close are now wired by
     // agent-roles.js when the view opens (same pattern as prices.js).
     // Old window.openAgentRoleEdit shim is gone — the module owns the modal.

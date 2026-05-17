@@ -296,6 +296,7 @@
         <button id="nav-health"      class="btn-ghost" data-i18n="nav.health">🩺 health</button>
         <button id="nav-audit"       class="btn-ghost" data-i18n="nav.audit">📋 audit</button>
         <button id="nav-agent-roles" class="btn-ghost" data-i18n="nav.agent_roles">🎭 roles</button>
+        <button id="nav-pixel-office" class="btn-ghost" data-i18n="nav.pixel_office">🏢 office</button>
         <span style="flex:1"></span>
         <!-- vt-0152: flag glyphs in lang, glyph icons in theme -->
         <select id="lang-select" class="switcher" title="language">
@@ -530,6 +531,24 @@
   </div>
   <!-- vt-0367: role edit pop-up (div modal — same shape as prices/groups). -->
   <div id="agent-role-modal" hidden></div>
+
+  <!-- vt-0369/vt-0371: PIXEL OFFICE PAGE — gamified avatar visualization
+       of agent-fleet hosts. Optional feature behind `pixel_office` flag. -->
+  <div id="pixelofficeview" hidden>
+    <header class="archive-head">
+      <div>
+        <span class="display" style="font-size:1.1em" data-i18n="pixel_office.title">PIXEL OFFICE</span>
+        <span id="pixel-office-status" class="lbl" style="margin-left:1em">—</span>
+      </div>
+      <div>
+        <button id="pixelofficeview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+      </div>
+    </header>
+    <div class="pixel-office-wrap">
+      <canvas id="po-canvas" width="960" height="540"></canvas>
+      <div id="po-overlay"></div>
+    </div>
+  </div>
 
   <!-- vt-0259: group→role assignment dialog -->
   <dialog id="group-roles-picker">
@@ -779,6 +798,7 @@
   <script src="/fleet/static/workflow-run-viewer.js"></script>
   <script src="/fleet/static/prices.js"></script>
   <script src="/fleet/static/agent-roles.js"></script>
+  <script src="/fleet/static/pixel-office.js"></script>
   <script src="/fleet/static/host-metrics.js"></script>
   <!-- vt-0146: vendored marked + DOMPurify (no CDN — works in air-gapped) -->
   <script src="/fleet/static/vendor/marked.min.js"></script>
