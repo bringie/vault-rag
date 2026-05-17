@@ -66,6 +66,16 @@
     _ctx.imageSmoothingEnabled = false;
     _ctx.scale(dpr, dpr);
 
+    // vt-0373 (Phase 4): click → prompt bubble. Single listener; hit-test
+    // against avatar bounding boxes computed by deskPos.
+    canvas.onclick = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = (ev.clientX - rect.left) * (CANVAS_W / rect.width);
+      const y = (ev.clientY - rect.top)  * (CANVAS_H / rect.height);
+      const hit = hostAt(x, y);
+      if (hit) openPromptBubble(hit, ev.clientX - rect.left, ev.clientY - rect.top);
+    };
+
     updateStatus('— loading —');
     await refreshState();
     render();
@@ -249,6 +259,89 @@
       drawNameTag(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y,
         h.display_name || h.name, badge);
     });
+  }
+
+  // --- Click hit-test + prompt bubble (vt-0373) ----------------------------
+
+  function hostAt(x, y) {
+    // Hit-rect = avatar block + desk block, both centred on deskPos.x.
+    for (let i = 0; i < _hosts.length; i++) {
+      const pos = deskPos(i);
+      const ax = pos.x + (DESK_W - AVATAR_W) / 2;
+      // y-range covers avatar head down through desk + name tag.
+      if (x >= pos.x && x <= pos.x + DESK_W &&
+          y >= pos.y - 4 && y <= pos.y + AVATAR_H + 48) {
+        return _hosts[i];
+      }
+    }
+    return null;
+  }
+
+  function openPromptBubble(host, anchorX, anchorY) {
+    const overlay = document.getElementById('po-overlay');
+    if (!overlay) return;
+    // Drop any prior bubble — only one open at a time.
+    overlay.innerHTML = '';
+    const bubble = document.createElement('div');
+    bubble.className = 'po-bubble';
+    // Position relative to the overlay (which is .inset:0 over the canvas).
+    bubble.style.left = `${Math.min(anchorX + 12, CANVAS_W - 280)}px`;
+    bubble.style.top  = `${Math.min(anchorY + 12, CANVAS_H - 200)}px`;
+    bubble.innerHTML = `
+      <div style="display:flex;align-items:center;gap:.5em;margin-bottom:.4em">
+        <strong>${esc(host.display_name || host.name)}</strong>
+        <span style="flex:1"></span>
+        <button class="btn-ghost" data-po-close style="font-size:11px">×</button>
+      </div>
+      <div style="color:var(--text-dim);font-size:11px;margin-bottom:.4em">
+        ${host.status === 'online' ? 'send a one-shot prompt → claude --print on this host' : '<span style="color:var(--danger)">host offline</span>'}
+      </div>
+      <textarea id="po-prompt" rows="4" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);padding:.4em;font:12px monospace" placeholder="ask something…" ${host.status === 'online' ? '' : 'disabled'}></textarea>
+      <div style="display:flex;gap:.5em;margin-top:.4em;align-items:center">
+        <button class="btn-ghost" data-po-send ${host.status === 'online' ? '' : 'disabled'}>send</button>
+        <span id="po-status" style="font-size:11px;color:var(--text-dim);flex:1"></span>
+      </div>
+      <pre id="po-result" style="margin-top:.6em;max-height:160px;overflow:auto;background:var(--bg);padding:.4em;border:1px solid var(--line);font:11px monospace;color:var(--text);display:none;white-space:pre-wrap"></pre>
+    `;
+    overlay.appendChild(bubble);
+    bubble.querySelector('[data-po-close]').onclick = () => { overlay.innerHTML = ''; };
+
+    const sendBtn = bubble.querySelector('[data-po-send]');
+    const statusEl = bubble.querySelector('#po-status');
+    const resultEl = bubble.querySelector('#po-result');
+    const promptEl = bubble.querySelector('#po-prompt');
+    if (promptEl && !promptEl.disabled) setTimeout(() => promptEl.focus(), 0);
+
+    if (sendBtn) sendBtn.onclick = async () => {
+      const prompt = promptEl.value.trim();
+      if (!prompt) { statusEl.textContent = 'prompt required'; return; }
+      sendBtn.disabled = true;
+      statusEl.textContent = 'sending…';
+      resultEl.style.display = 'none';
+      try {
+        const r = await fetch('/fleet/exec', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ host_id: host.id, prompt }),
+        });
+        if (!r.ok) {
+          let msg = `${r.status}`;
+          try { const j = await r.json(); msg += ' ' + (j.error || ''); } catch {}
+          throw new Error(msg);
+        }
+        const j = await r.json();
+        const out = (j.output || '(no output)').slice(0, 6000);
+        statusEl.innerHTML = j.session_id
+          ? `done · exit=${j.exit_code ?? '?'} · <a href="#/sessions/${esc(j.session_id)}" style="color:var(--accent)">full session</a>`
+          : `done · exit=${j.exit_code ?? '?'}`;
+        resultEl.textContent = out;
+        resultEl.style.display = 'block';
+      } catch (e) {
+        statusEl.textContent = `error: ${e.message}`;
+      } finally {
+        sendBtn.disabled = false;
+      }
+    };
   }
 
   window.openPixelOfficeView = openPixelOfficeView;
