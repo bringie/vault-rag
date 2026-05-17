@@ -185,6 +185,18 @@ ${VAULT_RAG_DOMAIN} {
 		respond "metrics restricted to LAN/loopback (vt-0235)" 403
 	}
 
+	# vt-0318-fix: SPA static assets — force no-store so browsers always
+	# fetch the latest after a deploy. Without this, stale index.html /
+	# app.js cached at level 'no-cache' caused click handlers to throw
+	# silently when new HTML elements (vt-0316 graph tab) were referenced
+	# from updated JS. Cost: full re-download per session start (~150 KiB).
+	@fleet_spa {
+		path /fleet /fleet/ /fleet/static/*
+	}
+	header @fleet_spa {
+		Cache-Control "no-store, max-age=0"
+	}
+
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:5679
 	}
