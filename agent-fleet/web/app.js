@@ -1844,69 +1844,9 @@
   }
   window.openRecycleBinView = openRecycleBinView;
 
-  // vt-0259: Agent roles list page + create/edit dialog.
-  async function openAgentRolesView() {
-    // vt-0333: was $('ar-rows') which collided with the archive tbody.
-    const body = $('agent-roles-rows');
-    if (!body) return;
-    body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-dim)">loading…</td></tr>`;
-    let roles;
-    try { roles = await api('GET', '/agent-roles'); }
-    catch (e) {
-      body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-dim)">error: ${esc(e.message)}</td></tr>`;
-      return;
-    }
-    if (!roles.length) {
-      body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-faint)">no roles — click + new role</td></tr>`;
-      return;
-    }
-    body.innerHTML = roles.map(r => `<tr>
-      <td><strong>${esc(r.name)}</strong></td>
-      <td>${esc(r.description || '')}</td>
-      <td><code>${esc(r.default_model || '—')}</code></td>
-      <td>
-        <button class="btn-row" data-edit-role="${esc(r.id)}">edit</button>
-        <button class="btn-row" data-del-role="${esc(r.id)}">delete</button>
-      </td>
-    </tr>`).join('');
-    body.querySelectorAll('[data-edit-role]').forEach(b => b.onclick = () => {
-      const r = roles.find(x => x.id === b.dataset.editRole);
-      if (r) openAgentRoleEdit(r);
-    });
-    body.querySelectorAll('[data-del-role]').forEach(b => b.onclick = async () => {
-      if (!confirm(`delete role "${roles.find(x => x.id === b.dataset.delRole)?.name}"?`)) return;
-      try { await api('DELETE', `/agent-roles/${b.dataset.delRole}`); openAgentRolesView(); }
-      catch (e) { alert(e.message); }
-    });
-  }
-  function openAgentRoleEdit(role) {
-    const dlg = $('agent-role-edit'); if (!dlg) return;
-    const isNew = !role || !role.id;
-    $('ar-edit-name-label').textContent = isNew ? 'new role' : role.name;
-    $('ar-edit-name').value        = role?.name || '';
-    $('ar-edit-description').value = role?.description || '';
-    $('ar-edit-prompt').value      = role?.prompt || '';
-    $('ar-edit-model').value       = role?.default_model || '';
-    try { dlg.showModal(); } catch { return; }
-    $('ar-edit-cancel').onclick = () => dlg.close();
-    $('ar-edit-close').onclick  = () => dlg.close();
-    $('ar-edit-save').onclick = async () => {
-      const payload = {
-        name:          $('ar-edit-name').value.trim(),
-        description:   $('ar-edit-description').value.trim(),
-        prompt:        $('ar-edit-prompt').value,
-        default_model: $('ar-edit-model').value.trim() || null,
-      };
-      if (!payload.name) { $('ar-edit-name').focus(); return; }
-      if (!payload.prompt) { $('ar-edit-prompt').focus(); return; }
-      try {
-        if (isNew) await api('POST', '/agent-roles', payload);
-        else       await api('PATCH', `/agent-roles/${role.id}`, payload);
-        dlg.close();
-        openAgentRolesView();
-      } catch (e) { alert(e.message); }
-    };
-  }
+  // vt-0367: Agent roles UI moved to agent-fleet/web/agent-roles.js
+  // (window.openAgentRolesView) — same pattern as prices.js. Row-click
+  // edit + count header + div-modal aligned with prices/groups.
   async function openGroupRolesPicker(group) {
     const dlg = $('group-roles-picker'); if (!dlg) return;
     $('group-roles-group-name').textContent = group.name;
@@ -1987,7 +1927,7 @@
     });
     $('group-roles-close').onclick = () => dlg.close();
   }
-  window.openAgentRolesView = openAgentRolesView;
+  // vt-0367: openAgentRolesView now lives in agent-roles.js (IIFE-bound).
   window.openGroupRolesPicker = openGroupRolesPicker;
 
   // ============ Groups page ============
@@ -2305,10 +2245,9 @@
     const rcReload = $('recycle-reload'); if (rcReload) rcReload.onclick = () => window.openRecycleBinView?.();
     const rcBack = $('recyclebinview-close'); if (rcBack) rcBack.onclick = () => navigate('/groups');
     const arNav = $('nav-agent-roles'); if (arNav) arNav.onclick = () => navigate('/agent-roles');
-    const arNew = $('ar-new'); if (arNew) arNew.onclick = () => window.openAgentRoleEdit?.({});
-    const arReload = $('ar-reload'); if (arReload) arReload.onclick = () => window.openAgentRolesView?.();
-    const arBack = $('agentrolesview-close'); if (arBack) arBack.onclick = () => navigate('/dashboard');
-    window.openAgentRoleEdit = openAgentRoleEdit;
+    // vt-0367: ar-new / agentrolesview-close are now wired by
+    // agent-roles.js when the view opens (same pattern as prices.js).
+    // Old window.openAgentRoleEdit shim is gone — the module owns the modal.
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
     setOverlay(true, 'STANDBY', 'select a session');

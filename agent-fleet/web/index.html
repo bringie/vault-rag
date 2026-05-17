@@ -499,23 +499,27 @@
     </div>
   </div>
 
-  <!-- vt-0259: AGENT ROLES PAGE -->
+  <!-- vt-0259/vt-0367: AGENT ROLES PAGE — header + table aligned with
+       prices/groups (display title + count, row-click to edit, single ×
+       action column). -->
   <div id="agentrolesview" hidden>
-    <header class="archive-head overlay-header">
-      <h2 data-i18n="agent_roles.title">AGENT ROLES</h2>
-      <span style="flex:1"></span>
-      <button id="ar-new" class="btn-ghost" data-i18n="agent_roles.new">+ new role</button>
-      <button id="ar-reload" class="btn-ghost" data-i18n="common.reload">↻ reload</button>
-      <button id="agentrolesview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+    <header class="archive-head">
+      <div>
+        <span class="display" style="font-size:1.1em" data-i18n="agent_roles.title">AGENT ROLES</span>
+        <span id="agent-roles-count" class="lbl" style="margin-left:1em">—</span>
+      </div>
+      <div>
+        <button id="ar-new" class="btn-ghost" data-i18n="agent_roles.new">+ new role</button>
+        <button id="agentrolesview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+      </div>
     </header>
     <div class="archive-table-wrap">
-      <p class="lbl" style="margin:.5em 0 1em;color:var(--text-dim)" data-i18n="agent_roles.intro">Reusable prompt personas. Attach a role to a group and every session spawned in that group has the role's prompt prepended to its system prompt.</p>
       <table class="archive-table">
         <thead><tr>
           <th data-i18n="agent_roles.col.name">name</th>
           <th data-i18n="agent_roles.col.description">description</th>
           <th data-i18n="agent_roles.col.default_model">model</th>
-          <th data-i18n="agent_roles.col.actions">actions</th>
+          <th></th>
         </tr></thead>
         <!-- vt-0333: was id="ar-rows" colliding with the archive tbody
              at line ~334. The collision caused renders to land in the
@@ -524,33 +528,8 @@
       </table>
     </div>
   </div>
-
-  <!-- vt-0259: agent-role edit dialog -->
-  <dialog id="agent-role-edit">
-    <div class="ar-edit-frame">
-      <div class="ar-edit-head">
-        <span class="lbl" data-i18n="agent_roles.edit_title">AGENT ROLE //</span>
-        <span id="ar-edit-name-label" class="callsign">—</span>
-        <span style="flex:1"></span>
-        <button id="ar-edit-close" class="btn-ghost" data-i18n="common.close">× close</button>
-      </div>
-      <div class="ar-edit-body">
-        <label class="lbl" data-i18n="agent_roles.field.name">NAME</label>
-        <input id="ar-edit-name" class="app-dialog-input" maxlength="64">
-        <label class="lbl" data-i18n="agent_roles.field.description">DESCRIPTION</label>
-        <input id="ar-edit-description" class="app-dialog-input">
-        <label class="lbl" data-i18n="agent_roles.field.prompt">SYSTEM PROMPT</label>
-        <textarea id="ar-edit-prompt" class="app-dialog-input" rows="10" maxlength="32768"></textarea>
-        <label class="lbl" data-i18n="agent_roles.field.default_model">DEFAULT MODEL (optional)</label>
-        <input id="ar-edit-model" class="app-dialog-input" placeholder="claude-sonnet-4-6">
-      </div>
-      <div class="ar-edit-buttons">
-        <span style="flex:1"></span>
-        <button id="ar-edit-cancel" class="btn-ghost" data-i18n="common.cancel">cancel</button>
-        <button id="ar-edit-save" class="btn-primary" data-i18n="common.save">save</button>
-      </div>
-    </div>
-  </dialog>
+  <!-- vt-0367: role edit pop-up (div modal — same shape as prices/groups). -->
+  <div id="agent-role-modal" hidden></div>
 
   <!-- vt-0259: group→role assignment dialog -->
   <dialog id="group-roles-picker">
@@ -799,6 +778,7 @@
   <script src="/fleet/static/workflow-editor.js"></script>
   <script src="/fleet/static/workflow-run-viewer.js"></script>
   <script src="/fleet/static/prices.js"></script>
+  <script src="/fleet/static/agent-roles.js"></script>
   <script src="/fleet/static/host-metrics.js"></script>
   <!-- vt-0146: vendored marked + DOMPurify (no CDN — works in air-gapped) -->
   <script src="/fleet/static/vendor/marked.min.js"></script>
