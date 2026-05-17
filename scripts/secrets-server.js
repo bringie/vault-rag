@@ -106,9 +106,14 @@ const _opsCount = metrics.counter('secrets_server_ops_total',
 const _opsDur = metrics.histogram('secrets_server_op_duration_ms',
   'Secret backend op duration', ['route'], [5, 25, 100, 500, 2000]);
 
+// vt-0256 hotfix: route label set to 'other' for unknown URLs — without
+// this, /abc/$(uuidgen) loops from any container on vault-rag-net would
+// inflate the label set unbounded.
+const KNOWN_ROUTES = new Set(['/healthz', '/metrics', ...Object.keys(ROUTES)]);
 const server = http.createServer(async (req, res) => {
   const t0 = Date.now();
-  let route = (req.url || '').split('?')[0];
+  let rawRoute = (req.url || '').split('?')[0];
+  let route = KNOWN_ROUTES.has(rawRoute) ? rawRoute : 'other';
   let outcome = 'ok';
   try {
     // Health pre-auth so docker healthcheck doesn't need to know the token.
@@ -127,7 +132,7 @@ const server = http.createServer(async (req, res) => {
       outcome = 'method_not_allowed';
       return send(res, 405, { error: 'method not allowed' });
     }
-    const handlerFn = ROUTES[req.url];
+    const handlerFn = ROUTES[rawRoute];
     if (!handlerFn) {
       outcome = 'not_found';
       return send(res, 404, { error: 'not found' });

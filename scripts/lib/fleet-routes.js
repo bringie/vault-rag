@@ -1723,6 +1723,24 @@ async function handleDaemonWs(ws, params, ctx) {
         });
         return;
       }
+      // vt-0251: daemon sends 'bye' before clean shutdown with the list
+      // of session_ids it's about to SIGTERM. Mark every OTHER running
+      // session on this host as 'orphaned' (the daemon won't be there to
+      // reconcile when it comes back). Listed sessions stay 'running' so
+      // they're picked up by reconciliation on reconnect.
+      if (f.type === 'bye') {
+        const aliveSet = new Set(Array.isArray(f.alive_sessions) ? f.alive_sessions : []);
+        try {
+          const r = await ctx.db.query(
+            `SELECT id FROM fleet_sessions WHERE host_id = $1 AND status = 'running'`, [host.id]);
+          for (const row of r.rows) {
+            if (!aliveSet.has(row.id)) {
+              await fleetDb.markSessionExited(ctx.db, row.id, null, 'orphaned');
+            }
+          }
+        } catch (e) { console.error(`[fleet] bye-frame reconcile failed: ${e.message}`); }
+        return;
+      }
       if (f.type === 'spawn_ok') {
         await fleetDb.markSessionRunning(ctx.db, f.session_id, f.pid);
         ctx.bus.broadcastViewers(f.session_id, { type: 'session_started', session_id: f.session_id });

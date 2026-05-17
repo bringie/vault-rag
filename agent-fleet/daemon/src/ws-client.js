@@ -197,12 +197,17 @@ async function runDaemon(opts) {
   // vt-0251: graceful daemon shutdown. systemd default stop sends
   // SIGTERM then KILLs after 90s; without a handler the process drops
   // the WS dirty + every PTY gets SIGKILL'd, losing any unflushed
-  // pty_data and producing zombie sessions on the hub. Handler:
-  //   1. send a 'bye' frame to the hub so it can mark sessions cleanly
-  //   2. SIGTERM every active PTY (10s deadline before letting the
-  //      shutdown timer run out and systemd SIGKILLs us)
-  //   3. close WS, exit 0
+  // pty_data and producing zombie sessions on the hub.
+  //
+  // Declare ptyMgrRef / _currentWs BEFORE the signal handlers so the
+  // handler body can never hit a TDZ ReferenceError on an early SIGTERM.
+  const ptyMgrRef = { current: null };
+  let _currentWs = null;
   let _daemonShuttingDown = false;
+  // 5.5s grace matches PtyManager's killGraceMs=5000 (vt-0251 review fix
+  // — earlier 1.5s would exit before the deferred SIGKILL had a chance
+  // to fire, leaving PTYs reparented to PID 1).
+  const SHUTDOWN_GRACE_MS = 5500;
   function daemonShutdown(signal) {
     if (_daemonShuttingDown) return;
     _daemonShuttingDown = true;
@@ -223,14 +228,10 @@ async function runDaemon(opts) {
     setTimeout(() => {
       try { ws?.close(1001, 'shutdown'); } catch {}
       process.exit(0);
-    }, 1500);
+    }, SHUTDOWN_GRACE_MS);
   }
   process.on('SIGTERM', () => daemonShutdown('SIGTERM'));
   process.on('SIGINT',  () => daemonShutdown('SIGINT'));
-  // ptyMgr is created below; use a ref object so the handler captures
-  // it once available without rewriting the whole function.
-  const ptyMgrRef = { current: null };
-  let _currentWs = null;
   // Backend registry — built-in claude + anything declared in backends.json.
   // Config path defaults to /etc/agent-fleet/backends.json on prod installs;
   // dev overrides via --backends-config or AGENT_FLEET_BACKENDS_PATH.

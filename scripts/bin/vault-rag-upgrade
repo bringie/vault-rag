@@ -119,24 +119,31 @@ if [[ -f Caddyfile.tmpl ]]; then
     if [[ -f Caddyfile ]]; then
       cp Caddyfile "Caddyfile.bak.$(date +%Y%m%d-%H%M)"
     fi
-    # Source .env for envsubst variables (VAULT_RAG_DOMAIN, _ACME_EMAIL, ...).
-    if [[ -f .env ]]; then
-      set -a
-      # shellcheck disable=SC1091
-      . .env
-      set +a
-    fi
-    if ! envsubst < Caddyfile.tmpl > Caddyfile.new; then
+    # vt-0250 hardening: source .env in a subshell so secret values don't
+    # leak into the parent process env (visible via /proc/<pid>/environ).
+    # envsubst's allowlist syntax substitutes ONLY the named vars; literal
+    # $PATH / $HOME elsewhere in the template stay intact.
+    ALLOW='${VAULT_RAG_DOMAIN} ${VAULT_RAG_ACME_EMAIL}'
+    if ! ( set -a; [[ -f .env ]] && . .env; set +a; envsubst "$ALLOW" < Caddyfile.tmpl > Caddyfile.new ); then
       warn "envsubst failed — keeping previous Caddyfile."
       rm -f Caddyfile.new
     else
-      mv Caddyfile.new Caddyfile
-      echo "$TMPL_SHA" > "$MARKER"
-      ok "Caddyfile regenerated"
-      log "reloading Caddy (no downtime)…"
-      docker compose exec -T vault-rag-caddy caddy reload --config /etc/caddy/Caddyfile 2>&1 | tail -3 \
-        || warn "caddy reload failed — falling back to container restart"
-      docker compose restart vault-rag-caddy 2>&1 | tail -2
+      # Validate before swap to avoid breaking prod with a half-substituted config.
+      if docker compose exec -T vault-rag-caddy caddy validate --config /dev/stdin < Caddyfile.new > /dev/null 2>&1; then
+        mv Caddyfile.new Caddyfile
+        echo "$TMPL_SHA" > "$MARKER"
+        ok "Caddyfile regenerated"
+        log "reloading Caddy (no downtime)…"
+        if docker compose exec -T vault-rag-caddy caddy reload --config /etc/caddy/Caddyfile > /dev/null 2>&1; then
+          ok "caddy reloaded without downtime"
+        else
+          warn "caddy reload failed — falling back to container restart"
+          docker compose restart vault-rag-caddy 2>&1 | tail -2
+        fi
+      else
+        warn "envsubst output failed caddy validate — keeping previous Caddyfile."
+        rm -f Caddyfile.new
+      fi
     fi
   else
     ok "Caddyfile up-to-date (tmpl unchanged)"

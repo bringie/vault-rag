@@ -225,6 +225,10 @@
   }
 
   async function openNote(p) {
+    // vt-0252 review: palette can call openNote BEFORE openNotesMode
+    // initialized state.token via the fleet-token-ready event. Pull from
+    // localStorage if needed so the first call doesn't 401.
+    ensureToken();
     state.currentPath = p;
     state.editing = false;
     const viewer = $('vault-viewer');
