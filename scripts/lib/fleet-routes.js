@@ -1181,100 +1181,18 @@ async function handleTranscriptBin(req, res, ctx) {
 
 // --- Workflow handlers ---
 
-async function handleListWorkflows({ res, ctx }) {
-  const rows = await wfDb.listWorkflows(ctx.db);
-  send(res, 200, rows);
-}
-
-async function handleGetWorkflow({ req, res, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  const w = await wfDb.getWorkflow(ctx.db, id);
-  if (!w) return send(res, 404, { error: 'not found' });
-  send(res, 200, w);
-}
-
-// vt-0198: workflow_audit helper. Mirrors auditSecret() in rag-api.js —
-// best-effort insert; never blocks the response or surfaces DB errors
-// to the client. callerFingerprint is the same shape (sha256[:12] of
-// bearer) so the upcoming audit UI can join rows across tables.
+// vt-0287 slice 3: workflow CRUD + run dispatch + approvals/events/trigger
+// handlers moved to scripts/lib/fleet/workflows.js. _workflowCallerFp
+// remains here (still used by /fleet/features audit and the slice-1
+// sub-modules). The runner + concurrency-cap stateful helpers (next
+// def block) stay in this file and are passed as deps to the workflows
+// sub-module via _getSubRoutes above.
 function _workflowCallerFp(req) {
   if (!req) return null;
   const auth = (req.headers?.authorization || '').replace(/^Bearer\s+/i, '').trim();
   if (!auth) return null;
   try { return crypto.createHash('sha256').update(auth).digest('hex').slice(0, 12); }
   catch { return null; }
-}
-async function auditWorkflow(ctx, req, { op, workflow_id = null, run_id = null, outcome = 'ok', definition_sha = null, detail = {}, via = 'http' }) {
-  if (!ctx.db) return;
-  try {
-    await ctx.db.query(
-      `INSERT INTO workflow_audit (op, workflow_id, run_id, caller_id, via, outcome, definition_sha, detail)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [op, workflow_id, run_id, _workflowCallerFp(req), via, outcome, definition_sha, JSON.stringify(detail)]
-    );
-  } catch (e) {
-    log.error('workflow_audit_insert_failed', { op, msg: e.message });
-  }
-}
-function _defSha(def) {
-  if (!def) return null;
-  try { return crypto.createHash('sha256').update(JSON.stringify(def)).digest('hex'); } catch { return null; }
-}
-
-async function handleCreateWorkflow({ res, body, ctx, req }) {
-  if (!body || !body.name || !body.definition) {
-    await auditWorkflow(ctx, req, { op: 'create', outcome: 'denied', detail: { reason: 'validation' } });
-    return send(res, 422, { error: 'name + definition required' });
-  }
-  try { validateDefinition(body.definition); }
-  catch (e) {
-    await auditWorkflow(ctx, req, { op: 'create', outcome: 'denied', detail: { reason: e.message } });
-    return send(res, 422, { error: e.message });
-  }
-  try {
-    const w = await wfDb.createWorkflow(ctx.db, body);
-    await auditWorkflow(ctx, req, { op: 'create', workflow_id: w.id, definition_sha: _defSha(body.definition), detail: { name: body.name } });
-    send(res, 201, w);
-  } catch (e) {
-    await auditWorkflow(ctx, req, { op: 'create', outcome: 'error', detail: { msg: e.message } });
-    if (/duplicate key/.test(e.message)) return send(res, 409, { error: 'name exists' });
-    throw e;
-  }
-}
-
-async function handlePatchWorkflow({ req, res, body, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  if (body && body.definition) {
-    try { validateDefinition(body.definition); }
-    catch (e) {
-      await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, outcome: 'denied', detail: { reason: e.message } });
-      return send(res, 422, { error: e.message });
-    }
-  }
-  // vt-0205: optimistic concurrency
-  const expectedVersion = body && Number.isFinite(body.expected_version) ? body.expected_version : undefined;
-  const w = await wfDb.updateWorkflow(ctx.db, id, body || {}, expectedVersion);
-  if (!w) {
-    await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, outcome: 'denied', detail: { reason: 'not_found' } });
-    return send(res, 404, { error: 'not found' });
-  }
-  if (w.__conflict) {
-    await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, outcome: 'denied', detail: { reason: 'version_conflict' } });
-    return send(res, 409, { error: 'version conflict', current: w.current });
-  }
-  await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, definition_sha: _defSha(w.definition) });
-  send(res, 200, w);
-}
-
-async function handleDeleteWorkflow({ req, res, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  const r = await wfDb.deleteWorkflow(ctx.db, id);
-  if (!r.deleted) {
-    await auditWorkflow(ctx, req, { op: 'delete', workflow_id: id, outcome: 'denied', detail: { reason: r.reason || 'not_found' } });
-    return send(res, 409, { error: r.reason || 'not found or already deleted' });
-  }
-  await auditWorkflow(ctx, req, { op: 'delete', workflow_id: id });
-  res.writeHead(204); res.end();
 }
 
 async function ensureWorkflowRunner(ctx) {
@@ -1324,61 +1242,10 @@ async function _checkWorkflowConcurrency(ctx) {
   }
 }
 
-async function handleRunWorkflow({ req, res, body, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  const w = await wfDb.getWorkflow(ctx.db, id);
-  if (!w) {
-    await auditWorkflow(ctx, req, { op: 'run', workflow_id: id, outcome: 'denied', detail: { reason: 'not_found' } });
-    return send(res, 404, { error: 'workflow not found' });
-  }
-  // vt-0318: concurrency gate.
-  const gate = await _checkWorkflowConcurrency(ctx);
-  if (!gate.ok) {
-    await auditWorkflow(ctx, req, { op: 'run', workflow_id: w.id, outcome: 'denied',
-      detail: { reason: 'concurrency_cap', active: gate.active, cap: gate.cap } });
-    return send(res, 429, {
-      error: `workflow concurrency cap reached (${gate.active}/${gate.cap})`,
-      active: gate.active, cap: gate.cap,
-      retry_after_seconds: 60,
-    });
-  }
-  const runner = await ensureWorkflowRunner(ctx);
-  const run = await wfDb.createRun(ctx.db, {
-    workflowId: w.id,
-    snapshot: w.definition,
-    state: { inputs: (body && body.inputs) || {} },
-  });
-  await auditWorkflow(ctx, req, { op: 'run', workflow_id: w.id, run_id: run.id, definition_sha: _defSha(w.definition) });
-  if (runner) runner.start(run.id);
-  send(res, 201, { run_id: run.id });
-}
-
-async function handleListRuns({ req, res, ctx }) {
-  const u = new URL(req.url, 'http://x');
-  const rows = await wfDb.listRuns(ctx.db, {
-    workflowId: u.searchParams.get('workflow_id') || undefined,
-    status: u.searchParams.get('status') || undefined,
-    limit: parseInt(u.searchParams.get('limit') || '100', 10),
-  });
-  send(res, 200, rows);
-}
-
-async function handleGetRun({ req, res, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  const r = await wfDb.getRun(ctx.db, id);
-  if (!r) return send(res, 404, { error: 'not found' });
-  send(res, 200, r);
-}
-
-async function handleCancelRun({ req, res, ctx }) {
-  const id = req.url.split('?')[0].split('/')[3];
-  const runner = await ensureWorkflowRunner(ctx);
-  if (runner) runner.cancel(id);
-  // vt-0231: audit. Cancel is an admin-only op (admin gate at outer
-  // dispatch); record it so a brief admin compromise leaves a trail.
-  await auditWorkflow(ctx, req, { op: 'cancel', run_id: id });
-  send(res, 200, { ok: true });
-}
+// vt-0287 slice 3: handleRunWorkflow, handleListRuns, handleGetRun,
+// handleCancelRun moved to scripts/lib/fleet/workflows.js. The
+// stateful ensureWorkflowRunner + _checkWorkflowConcurrency helpers
+// stay here and are passed in via deps.
 
 // vt-0115: docker stack self-status. The host writes a JSON file every 30s
 // via systemd timer (scripts/bin/stack-status-writer.sh); we just serve it.
@@ -1481,59 +1348,9 @@ async function handleStackStatus({ res, ctx }) {
   }
 }
 
-async function handleListPendingApprovals({ res, ctx }) {
-  const rows = await wfDb.listPendingApprovals(ctx.db);
-  send(res, 200, rows);
-}
-
-async function handleApprovalDecision({ req, res, body, ctx }) {
-  // POST /fleet/workflow-runs/:runId/approvals/:nodeId  {decision, by, note}
-  // vt-0288: strip query before regex.
-  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/workflow-runs/(${SID_RE})/approvals/([\\w.-]+)$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  if (!body || !['approve', 'reject'].includes(body.decision)) {
-    return send(res, 422, { error: 'decision must be approve or reject' });
-  }
-  const row = await wfDb.recordApprovalDecision(ctx.db, m[1], m[2], {
-    decision: body.decision, decided_by: body.by, note: body.note,
-  });
-  if (!row) {
-    await auditWorkflow(ctx, req, { op: body.decision, run_id: m[1], outcome: 'denied', detail: { node: m[2], reason: 'already_decided' } });
-    return send(res, 409, { error: 'no pending approval matches (already decided?)' });
-  }
-  // vt-0231: audit approval/reject — these gate whether an RCE-capable
-  // workflow continues. By definition needs the same forensic trail.
-  await auditWorkflow(ctx, req, { op: body.decision, run_id: m[1], detail: { node: m[2], by: body.by } });
-  send(res, 200, row);
-}
-
-async function handleFireWorkflowEvent({ req, res, body, ctx }) {
-  // POST /fleet/workflow-events  {name, payload}
-  if (!body || !body.name) return send(res, 422, { error: 'name required' });
-  const n = await wfDb.fireEvent(ctx.db, body.name, body.payload);
-  // vt-0231: audit event fire — can unblock waiting workflows.
-  await auditWorkflow(ctx, req, { op: 'fire_event', detail: { name: body.name, fired: n } });
-  send(res, 200, { fired: n });
-}
-
-async function handleSetWorkflowTrigger({ req, res, body, ctx }) {
-  // PUT /fleet/workflows/:id/trigger  {every_ms?: number} or {} to clear
-  // vt-0288: strip query before regex.
-  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/workflows/(${SID_RE})/trigger$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  const trigger = body && Object.keys(body).length ? body : null;
-  if (trigger && trigger.every_ms != null) {
-    const ms = Number(trigger.every_ms);
-    if (!Number.isFinite(ms) || ms < 60000) {
-      return send(res, 422, { error: 'every_ms must be a number ≥ 60000' });
-    }
-  }
-  await wfDb.setWorkflowTrigger(ctx.db, m[1], trigger);
-  // vt-0231: audit trigger changes — adding a recurring trigger to a
-  // malicious workflow is the classic post-compromise persistence move.
-  await auditWorkflow(ctx, req, { op: trigger ? 'trigger_set' : 'trigger_clear', workflow_id: m[1], detail: trigger || {} });
-  send(res, 200, { ok: true, trigger });
-}
+// vt-0287 slice 3: handleListPendingApprovals, handleApprovalDecision,
+// handleFireWorkflowEvent, handleSetWorkflowTrigger moved to
+// scripts/lib/fleet/workflows.js.
 
 // Spawn a claude session and wait for completion, returning {output, exit_code, session_id}.
 // Used by workflow runner as deps.spawnClaude. signal (optional AbortSignal) lets
@@ -1621,8 +1438,16 @@ function _getSubRoutes() {
     require('./fleet/features'),
     require('./fleet/agent-roles'),
     require('./fleet/prices'),
+    require('./fleet/workflows'),
   ];
-  _subRoutesCache = modules.flatMap(m => m.register({ ...deps, fleetPrices }));
+  const extDeps = {
+    ...deps,
+    fleetPrices,
+    validateDefinition,
+    ensureWorkflowRunner,
+    checkWorkflowConcurrency: _checkWorkflowConcurrency,
+  };
+  _subRoutesCache = modules.flatMap(m => m.register(extDeps));
   return _subRoutesCache;
 }
 
@@ -1841,30 +1666,8 @@ function dispatchHttp(req, res, ctx) {
   // vt-0287 slice 2: /fleet/prices/* moved to scripts/lib/fleet/prices.js
   // (dispatched via sub-module table above).
 
-  // Workflows
-  if (method === 'GET'    && path === '/fleet/workflows') return handleListWorkflows({ res, ctx });
-  if (method === 'POST'   && path === '/fleet/workflows') {
-    return readBody(req).then(b => handleCreateWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST'   && new RegExp(`^/fleet/workflows/${SID_RE}/run$`, 'i').test(path)) {
-    return readBody(req).then(b => handleRunWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'GET'    && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleGetWorkflow({ req, res, ctx });
-  if (method === 'PATCH'  && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'DELETE' && new RegExp(`^/fleet/workflows/${SID_RE}$`, 'i').test(path)) return handleDeleteWorkflow({ req, res, ctx });
-  if (method === 'PUT'    && new RegExp(`^/fleet/workflows/${SID_RE}/trigger$`, 'i').test(path)) {
-    return readBody(req).then(b => handleSetWorkflowTrigger({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-
-  // Workflow runs
-  if (method === 'GET'    && path === '/fleet/workflow-runs') return handleListRuns({ req, res, ctx });
-  if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/cancel$`, 'i').test(path)) return handleCancelRun({ req, res, ctx });
-  if (method === 'POST'   && new RegExp(`^/fleet/workflow-runs/${SID_RE}/approvals/[\\w.-]+$`, 'i').test(path)) {
-    return readBody(req).then(b => handleApprovalDecision({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'GET'    && new RegExp(`^/fleet/workflow-runs/${SID_RE}$`, 'i').test(path)) return handleGetRun({ req, res, ctx });
+  // vt-0287 slice 3: workflow CRUD + runs + approvals/events/trigger
+  // dispatched via the sub-module table above (scripts/lib/fleet/workflows.js).
 
   // Stack status (docker compose health for the operator)
   if (method === 'GET' && path === '/fleet/stack-status') return handleStackStatus({ res, ctx });
@@ -1872,12 +1675,6 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path === '/fleet/sessions/by-bucket') return handleSessionsByBucket({ req, res, ctx });
   // Long-term cost timeline (post-retention) from rollup table
   if (method === 'GET' && path === '/fleet/cost/rollup-timeline') return handleCostRollupTimeline({ req, res, ctx });
-
-  // Pending approvals + events
-  if (method === 'GET'  && path === '/fleet/workflow-pending-approvals') return handleListPendingApprovals({ res, ctx });
-  if (method === 'POST' && path === '/fleet/workflow-events') {
-    return readBody(req).then(b => handleFireWorkflowEvent({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
 
   // vt-0136: short-lived WS ticket for browsers. Lets us drop bearer.<token>
   // out of Sec-WebSocket-Protocol (where it leaks into DevTools + proxy logs).
