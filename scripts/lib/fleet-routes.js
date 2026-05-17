@@ -1333,12 +1333,40 @@ async function ensureWorkflowRunner(ctx) {
   return ctx._workflowRunnerInit;
 }
 
+// vt-0318: global cross-workflow concurrency cap. Without it, 20 cron
+// triggers in the same minute spawn 20 parallel runs, exhaust the pg
+// pool (max=10) + saturate ARG_MAX on the daemon side. Cap is a
+// soft semaphore — we count active rows + reject (429) at the entry
+// gate. Scheduler does the same check before firing a cron trigger.
+const WORKFLOW_MAX_CONCURRENT = parseInt(process.env.VAULT_RAG_WORKFLOW_MAX_CONCURRENT || '5', 10);
+async function _checkWorkflowConcurrency(ctx) {
+  try {
+    const n = await wfDb.countActiveRuns(ctx.db);
+    return { ok: n < WORKFLOW_MAX_CONCURRENT, active: n, cap: WORKFLOW_MAX_CONCURRENT };
+  } catch (e) {
+    // Fail-open on DB glitch — same convention as feature gate.
+    log.warn('workflow_concurrency_check_failed', { msg: e.message });
+    return { ok: true, active: -1, cap: WORKFLOW_MAX_CONCURRENT };
+  }
+}
+
 async function handleRunWorkflow({ req, res, body, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
   const w = await wfDb.getWorkflow(ctx.db, id);
   if (!w) {
     await auditWorkflow(ctx, req, { op: 'run', workflow_id: id, outcome: 'denied', detail: { reason: 'not_found' } });
     return send(res, 404, { error: 'workflow not found' });
+  }
+  // vt-0318: concurrency gate.
+  const gate = await _checkWorkflowConcurrency(ctx);
+  if (!gate.ok) {
+    await auditWorkflow(ctx, req, { op: 'run', workflow_id: w.id, outcome: 'denied',
+      detail: { reason: 'concurrency_cap', active: gate.active, cap: gate.cap } });
+    return send(res, 429, {
+      error: `workflow concurrency cap reached (${gate.active}/${gate.cap})`,
+      active: gate.active, cap: gate.cap,
+      retry_after_seconds: 60,
+    });
   }
   const runner = await ensureWorkflowRunner(ctx);
   const run = await wfDb.createRun(ctx.db, {

@@ -1211,6 +1211,11 @@ const _walLag   = metrics.gauge('pg_wal_archive_lag_seconds',
   'seconds since the newest WAL segment in /backups/wal/ (0 = no segments yet)');
 const _walBytes = metrics.gauge('pg_wal_archive_bytes',
   'total size of /backups/wal/');
+// vt-0318: workflow concurrency observability.
+const _workflowActive = metrics.gauge('workflow_active_runs',
+  'in-flight workflow runs (status NOT IN done/failed/cancelled)');
+const _workflowCap = metrics.gauge('workflow_concurrency_cap',
+  'configured VAULT_RAG_WORKFLOW_MAX_CONCURRENT value');
 setInterval(() => {
   if (pg && pg.totalCount !== undefined) {
     _pgPool.set({ state: 'total' }, pg.totalCount);
@@ -1232,6 +1237,15 @@ setInterval(() => {
     _pgBackupGauge.set({}, newest ? Math.floor(newest / 1000) : 0);
   } catch (e) {
     log.warn('pg_backup_gauge_scan_failed', { msg: e.message });
+  }
+  // vt-0318: workflow active count gauge (best-effort, no error if pg not ready).
+  if (pg) {
+    pg.query(`SELECT COUNT(*)::int AS n FROM fleet_workflow_runs WHERE status NOT IN ('done','failed','cancelled')`)
+      .then(r => {
+        _workflowActive.set({}, r.rows[0].n);
+        _workflowCap.set({}, parseInt(process.env.VAULT_RAG_WORKFLOW_MAX_CONCURRENT || '5', 10));
+      })
+      .catch(() => {});
   }
   // vt-0303: WAL archive lag + total size.
   // vt-0317: sentinel value (10 years) when no segments exist so the
@@ -1666,6 +1680,20 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
           // the pg pool.
           if (w.has_active_run) {
             log.info('trigger_skip_active_run', { workflow_name: w.name });
+            continue;
+          }
+          // vt-0318: global cross-workflow cap. Scheduler is bursty by
+          // nature (cron-aligned), so we check here too — without it,
+          // 20 different workflows on the same minute mark fire 20
+          // parallel runs even if each is "only one of its kind".
+          const WORKFLOW_MAX_CONCURRENT = parseInt(process.env.VAULT_RAG_WORKFLOW_MAX_CONCURRENT || '5', 10);
+          let activeNow = 0;
+          try { activeNow = await wfDb.countActiveRuns(pg); }
+          catch (e) { log.warn('trigger_active_count_failed', { msg: e.message }); }
+          if (activeNow >= WORKFLOW_MAX_CONCURRENT) {
+            log.info('trigger_skip_cap', { workflow_name: w.name, active: activeNow, cap: WORKFLOW_MAX_CONCURRENT });
+            // Don't break — next workflow's check might pass after this
+            // one finishes; defer to next 60s tick.
             continue;
           }
           // Fire: create run + start the runner (same path as POST /workflows/:id/run).

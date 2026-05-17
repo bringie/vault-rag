@@ -170,6 +170,15 @@ async function orphanRunningRuns(c) {
   return rowCount;
 }
 
+// vt-0318: global active-run count for the cross-workflow concurrency
+// cap. Cheap (status is indexed). Excludes terminal states.
+async function countActiveRuns(c) {
+  const { rows } = await c.query(
+    `SELECT COUNT(*)::int AS n FROM fleet_workflow_runs
+       WHERE status NOT IN ('done','failed','cancelled')`);
+  return rows[0].n;
+}
+
 // vt-0206: heartbeat reaper for stuck workflow_runs. Same intent as
 // reapStuckSessions but at the workflow_run level — a runner that
 // crashed silently leaves rows in 'running' forever. Default 24h.
@@ -301,6 +310,7 @@ module.exports = {
   listWorkflows, getWorkflow, getWorkflowIncludingDeleted, createWorkflow, updateWorkflow, deleteWorkflow, purgeWorkflow,
   listDeletedWorkflows, restoreWorkflow,
   listRuns, getRun, createRun, updateRunStatus, updateRunState, orphanRunningRuns, reapStuckRuns,
+  countActiveRuns,  // vt-0318
   // vt-0110
   listTriggeredWorkflows, setWorkflowTrigger,
   createPendingApproval, getPendingApproval, listPendingApprovals, recordApprovalDecision,

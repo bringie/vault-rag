@@ -91,6 +91,14 @@ groups:
       summary: "WAL archive exceeds 30 GiB"
       runbook: "Either reduce archive_timeout (more frequent files but smaller residency window), tighten wal-prune mtime in docker-compose.yml, or grow the /var/backups/vault-rag mount."
 
+  - alert: WorkflowConcurrencyCapHit
+    expr: workflow_active_runs >= workflow_concurrency_cap
+    for: 5m
+    labels: { severity: warning, service: workflows }
+    annotations:
+      summary: "workflow runner at concurrency cap ({{ $value }}/{{ $labels.cap }})"
+      runbook: "Either tune VAULT_RAG_WORKFLOW_MAX_CONCURRENT up (more RAM/CPU available) or investigate runs that have been active too long. Check `SELECT id, workflow_id, status, started_at FROM fleet_workflow_runs WHERE status NOT IN ('done','failed','cancelled') ORDER BY started_at;`. Stuck > 24h are auto-failed by reapStuckRuns (vt-0206)."
+
   - alert: AuditTableTooLarge
     expr: audit_table_bytes > 1024 * 1024 * 1024
     for: 30m
