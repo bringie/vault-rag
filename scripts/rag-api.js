@@ -7,7 +7,7 @@ const http   = require('http');
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
-const { Client } = require('pg');
+const { Pool } = require('pg');
 const lib = require('./lib/vault-lib');
 const vtRoutes = require('./lib/vt-routes');
 const gitSync = require('./lib/git-sync');
@@ -55,28 +55,66 @@ const PG = {
 const AGENT_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const WRITABLE_PREFIXES = ['00-inbox/', '03-sessions/', '04-tasks/', '06-resources/notes/'];
 
+// vt-0186: pg.Pool replaces shared pg.Client. Each withPg() call acquires
+// a dedicated client from the pool for the duration of fn(), so BEGIN/
+// COMMIT inside fn() is bound to one connection. fleet code that does
+// single .query() calls reads ctx.db directly — Pool exposes .query()
+// which itself acquires+releases per call, which is safe for non-tx use.
 let pg;
 
 async function pgConnect() {
-  pg = new Client(PG);
-  pg.on('error', (e) => {
-    console.error(`[rag-api] pg error: ${e.message}`);
-    pg = null;
+  pg = new Pool({
+    ...PG,
+    max: parseInt(process.env.VAULT_RAG_PG_POOL_MAX || '10', 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
   });
-  await pg.connect();
+  pg.on('error', (e) => {
+    // Pool errors don't kill the pool — log and let in-flight handlers
+    // see the error via their own catch. Idle clients are auto-recycled.
+    console.error(`[rag-api] pg pool error: ${e.message}`);
+  });
+  // Smoke-test once at boot so we fail loudly instead of lazily on first
+  // query. Caller (boot block) handles failure.
+  await pg.query('SELECT 1');
 }
 
 async function withPg(fn) {
   if (!pg) await pgConnect();
-  try { return await fn(pg); }
-  catch (e) {
-    if (/connection|terminated/i.test(e.message)) {
-      try { await pg.end(); } catch {}
-      pg = null;
-      await pgConnect();
-      return await fn(pg);
+  let client = await pg.connect();
+  let retried = false;
+  try {
+    return await fn(client);
+  } catch (e) {
+    if (!retried && /connection|terminated/i.test(e.message)) {
+      retried = true;
+      try { client.release(true); } catch {}
+      client = await pg.connect();
+      return await fn(client);
     }
     throw e;
+  } finally {
+    try { client.release(); } catch {}
+  }
+}
+
+// vt-0187: atomic transaction wrapper. Use for write-pairs that must
+// land together (insertMetric + setLatestMetrics, upsertHost +
+// setMetadata, batcher.flush + markSessionExited). Acquires a dedicated
+// client, BEGIN, runs fn(client), COMMIT — or ROLLBACK on throw.
+async function withTx(fn) {
+  if (!pg) await pgConnect();
+  const client = await pg.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    try { client.release(); } catch {}
   }
 }
 
@@ -901,9 +939,13 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
   let tokmonPg = null;
   if (!SKIP_PG) {
     try {
-      tokmonPg = new Client({ ...PG, database: process.env.VAULT_RAG_TOKMON_DB || 'tokmon' });
-      await tokmonPg.connect();
-      tokmonPg.on('error', (e) => { console.error(`[rag-api] tokmon pg error: ${e.message}`); tokmonPg = null; });
+      tokmonPg = new Pool({
+        ...PG, database: process.env.VAULT_RAG_TOKMON_DB || 'tokmon',
+        max: parseInt(process.env.VAULT_RAG_TOKMON_POOL_MAX || '4', 10),
+        idleTimeoutMillis: 30_000,
+      });
+      await tokmonPg.query('SELECT 1');
+      tokmonPg.on('error', (e) => { console.error(`[rag-api] tokmon pg pool error: ${e.message}`); });
       fleetCtx.tokmonDb = tokmonPg;
       console.log(`[rag-api] tokmon db connected for fleet cost ingest`);
     } catch (e) {
@@ -1048,8 +1090,9 @@ process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
 // set BEFORE require. cleanup() ends the lazy pg + tokmon clients so the
 // node:test event loop can exit. See scripts/lib/rag-api-test-helpers.js.
 async function cleanup() {
-  if (pg) { try { await pg.end(); } catch {} pg = null; }
+  // vt-0186: fleetCtx.db is the SAME Pool object as `pg`; end() it once.
   if (fleetCtx?.tokmonDb) { try { await fleetCtx.tokmonDb.end(); } catch {} fleetCtx.tokmonDb = null; }
-  if (fleetCtx?.db) { try { await fleetCtx.db.end(); } catch {} fleetCtx.db = null; }
+  if (fleetCtx) fleetCtx.db = null;
+  if (pg) { try { await pg.end(); } catch {} pg = null; }
 }
 module.exports = { server, cleanup };

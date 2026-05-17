@@ -114,6 +114,25 @@ const _consumedSweepTimer = setInterval(() => {
   for (const [sig, exp] of _consumedTickets) if (exp < now) _consumedTickets.delete(sig);
 }, 30_000);
 _consumedSweepTimer.unref?.();
+// vt-0187: transactional helper for write pairs that must land together.
+// Each ctx.db is a pg.Pool (vt-0186) so we acquire a dedicated client for
+// BEGIN/COMMIT — Pool.query() per call would dispatch each statement to a
+// different connection, defeating the transaction.
+async function withTx(ctx, fn) {
+  const c = await ctx.db.connect();
+  try {
+    await c.query('BEGIN');
+    const r = await fn(c);
+    await c.query('COMMIT');
+    return r;
+  } catch (e) {
+    try { await c.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    try { c.release(); } catch {}
+  }
+}
+
 function _ticketSigHash(ticket) {
   // Hash only the signature half — full ticket is bulky and the sig alone
   // is unique per (role,exp,secret) tuple.
@@ -1583,31 +1602,34 @@ async function handleDaemonWs(ws, params, ctx) {
             if (known.has(k)) filteredBackends[k] = v;
           }
         }
-        await fleetDb.upsertHost(ctx.db, {
-          name: hostName,
-          os: f.os, arch: f.arch,
-          capabilities: f.capabilities || [],
-          daemonVersion: params.get('daemon_version'),
-          claudeVersion: f.claude_version,
-          backends: filteredBackends,
-        });
-        if (f.host_info && typeof f.host_info === 'object') {
-          // vt-0177: allowlist host_info keys before merging into metadata.
-          // A malicious/compromised daemon could otherwise pollute jsonb
-          // with arbitrary keys and the UI may render them unescaped.
-          const ALLOWED = new Set([
-            'os', 'kernel', 'kernel_version', 'distro', 'arch',
-            'cpu_model', 'cpu_cores', 'cpu_threads',
-            'ram_total_bytes', 'ram_free_bytes',
-            'uptime_seconds', 'hostname', 'load1', 'load5', 'load15',
-            'docker_version', 'node_version',
-          ]);
-          const safe = {};
-          for (const [k, v] of Object.entries(f.host_info)) {
-            if (ALLOWED.has(k)) safe[k] = v;
+        // vt-0187: upsertHost + setHostMetadata are one logical write
+        // (host hello frame). Wrap in a transaction so a crash between
+        // them doesn't leave hostInfo stale.
+        await withTx(ctx, async (c) => {
+          await fleetDb.upsertHost(c, {
+            name: hostName,
+            os: f.os, arch: f.arch,
+            capabilities: f.capabilities || [],
+            daemonVersion: params.get('daemon_version'),
+            claudeVersion: f.claude_version,
+            backends: filteredBackends,
+          });
+          if (f.host_info && typeof f.host_info === 'object') {
+            // vt-0177: allowlist host_info keys before merging into metadata.
+            const ALLOWED = new Set([
+              'os', 'kernel', 'kernel_version', 'distro', 'arch',
+              'cpu_model', 'cpu_cores', 'cpu_threads',
+              'ram_total_bytes', 'ram_free_bytes',
+              'uptime_seconds', 'hostname', 'load1', 'load5', 'load15',
+              'docker_version', 'node_version',
+            ]);
+            const safe = {};
+            for (const [k, v] of Object.entries(f.host_info)) {
+              if (ALLOWED.has(k)) safe[k] = v;
+            }
+            await fleetDb.setHostMetadata(c, host.id, safe);
           }
-          await fleetDb.setHostMetadata(ctx.db, host.id, safe);
-        }
+        });
         return;
       }
       if (f.type === 'spawn_ok') {
@@ -1666,8 +1688,12 @@ async function handleDaemonWs(ws, params, ctx) {
         return;
       }
       if (f.type === 'metrics') {
-        await fleetDb.insertHostMetric(ctx.db, host.id, f);
-        await fleetDb.setHostLatestMetrics(ctx.db, host.id, f);
+        // vt-0187: atomic — without a tx, a crash between rows leaves the
+        // time-series row but stale latest_metrics (or vice versa).
+        await withTx(ctx, async (c) => {
+          await fleetDb.insertHostMetric(c, host.id, f);
+          await fleetDb.setHostLatestMetrics(c, host.id, f);
+        });
         ctx.bus.broadcastHostMetrics(host.id, { type: 'metrics', host_id: host.id, ...f });
         return;
       }

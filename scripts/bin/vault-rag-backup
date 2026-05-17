@@ -37,6 +37,11 @@ vault-rag-backup [flags]
   --vault-repo <path>            obsidian-vault repo (default: /root/obsidian-vault)
   --force-host-mismatch          allow restore even when bundle manifest.host
                                  doesn't match this hostname (use for migrations)
+  --pg-dump                      include `pg_dumpall` of the vault-rag postgres
+                                 container (audit / sessions / events / etc.)
+                                 inside the bundle (--restore replays it)
+  --pg-container <name>          docker container name (default: vault-rag-postgres)
+  --pg-user <name>               psql user (default: postgres)
   --dry-run                      print actions, don't write
   -h, --help
 
@@ -54,6 +59,9 @@ AGE_KEY="/opt/vault-rag/.secrets/age.key"
 VAULT_REPO="/root/obsidian-vault"
 DRY=""
 FORCE_HOST_MISMATCH=""
+PG_DUMP=""
+PG_CONTAINER="vault-rag-postgres"
+PG_USER="postgres"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +73,9 @@ while [[ $# -gt 0 ]]; do
     --age-key) AGE_KEY="$2"; shift 2;;
     --vault-repo) VAULT_REPO="$2"; shift 2;;
     --force-host-mismatch) FORCE_HOST_MISMATCH=1; shift;;
+    --pg-dump) PG_DUMP=1; shift;;
+    --pg-container) PG_CONTAINER="$2"; shift 2;;
+    --pg-user) PG_USER="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "unknown flag: $1" >&2; usage >&2; exit 2;;
@@ -124,8 +135,25 @@ backup() {
   install -m 0600 "$AGE_KEY" "$BK_STAGING/age.key"
   cp "$VAULT_REPO/secrets/recipients" "$BK_STAGING/recipients"
   cp "$VAULT_REPO/secrets/vault.age" "$BK_STAGING/vault.age"
-  printf '{"created":"%s","host":"%s","age_key":"%s","vault_repo":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$(hostname)" "$AGE_KEY" "$VAULT_REPO" > "$BK_STAGING/manifest.json"
+
+  # vt-0188: pg_dumpall of the vault-rag postgres container — captures
+  # secret_audit, vault_audit, fleet_sessions/events, model_prices, tokmon.
+  # Without this, PG corruption = total loss of audit forensics + history.
+  local HAS_PG_DUMP=""
+  if [[ -n "$PG_DUMP" ]]; then
+    command -v docker >/dev/null || { echo "docker not found — required for --pg-dump" >&2; exit 1; }
+    if ! docker exec "$PG_CONTAINER" pg_dumpall -U "$PG_USER" --no-password > "$BK_STAGING/pg-dumpall.sql" 2>/dev/null; then
+      echo "pg_dumpall failed (container=$PG_CONTAINER user=$PG_USER) — refusing partial backup" >&2
+      rm -f "$BK_STAGING/pg-dumpall.sql"
+      exit 1
+    fi
+    HAS_PG_DUMP=1
+    echo "pg_dumpall: $(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes"
+  fi
+
+  printf '{"created":"%s","host":"%s","age_key":"%s","vault_repo":"%s","pg_dump":%s}\n' \
+    "$(date -u +%FT%TZ)" "$(hostname)" "$AGE_KEY" "$VAULT_REPO" \
+    "$([ -n "$HAS_PG_DUMP" ] && echo true || echo false)" > "$BK_STAGING/manifest.json"
 
   if [[ -n "$DRY" ]]; then
     if [[ -n "$RECIPIENT" ]]; then
@@ -137,11 +165,15 @@ backup() {
     return
   fi
 
+  # Tar all files including optional pg-dumpall.sql.
+  local tar_files=(age.key recipients vault.age manifest.json)
+  [[ -n "$HAS_PG_DUMP" ]] && tar_files+=(pg-dumpall.sql)
+
   if [[ -n "$RECIPIENT" ]]; then
-    tar c -C "$BK_STAGING" age.key recipients vault.age manifest.json \
+    tar c -C "$BK_STAGING" "${tar_files[@]}" \
       | age -r "$RECIPIENT" -o "$BK_TMP"
   else
-    tar c -C "$BK_STAGING" age.key recipients vault.age manifest.json \
+    tar c -C "$BK_STAGING" "${tar_files[@]}" \
       | age -p -o "$BK_TMP"
   fi
 
@@ -222,6 +254,26 @@ restore() {
   mv -f "$AGE_KEY_NEW" "$AGE_KEY"
   mv -f "$VAULT_AGE_NEW" "$VAULT_REPO/secrets/vault.age"
   mv -f "$RECIPIENTS_NEW" "$VAULT_REPO/secrets/recipients"
+
+  # vt-0188: if the bundle includes pg-dumpall.sql, replay it into the
+  # postgres container. Requires --pg-dump to opt in (destructive).
+  if [[ -f "$BK_STAGING/pg-dumpall.sql" ]]; then
+    if [[ -n "$PG_DUMP" ]]; then
+      command -v docker >/dev/null || { echo "docker not found — required for pg replay" >&2; exit 1; }
+      echo "replaying pg-dumpall ($(wc -c < "$BK_STAGING/pg-dumpall.sql") bytes) into $PG_CONTAINER…"
+      if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -v ON_ERROR_STOP=1 < "$BK_STAGING/pg-dumpall.sql" > /dev/null; then
+        echo "WARNING: pg replay failed — bundle file kept for manual recovery at $BK_STAGING/pg-dumpall.sql" >&2
+        # Don't delete BK_STAGING so the operator can salvage the dump.
+        trap - EXIT
+        echo "preserved: $BK_STAGING/pg-dumpall.sql"
+        exit 1
+      fi
+      echo "pg replayed successfully"
+    else
+      echo "bundle contains pg-dumpall.sql — pass --pg-dump to replay (destructive)" >&2
+      echo "raw dump available at $BK_STAGING/pg-dumpall.sql (kept until process exit)" >&2
+    fi
+  fi
 
   echo "restored:"
   echo "  age.key → $AGE_KEY"
