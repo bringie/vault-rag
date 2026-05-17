@@ -8,6 +8,10 @@ const { collectInventory, inventoryChanged, resetInventoryCache } = require('./i
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
 const backendsLib = require('./backends');
+// vt-0336: tmux discovery poller — emits `mux_sessions` frames every
+// FLEET_MUX_POLL_MS (default 30s) so the hub can list attachable
+// sessions on each host.
+const { startPoller: startMuxPoller } = require('./mux-poller');
 
 // True when the spawn frame uses the new generic schema rather than legacy
 // {args:[...]} passthrough. Any of these fields means we should consult a
@@ -522,6 +526,10 @@ async function runDaemon(opts) {
           safeSend(ws, { type: 'inventory', ...collectInventory() });
         }, 900_000);
         invHeartbeatTimer.unref?.();
+        // vt-0336: tmux poller. Sends mux_sessions frames at
+        // FLEET_MUX_POLL_MS cadence. Hub upserts to fleet_tmux_sessions
+        // and GC's stale rows.
+        const muxPoller = startMuxPoller((frame) => safeSend(ws, frame));
         ws.on('message', (raw) => {
           let f;
           try { f = JSON.parse(raw.toString()); } catch { return; }
@@ -636,6 +644,7 @@ async function runDaemon(opts) {
           clearInterval(metricsTimer);
           clearInterval(invMtimeTimer);
           clearInterval(invHeartbeatTimer);
+          muxPoller.stop();
         };
         ws.on('close', () => { clearTimers(); resolve(); });
         ws.on('error', (e) => {
