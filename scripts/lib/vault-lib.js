@@ -1,3 +1,5 @@
+'use strict';
+
 // vault-lib: shared helpers for vault-indexer + rag-api PUT route.
 // Pure functions where possible; pg client is injected.
 
@@ -5,7 +7,7 @@ const yaml = require('js-yaml');
 
 const OLLAMA_URL   = process.env.OLLAMA_HOST || 'http://vault-rag-ollama:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-const CHUNK_TARGET = 1500;
+const CHUNK_TARGET = parseInt(process.env.VAULT_RAG_CHUNK_TARGET || '1500', 10);
 const BATCH_EMBED  = 32;
 const BATCH_SLEEP  = 0;
 

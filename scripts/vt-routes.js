@@ -1,3 +1,5 @@
+'use strict';
+
 // vt: HTTP-shaped handlers backed by vt-fs primitives.
 // Each handler signature: ({ vault, body }) -> { status, body }.
 

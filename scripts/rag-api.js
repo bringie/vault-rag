@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // rag-api: internal HTTP shim for vault-rag-mcp.
 // Exposes: POST /search, /get, /backlinks, /put. Bearer auth on POST.
 // Listens on 0.0.0.0:5679 inside vault-rag-net only (no host port).
@@ -575,9 +577,13 @@ async function handleHealthDetail(req, res) {
     out.subsystems.secrets = { status: 'error', detail: scrubError(e.message) };
   }
   // git repo state + last commit
+  // M2 (audit 2026-05-17): execFileSync with separated argv — VAULT is env-
+  // sourced today but the prior shell-mode concat was a fragile pattern
+  // that would have shell-injected the moment VAULT ever became
+  // request-influenced. Defense-in-depth, no behavior change.
   try {
-    const { execSync } = require('node:child_process');
-    const lastCommitTs = execSync('git -C ' + VAULT + ' log -1 --format=%aI', { timeout: 2000 }).toString().trim();
+    const { execFileSync } = require('node:child_process');
+    const lastCommitTs = execFileSync('git', ['-C', VAULT, 'log', '-1', '--format=%aI'], { timeout: 2000 }).toString().trim();
     const ageMs = Date.now() - new Date(lastCommitTs).getTime();
     out.subsystems.git = {
       status: ageMs < 7 * 24 * 3600 * 1000 ? 'ok' : 'warn',
@@ -1737,7 +1743,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
             const run = await wfDb.createRun(pg, { workflowId: w.id, snapshot: w.definition });
             const runner = await fleetRoutes.ensureWorkflowRunner(fleetCtx);
             if (runner) runner.start(run.id);
-            console.log(`[rag-api] trigger fired: workflow=${w.name} run=${run.id}`);
+            log.info('cron_trigger_fired', { workflow_name: w.name, run_id: run.id });
             // vt-0231: audit cron-fired runs. caller_id is 'cron' (not a
             // bearer hash) so the source is unambiguous in the audit table.
             try {
@@ -1771,7 +1777,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
           const d = new Date(Date.now() - offset * 86400000);
           const dayStr = d.toISOString().slice(0, 10);
           const r = await fleetCost.aggregateDayRollup(fleetCtx.tokmonDb, pg, dayStr);
-          if (r.rows) console.log(`[rag-api] cost rollup ${dayStr}: ${r.rows} rows`);
+          if (r.rows) log.info('cost_rollup_complete', { day: dayStr, rows: r.rows });
         }
       } catch (e) {
         log.error('cost_rollup_failed', { msg: e.message });
@@ -1784,7 +1790,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
       try {
         const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
         const r = await fleetCost.aggregateDayRollup(fleetCtx.tokmonDb, pg, yest);
-        if (r.rows) console.log(`[rag-api] cost rollup ${yest}: ${r.rows} rows (startup)`);
+        if (r.rows) log.info('cost_rollup_startup', { day: yest, rows: r.rows });
       } catch (e) {
         log.error('cost_rollup_startup_failed', { msg: e.message });
       }
@@ -1810,7 +1816,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
           limited = rowCount >= 50000;
           passes += 1;
         }
-        if (total) console.log(`[rag-api] tokmon: purged ${total} events older than ${TOKMON_RETAIN_DAYS} days (${passes} passes)`);
+        if (total) log.info('tokmon_purge_complete', { rows: total, retention_days: TOKMON_RETAIN_DAYS, passes });
       } catch (e) {
         log.error('tokmon_purge_failed', { msg: e.message });
       }

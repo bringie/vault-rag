@@ -16,7 +16,11 @@ ${VAULT_RAG_DOMAIN} {
 	# Referrer-policy strict-origin: outbound clicks from notes don't
 	# leak the path that originated them.
 	header {
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# L7 (audit 2026-05-17): connect-src 'self' wss: was too broad —
+		# xss-injected JS could connect to any wss endpoint to exfil data.
+		# Bind wss: to the current host. ${VAULT_RAG_DOMAIN} is substituted
+		# at envsubst time so the value matches the served domain exactly.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' wss://${VAULT_RAG_DOMAIN}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		X-Frame-Options "DENY"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"

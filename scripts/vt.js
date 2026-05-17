@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // vt: vault-task CLI. Replaces beads. Tasks live as markdown in obsidian-vault/04-tasks/.
 
 const fs = require('fs');

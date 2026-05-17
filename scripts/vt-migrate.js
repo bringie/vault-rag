@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // Reads local 04-tasks/*.md and POSTs each to /api/task/import.
 // Requires VAULT_RAG_URL, VAULT_RAG_API_TOKEN, and source dir as argv[2].
 const fs = require('node:fs');

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // run-job.js: wrap a command, log row in job_runs (running -> ok/err with duration+summary).
 // Usage: run-job.js <job_name> <cmd> [args...]
 // Env: VAULT_RAG_PG_HOST, VAULT_RAG_PG_DB, VAULT_RAG_PG_USER, VAULT_RAG_PG_PASS, RUN_JOB_TAIL_BYTES (default 4096).

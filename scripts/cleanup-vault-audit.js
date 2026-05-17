@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // cleanup-vault-audit: delete audit rows older than retention windows.
 // vt-0204: extended to also prune secret_audit, ingest_log, workflow_audit
 // so audit tables can't grow unbounded.

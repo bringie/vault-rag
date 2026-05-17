@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // mcp-shim: stateless MCP HTTP server exposing vault-rag tools.
 // Spec: JSON-RPC 2.0 over HTTP POST /mcp. Stateless (no session management).
 // Auth: X-Vault-Token header == VAULT_RAG_MCP_TOKEN env (constant-time compare).

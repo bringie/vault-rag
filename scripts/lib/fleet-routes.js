@@ -1335,6 +1335,11 @@ async function ensureWorkflowRunner(ctx) {
   if (!ctx.db) return null;
   // Concurrency guard: cache the in-flight init promise synchronously so
   // parallel calls await the same single-init, never racing past the guard.
+  // vt-0325 (audit 2026-05-17): on init failure, clear the cached
+  // promise so subsequent /run calls retry. Previously a rejected
+  // init promise sat in ctx._workflowRunnerInit forever and every
+  // future workflow dispatch awaited the same rejection until the
+  // hub restarted.
   if (!ctx._workflowRunnerInit) {
     ctx._workflowRunnerInit = (async () => {
       // Orphan stranded runs from previous hub lifetime BEFORE creating new ones
@@ -1346,7 +1351,11 @@ async function ensureWorkflowRunner(ctx) {
         broadcast: (runId, frame) => ctx.bus.broadcastWorkflow(runId, frame),
       });
       return ctx.workflowRunner;
-    })();
+    })().catch((e) => {
+      log.error('workflow_runner_init_failed', { msg: e.message });
+      ctx._workflowRunnerInit = null;
+      throw e;
+    });
   }
   return ctx._workflowRunnerInit;
 }

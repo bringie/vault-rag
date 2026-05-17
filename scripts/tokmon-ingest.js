@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // tokmon-ingest: HTTP endpoint for token-monitor parser shippers.
 // Bulk INSERT via UNNEST.
 

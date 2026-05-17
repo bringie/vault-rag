@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 const URL_ENV = 'VAULT_RAG_URL';
 const TOKEN_ENV = 'VAULT_RAG_API_TOKEN';
 const AGENT_ENV = 'VT_AGENT';

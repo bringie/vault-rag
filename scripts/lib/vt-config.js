@@ -1,3 +1,5 @@
+'use strict';
+
 // vt: configuration & path resolution.
 // Resolves vault directory, API base, and token from env/.env.
 

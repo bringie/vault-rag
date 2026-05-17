@@ -12,10 +12,11 @@
 const https = require('https');
 const http  = require('http');
 const crypto = require('crypto');
+const dns = require('node:dns').promises;
 const log = require('./log').for('webhooks');
 
-const MAX_ATTEMPTS = 3;
-const TIMEOUT_MS = 5000;
+const MAX_ATTEMPTS = parseInt(process.env.VAULT_RAG_WEBHOOK_MAX_ATTEMPTS || '3', 10);
+const TIMEOUT_MS = parseInt(process.env.VAULT_RAG_WEBHOOK_TIMEOUT_MS || '5000', 10);
 
 function formatPayload(format, event, data) {
   // Common compact text rendering used by chat-style integrations.
@@ -49,45 +50,91 @@ function sign(secret, body) {
 // "limit blast radius of admin compromise". Operators who legitimately
 // need to webhook to an internal host can set
 // VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1.
+function _isPrivateIpv4(a, b) {
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 0) return true;  // 0.0.0.0/8 — reserved + can route to localhost on some stacks
+  if (a >= 224) return true;  // multicast + reserved
+  return false;
+}
+// M4 (audit 2026-05-17): split off the IP-only check so resolveAndCheck()
+// can use it after DNS resolution. _isPrivateHost still does hostname
+// + literal-IP checks as before (defense-in-depth for callers that
+// don't dial through resolveAndCheck).
+function _isPrivateIp(ip) {
+  if (!ip) return true;
+  const s = String(ip).toLowerCase();
+  if (s === '127.0.0.1' || s === '0.0.0.0' || s === '::1' || s === '[::1]') return true;
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) return _isPrivateIpv4(parseInt(m[1], 10), parseInt(m[2], 10));
+  // IPv6 ULA fc00::/7 (fc/fd prefix) + link-local fe80::/10 + loopback ::1.
+  if (/^f[cd][0-9a-f]{2}:/i.test(s)) return true;
+  if (/^fe[89ab][0-9a-f]:/i.test(s)) return true;
+  return false;
+}
 function _isPrivateHost(host) {
   if (process.env.VAULT_RAG_WEBHOOK_ALLOW_PRIVATE === '1') return false;
   const h = host.toLowerCase();
   if (h === 'localhost' || h === '0.0.0.0' || h === '::1' || h === '[::1]') return true;
   // IPv4 literal
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true;  // multicast + reserved
-  }
+  if (m && _isPrivateIpv4(parseInt(m[1], 10), parseInt(m[2], 10))) return true;
+  // IPv6 literal in [::1] or fc.. form (loopback/link-local/ULA)
+  if (_isPrivateIp(h.replace(/^\[|\]$/g, ''))) return true;
   // Hostnames matching docker-compose service names are private by convention.
   if (/^vault-rag-/.test(h)) return true;
   return false;
 }
 
-function post(url, body, secret) {
+// M4: resolve the hostname to an IP, verify it's not private, return the
+// IP. Callers should dial that IP literal (with Host: <hostname> header
+// preserved) so a DNS-rebinding attacker can't return a public IP at
+// validation time then 127.0.0.1 at dial time. Throws on private/blocked.
+async function resolveAndCheck(hostname) {
+  if (process.env.VAULT_RAG_WEBHOOK_ALLOW_PRIVATE === '1') {
+    // Operator opt-out: skip both hostname and resolved-IP checks.
+    const { address, family } = await dns.lookup(hostname);
+    return { address, family };
+  }
+  if (_isPrivateHost(hostname)) {
+    throw new Error('private host blocked (SSRF guard) — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1 to override');
+  }
+  const { address, family } = await dns.lookup(hostname);
+  if (_isPrivateIp(address)) {
+    throw new Error(`hostname ${hostname} resolved to private IP ${address} (SSRF / DNS rebinding guard)`);
+  }
+  return { address, family };
+}
+
+async function post(url, body, secret) {
+  let urlObj;
+  try { urlObj = new URL(url); }
+  catch (e) { return { status: null, error: 'bad url: ' + e.message }; }
+  // M4 (audit 2026-05-17): resolve hostname once and dial the literal
+  // IP — defeats DNS-rebinding where attacker DNS returns a public IP
+  // for the validation lookup then 127.0.0.1 for the actual fetch.
+  let resolved;
+  try { resolved = await resolveAndCheck(urlObj.hostname); }
+  catch (e) { return { status: null, error: e.message }; }
   return new Promise((resolve) => {
-    let urlObj;
-    try { urlObj = new URL(url); }
-    catch (e) { return resolve({ status: null, error: 'bad url: ' + e.message }); }
-    if (_isPrivateHost(urlObj.hostname)) {
-      return resolve({ status: null, error: 'private host blocked (SSRF guard) — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1 to override' });
-    }
     const opts = {
       method: 'POST',
-      hostname: urlObj.hostname,
+      hostname: resolved.address,
+      family: resolved.family,
       port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
       path: urlObj.pathname + urlObj.search,
       headers: {
+        // Preserve original Host so TLS SNI + virtual-host routing still match.
+        'host': urlObj.host,
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),
         'user-agent': 'vault-rag-webhook/1',
       },
       timeout: TIMEOUT_MS,
+      servername: urlObj.hostname,  // for https: TLS SNI
     };
     // vt-0249: always emit x-vault-signature so the receiver can enforce
     // a policy of "reject unsigned"; explicit 'none' beats silently
@@ -139,4 +186,4 @@ async function emit(pg, event, data) {
   }
 }
 
-module.exports = { emit, isPrivateHost: _isPrivateHost };
+module.exports = { emit, isPrivateHost: _isPrivateHost, resolveAndCheck, isPrivateIp: _isPrivateIp };

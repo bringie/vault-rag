@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // vault-indexer: pull vault git, embed changed .md, upsert pgvector,
 // rebuild backlinks, bump meta.last_indexed_sha. Idempotent.
 

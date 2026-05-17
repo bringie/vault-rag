@@ -198,10 +198,12 @@ function createRunner(deps) {
     // gates workflow CRUD/run), but the architect review flagged that
     // admin compromise should not give attacker access to internal
     // services. Mirrors webhooks.js — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1
-    // to override for legitimate internal callouts. Note: env var is
-    // shared with webhooks since "private network access" is one
-    // operational decision, not per-feature.
-    const { isPrivateHost } = require('./webhooks');
+    // to override for legitimate internal callouts.
+    // M4 (audit 2026-05-17): pin DNS resolution at connect time and
+    // re-verify the resolved IP is public — defeats DNS rebinding where
+    // attacker DNS returned a public IP during validation then 127.0.0.1
+    // at fetch time.
+    const { isPrivateHost, resolveAndCheck, isPrivateIp } = require('./webhooks');
     let urlObj;
     try { urlObj = new URL(url); }
     catch (e) { throw new Error(`http_request: bad url: ${e.message}`); }
@@ -211,6 +213,9 @@ function createRunner(deps) {
     if (isPrivateHost(urlObj.hostname)) {
       throw new Error(`http_request: private host blocked (SSRF guard) — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1 to override`);
     }
+    // Pre-resolve and bail if private — fast-fail before opening a socket.
+    try { await resolveAndCheck(urlObj.hostname); }
+    catch (e) { throw new Error(`http_request: ${e.message}`); }
     const method = (node.method || 'GET').toUpperCase();
     const headers = {};
     for (const [k, v] of Object.entries(node.headers || {})) {
@@ -229,8 +234,27 @@ function createRunner(deps) {
     activeControllers.set(runId, controller);
     const timeoutMs = Math.min(Math.max(node.timeout_ms || 30000, 1000), 120000);
     const t = setTimeout(() => controller.abort(), timeoutMs);
+    // M4: undici Agent with a custom connect.lookup that re-checks the
+    // resolved IP at dial time. Even if the kernel cache or upstream DNS
+    // serves a different (private) record between validation and dial,
+    // the lookup rejects before the TCP handshake.
+    const { Agent } = require('undici');
+    const dns = require('node:dns');
+    const dispatcher = new Agent({
+      connect: {
+        lookup(hostname, opts, cb) {
+          dns.lookup(hostname, opts, (err, address, family) => {
+            if (err) return cb(err);
+            if (process.env.VAULT_RAG_WEBHOOK_ALLOW_PRIVATE !== '1' && isPrivateIp(address)) {
+              return cb(new Error(`hostname ${hostname} resolved to private IP ${address} at connect time (SSRF / DNS rebinding guard)`));
+            }
+            cb(null, address, family);
+          });
+        },
+      },
+    });
     try {
-      const res = await fetch(url, { method, headers, body, signal: controller.signal });
+      const res = await fetch(url, { method, headers, body, signal: controller.signal, dispatcher });
       const text = await res.text();
       return { output: text.slice(0, 65536), exit_code: res.ok ? 0 : 1, status: res.status };
     } catch (e) {
@@ -242,6 +266,8 @@ function createRunner(deps) {
     } finally {
       clearTimeout(t);
       activeControllers.delete(runId);
+      // Close pooled connections so the Agent doesn't hold sockets open.
+      try { dispatcher.close().catch(() => {}); } catch {}
     }
   }
 

@@ -1,3 +1,5 @@
+'use strict';
+
 // vt: file operations on tasks (CRUD + atomic id counter).
 
 const fs = require('fs');

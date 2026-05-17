@@ -1,3 +1,5 @@
+'use strict';
+
 // vt: dependency graph - "ready" computation.
 
 const ACTIVE = new Set(['open', 'in_progress', 'blocked']);

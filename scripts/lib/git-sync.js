@@ -1,3 +1,5 @@
+'use strict';
+
 // git-sync: fire-and-forget trigger of vault-sync.sh push after writes.
 // No-op if .sync/vault-sync.sh missing (tests, fresh vaults).
 // Debounces bursts into a single push; lockdir in vault-sync.sh handles concurrency.
@@ -8,7 +10,7 @@ const fs = require('node:fs');
 const log = require('./log').for('git-sync');
 const metrics = require('./metrics');
 
-const DEBOUNCE_MS = 1500;
+const DEBOUNCE_MS = parseInt(process.env.VAULT_GIT_SYNC_DEBOUNCE_MS || '1500', 10);
 
 // vt-0289: observability for git push failures. Previously the spawn was
 // fire-and-forget with stdio:'ignore' — a deploy key expired, branch

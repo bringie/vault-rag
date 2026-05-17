@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+'use strict';
+
 // watchdog-stuck-jobs: mark job_runs rows stuck in 'running' >30min as 'killed'.
 // Idempotent. Returns rows-killed count for ofelia summary.
 
