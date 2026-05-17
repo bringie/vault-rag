@@ -388,21 +388,36 @@ body::after {
 .viewer.exited .callsign { color: var(--text-dim); text-shadow: none; }
 
 /* ============ FOOTBAR ============ */
-/* Persistent footer — fixed below all overlays */
+/* vt-0260: two-row footer — settings drawer on top, status line below.
+   Persistent — fixed below all overlays */
 .footbar {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; flex-direction: column;
   padding: 0 1.4em; background: var(--bg-warm);
   border-top: 1px solid var(--line);
   font-size: .72em; color: var(--text-faint); letter-spacing: .12em;
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
-  height: var(--footbar-h, 28px);
+  height: var(--footbar-h, 64px);
+}
+.footbar-row {
+  display: flex; align-items: center; gap: .5em; flex: 1; min-height: 0;
+}
+.footbar-settings {
+  border-bottom: 1px solid var(--line-2, var(--line));
+  padding: 4px 0;
+}
+.footbar-settings .lbl {
+  font-size: .85em; color: var(--accent); letter-spacing: .15em; margin-right: .5em;
+}
+.footbar-status {
+  justify-content: space-between;
+  padding: 2px 0;
 }
 .footdot { width: 6px; height: 6px; background: var(--ok); box-shadow: 0 0 6px var(--ok-glow); }
 .footver { color: var(--text-dim); }
 
 /* ============ PAGE OVERLAYS ============ */
 /* Overlays sit ABOVE dashboard but BELOW persistent topbar/footbar. */
-:root { --topbar-h: 56px; --footbar-h: 28px; }
+:root { --topbar-h: 56px; --footbar-h: 64px; }
 
 #archive, #sdetail, #costview {
   position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
@@ -635,14 +650,21 @@ body::after {
 }
 .sd-transcript-term .xterm-viewport, .sd-transcript-term .xterm-screen { background: transparent !important; }
 
+/* vt-0261: stack status chip — was a single ● glyph, now icon + count
+   so the operator can read the state at a glance instead of having to
+   hover for a tooltip. */
 .stack-dot {
-  width: 1.6em; height: 1.6em; padding: 0; line-height: 1;
-  font-size: 1.1em; cursor: pointer;
+  padding: .35em .65em; font-family: var(--font-mono); font-size: .8em;
+  letter-spacing: .08em; cursor: pointer; display: inline-flex; gap: .35em; align-items: center;
 }
-.stack-dot[data-state="green"]   { color: var(--ok); }
-.stack-dot[data-state="yellow"]  { color: var(--warn); }
-.stack-dot[data-state="red"]     { color: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
-.stack-dot[data-state="unknown"] { color: var(--text-faint); }
+.stack-dot .stack-dot-icon { font-size: 1.2em; line-height: 1; }
+.stack-dot[data-state="green"]   { color: var(--ok);      border-color: var(--ok); }
+.stack-dot[data-state="green"]:hover  { color: var(--ok);    border-color: var(--ok); }
+.stack-dot[data-state="yellow"]  { color: var(--warn);    border-color: var(--warn); }
+.stack-dot[data-state="yellow"]:hover { color: var(--warn);  border-color: var(--warn); }
+.stack-dot[data-state="red"]     { color: var(--danger);  border-color: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+.stack-dot[data-state="red"]:hover    { color: var(--danger); border-color: var(--danger); }
+.stack-dot[data-state="unknown"] { color: var(--text-faint); border-color: var(--line); }
 
 #stack-modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.5); z-index: 200; }
@@ -960,6 +982,34 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   color:var(--accent, #6cf); white-space:pre-wrap; word-break:break-all;
 }
 .setup-wizard-copy { padding:.25em .7em; flex-shrink:0; }
+
+/* vt-0259: agent roles edit + group→role assignment dialogs */
+dialog#agent-role-edit, dialog#group-roles-picker {
+  background:transparent; border:none; padding:0; max-width:90vw;
+}
+dialog#agent-role-edit::backdrop, dialog#group-roles-picker::backdrop { background:rgba(0,0,0,.7); }
+.ar-edit-frame {
+  background:var(--bg, #0a0a0a); border:1px solid var(--accent, #6cf); border-radius:4px;
+  padding:14px 18px; min-width:560px; max-width:90vw;
+  box-shadow:0 0 20px rgba(102,204,255,.25);
+}
+.ar-edit-head {
+  display:flex; gap:8px; align-items:center; margin-bottom:10px;
+  padding-bottom:8px; border-bottom:1px solid var(--border, #333);
+  font:11px/1.4 monospace;
+}
+.ar-edit-body { max-height:60vh; overflow:auto; display:flex; flex-direction:column; gap:6px; }
+.ar-edit-body label.lbl { font-size:10px; letter-spacing:.12em; color:var(--accent); margin-top:.5em; }
+.ar-edit-body textarea.app-dialog-input { font:12px/1.5 "JetBrains Mono", monospace; }
+.ar-edit-buttons { display:flex; gap:8px; align-items:center; margin-top:14px; padding-top:10px; border-top:1px solid var(--border, #333); }
+.ar-role-row {
+  display:flex; gap:8px; align-items:center;
+  padding:8px 10px; border:1px solid var(--line, #333); border-radius:3px;
+  margin-bottom:4px;
+}
+.ar-role-row.attached { border-color: var(--accent, #6cf); background: rgba(102,204,255,.04); }
+.ar-role-row strong { flex:0 0 auto; }
+.ar-role-row .ar-role-desc { color: var(--text-dim, #888); font-size:.85em; flex:1; }
 
 /* vt-0254: workflow template picker */
 dialog#wf-tpl-picker {

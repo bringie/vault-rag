@@ -527,9 +527,35 @@ async function handleDispatch({ req, res, body, ctx }) {
       ? `${resolvedGroup.brain_prompt}\n\n${structured.system_prompt}`
       : resolvedGroup.brain_prompt;
   }
+  // vt-0259: prepend assigned role prompts (ordered by position) to the
+  // system_prompt. Roles compose with brain_prompt, not replace it; the
+  // final stack is: <brain>\n\n<role1>\n\n<role2>\n\n<per-call>.
+  let appliedRoleNames = [];
+  if (resolvedGroup) {
+    try {
+      const roles = await fleetDb.listGroupRoles(ctx.db, resolvedGroup.id);
+      if (roles.length) {
+        const roleBlob = roles.map(r => r.prompt).filter(Boolean).join('\n\n');
+        if (roleBlob) {
+          structured.system_prompt = structured.system_prompt
+            ? `${roleBlob}\n\n${structured.system_prompt}`
+            : roleBlob;
+        }
+        appliedRoleNames = roles.map(r => r.name);
+        // First role with a default_model wins if the caller didn't specify one.
+        if (!structured.model) {
+          const firstWithModel = roles.find(r => r.default_model);
+          if (firstWithModel) structured.model = firstWithModel.default_model;
+        }
+      }
+    } catch (e) {
+      log.error('group_roles_lookup_failed', { group: resolvedGroup.name, msg: e.message });
+    }
+  }
 
   const sessionMetadata = { ...(metadata || {}), ...structured };
   if (resolvedGroup) sessionMetadata.dispatched_group = resolvedGroup.name;
+  if (appliedRoleNames.length) sessionMetadata.applied_roles = appliedRoleNames;
 
   const s = await fleetDb.createSession(ctx.db, {
     hostId: host.id, cwd: cwd || '~',
@@ -547,6 +573,7 @@ async function handleDispatch({ req, res, body, ctx }) {
     host_name: host.name,
     display_name: host.display_name,
     group_brain_prompt_applied: !!(resolvedGroup && resolvedGroup.brain_prompt),
+    applied_roles: appliedRoleNames,
   });
 }
 
@@ -1563,6 +1590,84 @@ function dispatchHttp(req, res, ctx) {
     return require('./fleet-workflow-db').restoreWorkflow(ctx.db, id).then(w =>
       w ? send(res, 200, w) : send(res, 404, { error: 'not found in trash' })
     ).catch(e => send(res, 500, { error: e.message }));
+  }
+
+  // vt-0259: Agent roles. List is viewer; mutations are admin (handled by
+  // the outer isAdminPath gate). assign/unassign hang under /fleet/groups/.
+  if (method === 'GET'    && path === '/fleet/agent-roles') {
+    return fleetDb.listAgentRoles(ctx.db).then(rs => send(res, 200, rs))
+      .catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'POST'   && path === '/fleet/agent-roles') {
+    return readBody(req).then(async (b) => {
+      if (!b.name || typeof b.name !== 'string' || b.name.length > 64) {
+        return send(res, 422, { error: 'name required (string, <=64 chars)' });
+      }
+      if (!b.prompt || typeof b.prompt !== 'string') {
+        return send(res, 422, { error: 'prompt required (string)' });
+      }
+      if (b.prompt.length > 32768) return send(res, 422, { error: 'prompt too long (max 32768 chars)' });
+      try {
+        const r = await fleetDb.createAgentRole(ctx.db, {
+          name: b.name, description: b.description, prompt: b.prompt,
+          default_model: b.default_model, allowed_tools: b.allowed_tools,
+        });
+        send(res, 201, r);
+      } catch (e) {
+        if (/duplicate key|unique/i.test(e.message)) return send(res, 409, { error: 'name already exists' });
+        send(res, 500, { error: e.message });
+      }
+    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+  }
+  if (method === 'GET'    && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
+    const id = path.split('/')[3];
+    return fleetDb.getAgentRole(ctx.db, id).then(r =>
+      r ? send(res, 200, r) : send(res, 404, { error: 'role not found' })
+    ).catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'PATCH'  && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
+    const id = path.split('/')[3];
+    return readBody(req).then(async (b) => {
+      if (b.prompt !== undefined && (typeof b.prompt !== 'string' || b.prompt.length > 32768)) {
+        return send(res, 422, { error: 'prompt invalid (string, <=32768)' });
+      }
+      if (b.name !== undefined && (typeof b.name !== 'string' || b.name.length > 64)) {
+        return send(res, 422, { error: 'name invalid' });
+      }
+      const r = await fleetDb.updateAgentRole(ctx.db, id, b);
+      r ? send(res, 200, r) : send(res, 404, { error: 'role not found' });
+    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+  }
+  if (method === 'DELETE' && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
+    const id = path.split('/')[3];
+    return fleetDb.deleteAgentRole(ctx.db, id).then(() => send(res, 204, {}))
+      .catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
+    const id = path.split('/')[3];
+    return fleetDb.listGroupRoles(ctx.db, id).then(rs => send(res, 200, rs))
+      .catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
+    const groupId = path.split('/')[3];
+    return readBody(req).then(async (b) => {
+      if (!b.role_id) return send(res, 422, { error: 'role_id required' });
+      const role = await fleetDb.getAgentRole(ctx.db, b.role_id);
+      if (!role) return send(res, 404, { error: 'role not found' });
+      const grp = await fleetDb.getGroup(ctx.db, groupId);
+      if (!grp) return send(res, 404, { error: 'group not found' });
+      await fleetDb.assignRoleToGroup(ctx.db, groupId, b.role_id,
+        Number.isFinite(b.position) ? b.position : 0);
+      send(res, 201, { group_id: groupId, role_id: b.role_id });
+    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+  }
+  if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}/roles/${SID_RE}$`, 'i').test(path)) {
+    const parts = path.split('/');
+    const groupId = parts[3];
+    const roleId  = parts[5];
+    return fleetDb.unassignRoleFromGroup(ctx.db, groupId, roleId)
+      .then(() => send(res, 204, {}))
+      .catch(e => send(res, 500, { error: e.message }));
   }
 
   // Groups

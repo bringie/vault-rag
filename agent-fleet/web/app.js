@@ -385,32 +385,46 @@
       if (e.message !== 'auth') console.warn('refresh', e);
     }
   }
-  // vt-0115: compute green/yellow/red from per-service health.
+  // vt-0115 + vt-0261: compute green/yellow/red from per-service health
+  // and expose a count for the visible chip.
   function summarizeStack(payload) {
-    if (payload.error || !payload.services) return 'unknown';
-    if (payload.stale) return 'yellow';
-    let badCount = 0, healthy = 0;
-    for (const s of payload.services) {
-      // Skip the api container itself — it always reports healthy when we can
-      // read the file, otherwise the route already 503'd above.
-      if (s.name === 'vault-rag-api') continue;
-      if (s.status === 'running' && (s.health === 'healthy' || s.health === 'none')) healthy++;
-      else badCount++;
+    if (payload.error || !Array.isArray(payload.services)) {
+      return { state: 'unknown', healthy: 0, total: 0, bad: [] };
     }
-    if (badCount === 0) return 'green';
-    if (badCount === 1) return 'yellow';
-    return 'red';
+    let healthy = 0;
+    const bad = [];
+    for (const s of payload.services) {
+      // The api container is always healthy if we can read the file;
+      // otherwise the route 503'd and we never got here. Skip it from
+      // the bad count so a freshly-restarting api doesn't flip the chip.
+      if (s.name === 'vault-rag-api') { healthy++; continue; }
+      if (s.status === 'running' && (s.health === 'healthy' || s.health === 'none')) healthy++;
+      else bad.push(s);
+    }
+    const total = payload.services.length;
+    let state;
+    if (total === 0) state = 'unknown';
+    else if (payload.stale) state = 'yellow';
+    else if (bad.length === 0) state = 'green';
+    else if (bad.length === 1) state = 'yellow';
+    else state = 'red';
+    return { state, healthy, total, bad };
   }
   function renderStackStatus(payload) {
     const dot = $('stack-dot');
     if (!dot) return;
-    const state = summarizeStack(payload);
-    dot.dataset.state = state;
-    dot.title = state === 'green'   ? 'all containers healthy'
-              : state === 'yellow'  ? 'one container degraded or status stale'
-              : state === 'red'     ? 'multiple containers unhealthy'
-              : 'stack status unavailable';
-    state._cached = payload;
+    const sum = summarizeStack(payload);
+    dot.dataset.state = sum.state;
+    const textEl = dot.querySelector('.stack-dot-text');
+    if (textEl) {
+      textEl.textContent = sum.state === 'unknown'
+        ? (payload.error ? 'STACK ?' : '—')
+        : `${sum.healthy}/${sum.total}`;
+    }
+    dot.title = sum.state === 'green'   ? `STACK: all ${sum.total} containers healthy`
+              : sum.state === 'yellow'  ? `STACK: ${sum.bad.length ? sum.bad.map(s => s.name).join(', ') + ' degraded' : 'status stale'}`
+              : sum.state === 'red'     ? `STACK: ${sum.bad.length} unhealthy — ${sum.bad.map(s => s.name).join(', ')}`
+              : (payload.error || 'stack status unavailable');
     dot.onclick = () => openStackModal(payload);
   }
   function openStackModal(payload) {
@@ -1201,9 +1215,10 @@
     health:          { panels: ['healthview'],        nav: 'health',    title: 'page.health',          open: () => openHealthView() },
     audit:           { panels: ['auditview'],         nav: 'audit',     title: 'page.audit',           open: () => openAuditView() },
     'recycle-bin':   { panels: ['recyclebinview'],    nav: 'groups',    title: 'page.recycle_bin',     open: () => window.openRecycleBinView?.() },
+    'agent-roles':   { panels: ['agentrolesview'],    nav: 'agent-roles', title: 'page.agent_roles',   open: () => window.openAgentRolesView?.() },
   };
-  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview','recyclebinview'];
-  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit'];
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview','recyclebinview','agentrolesview'];
+  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit','agent-roles'];
 
   function setPage(name, arg) {
     const p = PAGES[name] || PAGES.dashboard;
@@ -1699,6 +1714,111 @@
   }
   window.openRecycleBinView = openRecycleBinView;
 
+  // vt-0259: Agent roles list page + create/edit dialog.
+  async function openAgentRolesView() {
+    const body = $('ar-rows');
+    if (!body) return;
+    body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-dim)">loading…</td></tr>`;
+    let roles;
+    try { roles = await api('GET', '/agent-roles'); }
+    catch (e) {
+      body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-dim)">error: ${esc(e.message)}</td></tr>`;
+      return;
+    }
+    if (!roles.length) {
+      body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:1em;color:var(--text-faint)">no roles — click + new role</td></tr>`;
+      return;
+    }
+    body.innerHTML = roles.map(r => `<tr>
+      <td><strong>${esc(r.name)}</strong></td>
+      <td>${esc(r.description || '')}</td>
+      <td><code>${esc(r.default_model || '—')}</code></td>
+      <td>
+        <button class="btn-row" data-edit-role="${esc(r.id)}">edit</button>
+        <button class="btn-row" data-del-role="${esc(r.id)}">delete</button>
+      </td>
+    </tr>`).join('');
+    body.querySelectorAll('[data-edit-role]').forEach(b => b.onclick = () => {
+      const r = roles.find(x => x.id === b.dataset.editRole);
+      if (r) openAgentRoleEdit(r);
+    });
+    body.querySelectorAll('[data-del-role]').forEach(b => b.onclick = async () => {
+      if (!confirm(`delete role "${roles.find(x => x.id === b.dataset.delRole)?.name}"?`)) return;
+      try { await api('DELETE', `/agent-roles/${b.dataset.delRole}`); openAgentRolesView(); }
+      catch (e) { alert(e.message); }
+    });
+  }
+  function openAgentRoleEdit(role) {
+    const dlg = $('agent-role-edit'); if (!dlg) return;
+    const isNew = !role || !role.id;
+    $('ar-edit-name-label').textContent = isNew ? 'new role' : role.name;
+    $('ar-edit-name').value        = role?.name || '';
+    $('ar-edit-description').value = role?.description || '';
+    $('ar-edit-prompt').value      = role?.prompt || '';
+    $('ar-edit-model').value       = role?.default_model || '';
+    try { dlg.showModal(); } catch { return; }
+    $('ar-edit-cancel').onclick = () => dlg.close();
+    $('ar-edit-close').onclick  = () => dlg.close();
+    $('ar-edit-save').onclick = async () => {
+      const payload = {
+        name:          $('ar-edit-name').value.trim(),
+        description:   $('ar-edit-description').value.trim(),
+        prompt:        $('ar-edit-prompt').value,
+        default_model: $('ar-edit-model').value.trim() || null,
+      };
+      if (!payload.name) { $('ar-edit-name').focus(); return; }
+      if (!payload.prompt) { $('ar-edit-prompt').focus(); return; }
+      try {
+        if (isNew) await api('POST', '/agent-roles', payload);
+        else       await api('PATCH', `/agent-roles/${role.id}`, payload);
+        dlg.close();
+        openAgentRolesView();
+      } catch (e) { alert(e.message); }
+    };
+  }
+  async function openGroupRolesPicker(group) {
+    const dlg = $('group-roles-picker'); if (!dlg) return;
+    $('group-roles-group-name').textContent = group.name;
+    const body = $('group-roles-body');
+    body.textContent = 'loading…';
+    try { dlg.showModal(); } catch { return; }
+    let allRoles, assigned;
+    try {
+      [allRoles, assigned] = await Promise.all([
+        api('GET', '/agent-roles'),
+        api('GET', `/groups/${group.id}/roles`),
+      ]);
+    } catch (e) {
+      body.innerHTML = `<p style="color:var(--text-dim)">error: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (!dlg.open) return;
+    const assignedSet = new Set(assigned.map(r => r.id));
+    body.innerHTML = allRoles.length === 0
+      ? `<p style="color:var(--text-faint)">no roles defined yet — create one in Settings → roles.</p>`
+      : allRoles.map(r => `
+          <div class="ar-role-row ${assignedSet.has(r.id) ? 'attached' : ''}">
+            <strong>${esc(r.name)}</strong>
+            <span class="ar-role-desc">${esc(r.description || '')}</span>
+            ${assignedSet.has(r.id)
+              ? `<button class="btn-row" data-unassign="${esc(r.id)}">remove</button>`
+              : `<button class="btn-row" data-assign="${esc(r.id)}">assign</button>`}
+          </div>`).join('');
+    body.querySelectorAll('[data-assign]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { await api('POST', `/groups/${group.id}/roles`, { role_id: b.dataset.assign }); openGroupRolesPicker(group); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    });
+    body.querySelectorAll('[data-unassign]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { await api('DELETE', `/groups/${group.id}/roles/${b.dataset.unassign}`); openGroupRolesPicker(group); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    });
+    $('group-roles-close').onclick = () => dlg.close();
+  }
+  window.openAgentRolesView = openAgentRolesView;
+  window.openGroupRolesPicker = openGroupRolesPicker;
+
   // ============ Groups page ============
   async function openGroupsView() {
     $('groupsview-close').onclick = () => navigate('/dashboard');
@@ -1800,6 +1920,11 @@
               <span id="gd-brain-status" class="lbl"></span>
             </div>
           </section>
+          <section style="margin-top:1.4em">
+            <label class="lbl">AGENT ROLES — additional prompts prepended after the brain</label>
+            <div id="gd-roles-chips" style="margin:.4em 0"></div>
+            <button id="gd-manage-roles" class="btn-ghost" style="width:auto; padding:.3em 1em">⚙ manage roles</button>
+          </section>
         </div>
       </div>
     `;
@@ -1852,6 +1977,27 @@
         g.brain_prompt = v || null;
         status.textContent = v ? 'saved · injected into group dispatches' : 'saved · cleared';
       } catch (e) { status.textContent = 'error: ' + e.message; }
+    };
+    // vt-0259: role chips + manage button
+    async function renderRoleChips() {
+      const row = $('gd-roles-chips');
+      if (!row) return;
+      try {
+        const roles = await api('GET', `/groups/${g.id}/roles`);
+        row.innerHTML = roles.length
+          ? roles.map(r => `<span class="chip">${esc(r.name)}</span>`).join(' ')
+          : '<span style="color:var(--text-faint)">no roles assigned</span>';
+      } catch (e) {
+        row.innerHTML = `<span style="color:var(--text-dim)">error: ${esc(e.message)}</span>`;
+      }
+    }
+    renderRoleChips();
+    const manageRolesBtn = $('gd-manage-roles');
+    if (manageRolesBtn) manageRolesBtn.onclick = async () => {
+      await window.openGroupRolesPicker?.(g);
+      // Re-render chips when picker closes — small delay since dlg.close is sync
+      const dlg = $('group-roles-picker');
+      if (dlg) dlg.addEventListener('close', renderRoleChips, { once: true });
     };
     function renderLabels() {
       const row = $('gd-labels-chip-row');
@@ -1982,6 +2128,11 @@
     const wfTrash  = $('wf-trash');  if (wfTrash)  wfTrash.onclick  = () => navigate('/recycle-bin');
     const rcReload = $('recycle-reload'); if (rcReload) rcReload.onclick = () => window.openRecycleBinView?.();
     const rcBack = $('recyclebinview-close'); if (rcBack) rcBack.onclick = () => navigate('/groups');
+    const arNav = $('nav-agent-roles'); if (arNav) arNav.onclick = () => navigate('/agent-roles');
+    const arNew = $('ar-new'); if (arNew) arNew.onclick = () => window.openAgentRoleEdit?.({});
+    const arReload = $('ar-reload'); if (arReload) arReload.onclick = () => window.openAgentRolesView?.();
+    const arBack = $('agentrolesview-close'); if (arBack) arBack.onclick = () => navigate('/dashboard');
+    window.openAgentRoleEdit = openAgentRoleEdit;
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
     setOverlay(true, 'STANDBY', 'select a session');

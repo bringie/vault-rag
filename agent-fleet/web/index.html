@@ -58,29 +58,13 @@
         <button id="nav-cost"      class="btn-ghost" data-i18n="nav.cost">$ trends</button>
         <button id="nav-groups"    class="btn-ghost" data-i18n="nav.groups">⌘ groups</button>
         <button id="nav-workflows" class="btn-ghost" data-i18n="nav.workflows">⎇ workflows</button>
-        <button id="nav-prices"    class="btn-ghost" data-i18n="nav.prices">$ prices</button>
-        <button id="nav-vault"     class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
-        <button id="nav-health"    class="btn-ghost" data-i18n="nav.health">🩺 health</button>
-        <button id="nav-audit"     class="btn-ghost" data-i18n="nav.audit">📋 audit</button>
-        <!-- vt-0152: flag glyphs in lang, glyph icons in theme -->
-        <select id="lang-select" class="switcher" title="language">
-          <option value="en">🇬🇧 EN</option>
-          <option value="ru">🇷🇺 RU</option>
-          <option value="es">🇪🇸 ES</option>
-        </select>
-        <select id="theme-select" class="switcher" title="theme">
-          <option value="dark">☾ dark</option>
-          <option value="light">☀ light</option>
-          <option value="solarized">🌅 solarized</option>
-          <option value="nord">❄ nord</option>
-          <option value="hi-contrast">◐ hi-contrast</option>
-        </select>
         <!-- vt-0192: aria-label on icon buttons for screen readers -->
         <button id="reload" data-i18n-title="nav.refresh" title="refresh" aria-label="refresh" class="btn-icon">⟳</button>
-        <button id="stack-dot" class="btn-icon stack-dot" data-state="unknown" data-i18n-title="stack.dot_tip" title="docker stack status" aria-label="docker stack status">●</button>
+        <button id="stack-dot" class="btn-ghost stack-dot" data-state="unknown" data-i18n-title="stack.dot_tip" title="docker stack status" aria-label="docker stack status"><span class="stack-dot-icon">●</span> <span class="stack-dot-text" data-i18n="stack.checking">—</span></button>
         <button id="logout" class="btn-ghost" data-i18n="nav.abort" aria-label="abort session and clear token">ABORT</button>
       </div>
     </header>
+
 
     <main class="grid">
       <aside class="rail">
@@ -280,10 +264,36 @@
       </section>
     </main>
 
+    <!-- vt-0260: footer now hosts the Settings drawer (secondary nav +
+         locale/theme) + the original status line. Two rows. -->
     <footer class="footbar">
-      <span class="footstat" id="footstat">— · — · —</span>
-      <span class="footdot"></span>
-      <span class="footver" data-i18n="footer.version">FLEET v0.1.0 / proto=v0.1</span>
+      <div class="footbar-row footbar-settings">
+        <span class="lbl" data-i18n="footer.settings_label">SETTINGS //</span>
+        <button id="nav-prices"      class="btn-ghost" data-i18n="nav.prices">$ prices</button>
+        <button id="nav-vault"       class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
+        <button id="nav-health"      class="btn-ghost" data-i18n="nav.health">🩺 health</button>
+        <button id="nav-audit"       class="btn-ghost" data-i18n="nav.audit">📋 audit</button>
+        <button id="nav-agent-roles" class="btn-ghost" data-i18n="nav.agent_roles">🎭 roles</button>
+        <span style="flex:1"></span>
+        <!-- vt-0152: flag glyphs in lang, glyph icons in theme -->
+        <select id="lang-select" class="switcher" title="language">
+          <option value="en">🇬🇧 EN</option>
+          <option value="ru">🇷🇺 RU</option>
+          <option value="es">🇪🇸 ES</option>
+        </select>
+        <select id="theme-select" class="switcher" title="theme">
+          <option value="dark">☾ dark</option>
+          <option value="light">☀ light</option>
+          <option value="solarized">🌅 solarized</option>
+          <option value="nord">❄ nord</option>
+          <option value="hi-contrast">◐ hi-contrast</option>
+        </select>
+      </div>
+      <div class="footbar-row footbar-status">
+        <span class="footstat" id="footstat">— · — · —</span>
+        <span class="footdot"></span>
+        <span class="footver" data-i18n="footer.version">FLEET v0.1.0 / proto=v0.1</span>
+      </div>
     </footer>
   </div>
 
@@ -466,6 +476,69 @@
       <div id="cv-legend" class="cv-legend"></div>
     </div>
   </div>
+
+  <!-- vt-0259: AGENT ROLES PAGE -->
+  <div id="agentrolesview" hidden>
+    <header class="archive-head overlay-header">
+      <h2 data-i18n="agent_roles.title">AGENT ROLES</h2>
+      <span style="flex:1"></span>
+      <button id="ar-new" class="btn-ghost" data-i18n="agent_roles.new">+ new role</button>
+      <button id="ar-reload" class="btn-ghost" data-i18n="common.reload">↻ reload</button>
+      <button id="agentrolesview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+    </header>
+    <div class="archive-table-wrap">
+      <p class="lbl" style="margin:.5em 0 1em;color:var(--text-dim)" data-i18n="agent_roles.intro">Reusable prompt personas. Attach a role to a group and every session spawned in that group has the role's prompt prepended to its system prompt.</p>
+      <table class="archive-table">
+        <thead><tr>
+          <th data-i18n="agent_roles.col.name">name</th>
+          <th data-i18n="agent_roles.col.description">description</th>
+          <th data-i18n="agent_roles.col.default_model">model</th>
+          <th data-i18n="agent_roles.col.actions">actions</th>
+        </tr></thead>
+        <tbody id="ar-rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- vt-0259: agent-role edit dialog -->
+  <dialog id="agent-role-edit">
+    <div class="ar-edit-frame">
+      <div class="ar-edit-head">
+        <span class="lbl" data-i18n="agent_roles.edit_title">AGENT ROLE //</span>
+        <span id="ar-edit-name-label" class="callsign">—</span>
+        <span style="flex:1"></span>
+        <button id="ar-edit-close" class="btn-ghost" data-i18n="common.close">× close</button>
+      </div>
+      <div class="ar-edit-body">
+        <label class="lbl" data-i18n="agent_roles.field.name">NAME</label>
+        <input id="ar-edit-name" class="app-dialog-input" maxlength="64">
+        <label class="lbl" data-i18n="agent_roles.field.description">DESCRIPTION</label>
+        <input id="ar-edit-description" class="app-dialog-input">
+        <label class="lbl" data-i18n="agent_roles.field.prompt">SYSTEM PROMPT</label>
+        <textarea id="ar-edit-prompt" class="app-dialog-input" rows="10" maxlength="32768"></textarea>
+        <label class="lbl" data-i18n="agent_roles.field.default_model">DEFAULT MODEL (optional)</label>
+        <input id="ar-edit-model" class="app-dialog-input" placeholder="claude-sonnet-4-6">
+      </div>
+      <div class="ar-edit-buttons">
+        <span style="flex:1"></span>
+        <button id="ar-edit-cancel" class="btn-ghost" data-i18n="common.cancel">cancel</button>
+        <button id="ar-edit-save" class="btn-primary" data-i18n="common.save">save</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- vt-0259: group→role assignment dialog -->
+  <dialog id="group-roles-picker">
+    <div class="ar-edit-frame">
+      <div class="ar-edit-head">
+        <span class="lbl" data-i18n="agent_roles.assign_title">ASSIGN ROLES TO //</span>
+        <span id="group-roles-group-name" class="callsign">—</span>
+        <span style="flex:1"></span>
+        <button id="group-roles-close" class="btn-ghost" data-i18n="common.close">× close</button>
+      </div>
+      <div id="group-roles-body" class="ar-edit-body"></div>
+    </div>
+  </dialog>
 
   <!-- vt-0255: RECYCLE BIN PAGE -->
   <div id="recyclebinview" hidden>

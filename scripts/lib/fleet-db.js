@@ -500,6 +500,89 @@ async function readMetricsRollupSince(c, hostId, interval) {
   return rows;
 }
 
+// vt-0259: agent roles. Reusable prompt personas (developer/qa/architect/
+// infosec) attached to groups; on session spawn we concatenate the role
+// prompts (ordered by fleet_group_roles.position) after the group's
+// brain_prompt and feed the whole thing through as system_prompt.
+
+async function listAgentRoles(c, { includeDeleted = false } = {}) {
+  const { rows } = await c.query(
+    `SELECT id, name, description, prompt, default_model, allowed_tools, created_at, updated_at, deleted_at
+       FROM fleet_agent_roles
+       ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'}
+       ORDER BY lower(name) ASC`);
+  return rows;
+}
+
+async function getAgentRole(c, id) {
+  const { rows } = await c.query(
+    `SELECT id, name, description, prompt, default_model, allowed_tools, created_at, updated_at, deleted_at
+       FROM fleet_agent_roles WHERE id = $1 AND deleted_at IS NULL`, [id]);
+  return rows[0] || null;
+}
+
+async function createAgentRole(c, { name, description, prompt, default_model, allowed_tools }) {
+  if (!name || !prompt) throw new Error('name and prompt required');
+  const { rows } = await c.query(
+    `INSERT INTO fleet_agent_roles (name, description, prompt, default_model, allowed_tools)
+       VALUES ($1,$2,$3,$4,$5)
+     RETURNING id, name, description, prompt, default_model, allowed_tools, created_at, updated_at`,
+    [name, description || '', prompt, default_model || null, JSON.stringify(allowed_tools || [])]);
+  return rows[0];
+}
+
+async function updateAgentRole(c, id, patch) {
+  const cols = [];
+  const vals = [];
+  let i = 1;
+  for (const k of ['name', 'description', 'prompt', 'default_model']) {
+    if (patch[k] !== undefined) { cols.push(`${k} = $${i++}`); vals.push(patch[k]); }
+  }
+  if (patch.allowed_tools !== undefined) {
+    cols.push(`allowed_tools = $${i++}::jsonb`);
+    vals.push(JSON.stringify(patch.allowed_tools));
+  }
+  if (!cols.length) return getAgentRole(c, id);
+  cols.push('updated_at = now()');
+  vals.push(id);
+  const { rows } = await c.query(
+    `UPDATE fleet_agent_roles SET ${cols.join(', ')}
+      WHERE id = $${i} AND deleted_at IS NULL
+    RETURNING id, name, description, prompt, default_model, allowed_tools, created_at, updated_at`,
+    vals);
+  return rows[0] || null;
+}
+
+async function deleteAgentRole(c, id) {
+  await c.query(
+    `UPDATE fleet_agent_roles SET deleted_at = now()
+      WHERE id = $1 AND deleted_at IS NULL`, [id]);
+}
+
+async function listGroupRoles(c, groupId) {
+  const { rows } = await c.query(
+    `SELECT r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools, gr.position, gr.added_at
+       FROM fleet_group_roles gr
+       JOIN fleet_agent_roles r ON r.id = gr.role_id
+      WHERE gr.group_id = $1 AND r.deleted_at IS NULL
+      ORDER BY gr.position ASC, gr.added_at ASC`, [groupId]);
+  return rows;
+}
+
+async function assignRoleToGroup(c, groupId, roleId, position = 0) {
+  await c.query(
+    `INSERT INTO fleet_group_roles (group_id, role_id, position)
+       VALUES ($1,$2,$3)
+     ON CONFLICT (group_id, role_id) DO UPDATE SET position = EXCLUDED.position`,
+    [groupId, roleId, position]);
+}
+
+async function unassignRoleFromGroup(c, groupId, roleId) {
+  await c.query(
+    `DELETE FROM fleet_group_roles WHERE group_id = $1 AND role_id = $2`,
+    [groupId, roleId]);
+}
+
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
   createSession, getSession, listSessions, countSessions, updateSession,
@@ -510,4 +593,7 @@ module.exports = {
   addHostToGroup, removeHostFromGroup, listGroupsForHost, listHostsInGroup,
   getEffectiveCapabilities, listHostsByEffectiveTag,
   insertHostMetric, setHostLatestMetrics, setHostInventory, readMetricsSince, readMetricsRollupSince,
+  // vt-0259
+  listAgentRoles, getAgentRole, createAgentRole, updateAgentRole, deleteAgentRole,
+  listGroupRoles, assignRoleToGroup, unassignRoleFromGroup,
 };
