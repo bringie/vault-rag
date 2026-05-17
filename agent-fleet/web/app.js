@@ -32,16 +32,15 @@
     }
     state.token = localStorage.fleetToken || null;
     // vt-0146/0147: vault.js + future tabs need the token + admin flag.
+    // Dedicated /fleet/auth/whoami returns { role } as a clean 200.
+    // The old probe was POST /fleet/dispatch with body={}, which left
+    // a red 422 in DevTools and ran the dispatch validator on every
+    // page load. whoami is a no-op DB-free check.
     if (state.token) {
-      // Best-effort probe: hit an admin-only endpoint. 403 → viewer; anything
-      // else (200, 422, 502, 503) → admin. Done in parallel; vault tab waits
-      // on the global event.
-      fetch('/api/fleet/dispatch', {
-        method: 'POST',
-        headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
-        body: '{}',
-      }).then(r => {
-        state.isAdmin = r.status !== 403;
+      fetch('/api/fleet/auth/whoami', {
+        headers: { authorization: 'Bearer ' + state.token },
+      }).then(r => r.ok ? r.json() : { role: 'viewer' }).then(j => {
+        state.isAdmin = j.role === 'admin';
         window.dispatchEvent(new CustomEvent('fleet-token-ready', { detail: { token: state.token, isAdmin: state.isAdmin } }));
       }).catch(() => {
         state.isAdmin = false;

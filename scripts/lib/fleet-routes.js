@@ -1731,6 +1731,15 @@ function dispatchHttp(req, res, ctx) {
     return send(res, 200, require('./backend-configs').BACKEND_CONFIGS);
   }
 
+  // Returns the caller's role (admin|viewer) so the SPA can branch UI
+  // without faking a POST /fleet/dispatch probe (which left a red 422
+  // in DevTools and ran the dispatch validator for no reason). Always
+  // 200 when reached — the auth gate above already accepted the bearer.
+  if (method === 'GET' && path === '/fleet/auth/whoami') {
+    const role = checkAdminAuth(req, ctx) ? 'admin' : 'viewer';
+    return send(res, 200, { role });
+  }
+
   // hosts
   if (method === 'GET'    && path === '/fleet/hosts')   return handleGetHosts({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleGetHost({ req, res, ctx });
