@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# vt-0275: manage the age recipients list for vault.age.
+#
+# Why this exists: vault.age is encrypted to ONE age recipient by default.
+# Loss of that key = vault unreadable forever. Adding a second recovery
+# recipient (key kept offline on USB / printed paper / Mac keychain)
+# turns recovery from impossible to merely inconvenient.
+#
+# Operations:
+#   add <age1pubkey>      add a new recipient + re-encrypt vault.age
+#   list                  print current recipients with comments
+#   remove <age1pubkey>   remove a recipient + re-encrypt vault.age
+#                         (refuse if it would leave 0 recipients)
+#
+# After running ANY mutating command, vault-rag-secrets must be restarted
+# so it loads the new vault.age. The script does this automatically
+# unless --no-restart.
+#
+# Usage:
+#   vault-rag-recipients add age1n3uf89h6jc7sqtx8jdjtxnwmju8zjvhrr7y2k3u78ehl8k9g3ddsaxhsxw -c "offline-backup-2026Q2"
+#   vault-rag-recipients list
+#   vault-rag-recipients remove age1xyz...
+#
+# Pre-flight checks:
+#   - $VAULT_RAG_DIR is set (default /opt/vault-rag).
+#   - age + age-keygen binaries present.
+#   - The current vault.age decrypts with $VAULT_RAG_DIR/.secrets/age.key
+#     (without this we can't re-encrypt, and we'd risk locking the operator
+#      out entirely).
+#
+# Operator workflow for a new recovery key (one-time setup):
+#   1. On a clean offline machine:
+#        age-keygen -o /mnt/usb/vault-recovery.key
+#        # Print the public line to paper too — it's the only thing you'll
+#        # need on the server.
+#   2. On the prod host:
+#        vault-rag-recipients add <pubkey>  -c "offline-recovery-2026"
+#   3. Verify after restart:
+#        vt secrets list
+#   4. Document where the offline private key lives. Without it the
+#      addition is pointless.
+
+set -Eeuo pipefail
+
+REPO_DIR="${VAULT_RAG_DIR:-/opt/vault-rag}"
+VAULT_REPO="${VAULT_REPO_PATH:-/root/obsidian-vault}"
+AGE_KEY="${VAULT_AGE_KEY:-$REPO_DIR/.secrets/age.key}"
+RECIPIENTS_FILE="$VAULT_REPO/secrets/recipients"
+VAULT_AGE="$VAULT_REPO/secrets/vault.age"
+RESTART_AFTER=1
+
+log() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '\033[33m!\033[0m %s\n' "$*" >&2; }
+die() { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+
+cmd="${1:-}"
+shift || true
+
+# Parse common flags
+COMMENT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--comment) COMMENT="$2"; shift 2;;
+    --no-restart) RESTART_AFTER=0; shift;;
+    -h|--help)
+      sed -n '3,40p' "$0" | sed 's/^# \?//'
+      exit 0;;
+    age1*) ARG="$1"; shift;;
+    *) die "unknown arg: $1";;
+  esac
+done
+
+# Sanity
+command -v age >/dev/null || die "age binary missing"
+[[ -f "$AGE_KEY" ]] || die "age.key not found at $AGE_KEY"
+[[ -f "$RECIPIENTS_FILE" ]] || die "recipients file not found at $RECIPIENTS_FILE"
+[[ -f "$VAULT_AGE" ]] || die "vault.age not found at $VAULT_AGE"
+
+# Decrypt-test before we touch anything mutating
+verify_decrypt() {
+  age -d -i "$AGE_KEY" "$VAULT_AGE" > /dev/null 2>&1 \
+    || die "current age.key cannot decrypt vault.age — refusing to mutate (would lock you out)"
+}
+
+reencrypt() {
+  log "decrypting vault.age + re-encrypting to $(grep -c '^age1' "$RECIPIENTS_FILE") recipient(s)"
+  local recipient_args=()
+  while IFS= read -r line; do
+    [[ "$line" =~ ^age1 ]] && recipient_args+=(-r "$line")
+  done < "$RECIPIENTS_FILE"
+  [[ ${#recipient_args[@]} -gt 0 ]] || die "no recipients — refusing to encrypt to nobody"
+  local tmp; tmp=$(mktemp)
+  trap "rm -f \"$tmp\"" RETURN
+  age -d -i "$AGE_KEY" "$VAULT_AGE" \
+    | age "${recipient_args[@]}" -o "$tmp"
+  mv "$tmp" "$VAULT_AGE"
+  ok "vault.age re-encrypted"
+  # Commit in obsidian-vault repo so the change ships to git mirror.
+  if command -v git >/dev/null && [[ -d "$VAULT_REPO/.git" ]]; then
+    ( cd "$VAULT_REPO" && git add secrets/vault.age secrets/recipients \
+        && git commit -m "secrets: recipients update via vault-rag-recipients" >/dev/null 2>&1 \
+        || warn "git commit failed — manual sync may be needed" )
+  fi
+}
+
+restart_secrets() {
+  if [[ "$RESTART_AFTER" == "1" ]]; then
+    log "restarting vault-rag-secrets to pick up new recipients"
+    ( cd "$REPO_DIR" && docker compose restart vault-rag-secrets 2>&1 | tail -3 )
+  fi
+}
+
+case "$cmd" in
+  list)
+    log "current recipients in $RECIPIENTS_FILE:"
+    cat "$RECIPIENTS_FILE"
+    echo
+    n=$(grep -c '^age1' "$RECIPIENTS_FILE" || true)
+    log "$n active recipient(s)"
+    ;;
+  add)
+    [[ -n "${ARG:-}" ]] || die "missing age1... public key. Example: vault-rag-recipients add age1abc... -c 'recovery-2026'"
+    verify_decrypt
+    if grep -q "^${ARG}$" "$RECIPIENTS_FILE"; then
+      warn "recipient $ARG already present — nothing to do"
+      exit 0
+    fi
+    [[ -n "$COMMENT" ]] && printf '# %s\n' "$COMMENT" >> "$RECIPIENTS_FILE"
+    printf '%s\n' "$ARG" >> "$RECIPIENTS_FILE"
+    ok "added $ARG"
+    reencrypt
+    restart_secrets
+    ok "done. Verify with: vt secrets list"
+    ;;
+  remove)
+    [[ -n "${ARG:-}" ]] || die "missing age1... public key"
+    verify_decrypt
+    if ! grep -q "^${ARG}$" "$RECIPIENTS_FILE"; then
+      die "recipient $ARG not in $RECIPIENTS_FILE"
+    fi
+    n=$(grep -c '^age1' "$RECIPIENTS_FILE")
+    [[ "$n" -gt 1 ]] || die "only $n recipient present — removing would lock everyone out"
+    # Drop the line + any preceding comment line.
+    local tmp; tmp=$(mktemp); trap "rm -f $tmp" EXIT
+    awk -v target="$ARG" '
+      /^age1/ {
+        if ($0 == target) { skip_next_comment_was = was_comment; next }
+        print; was_comment = 0; next
+      }
+      /^#/ { print; was_comment = 1; next }
+      { print; was_comment = 0 }
+    ' "$RECIPIENTS_FILE" > "$tmp"
+    mv "$tmp" "$RECIPIENTS_FILE"
+    ok "removed $ARG"
+    reencrypt
+    restart_secrets
+    ;;
+  ""|help|-h|--help)
+    sed -n '3,40p' "$0" | sed 's/^# \?//'
+    ;;
+  *)
+    die "unknown command: $cmd (try: add, list, remove)"
+    ;;
+esac

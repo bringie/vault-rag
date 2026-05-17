@@ -107,7 +107,10 @@ function requireAdmin(req, res, ctx) {
 // vt-0179: ticket is SINGLE-USE — once consumed by a WS upgrade, the sig is
 // recorded in _consumedTickets (Map<sigHash,expiry>) and any second use in
 // the 60s window 4001s. Map is GC'd every 30s by sweeping expired entries.
-const WS_TICKET_TTL_MS = 60_000;
+// vt-0277: 60s default is generous enough for ws-upgrade RTT but short
+// enough that a stolen ticket (DevTools, proxy log) expires before
+// post-exfiltration replay. Tighten via env on hot deployments.
+const WS_TICKET_TTL_MS = parseInt(process.env.VAULT_RAG_WS_TICKET_TTL_MS || '60000', 10);
 const WS_TICKET_DERIVATION = 'fleet-ws-ticket-v1';
 const _consumedTickets = new Map();
 const _consumedSweepTimer = setInterval(() => {

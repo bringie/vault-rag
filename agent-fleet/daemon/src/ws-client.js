@@ -62,6 +62,29 @@ function validateSpawnFrame(f) {
       }
     }
   }
+  // vt-0276: defence-in-depth. Hub admin compromise should not be enough
+  // to spawn dangerous (--dangerously-skip-permissions / RCE-equivalent)
+  // sessions on this host. Require explicit per-host opt-in via env.
+  // The hub still validates its own ACL; this is a second layer in case
+  // hub auth is bypassed (XSS, leaked admin token, etc.).
+  if (f.dangerous === true && process.env.AGENT_FLEET_ALLOW_DANGEROUS !== '1') {
+    throw new Error('dangerous spawn requested but daemon was not started with AGENT_FLEET_ALLOW_DANGEROUS=1');
+  }
+  // vt-0276: allowed_tools whitelist. The role + caller-side allowed_tools
+  // value is sent over the wire; daemon-side whitelist defines the
+  // operator's intent for THIS host. Set AGENT_FLEET_TOOLS_WHITELIST to a
+  // comma list (e.g. "Read,Grep,Glob,Bash") to enforce. If unset, the
+  // daemon accepts whatever the hub forwards (current default — backward
+  // compat). If set, any tool not in the whitelist causes the spawn to
+  // reject with a clear error.
+  if (Array.isArray(f.allowed_tools) && f.allowed_tools.length > 0
+      && process.env.AGENT_FLEET_TOOLS_WHITELIST) {
+    const allow = new Set(process.env.AGENT_FLEET_TOOLS_WHITELIST.split(',').map(s => s.trim()).filter(Boolean));
+    const denied = f.allowed_tools.filter(t => !allow.has(t));
+    if (denied.length > 0) {
+      throw new Error(`tools not on host whitelist: ${denied.join(', ')} (set AGENT_FLEET_TOOLS_WHITELIST to expand)`);
+    }
+  }
   if (f.env !== undefined && f.env !== null) {
     if (typeof f.env !== 'object' || Array.isArray(f.env)) throw new Error('env must be object');
     // vt-0202: refuse env keys that select wrapper binaries — hub-side
