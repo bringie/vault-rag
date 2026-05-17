@@ -65,6 +65,12 @@ function callApi(port, route, body) {
       ...process.env,
       RAG_PORT: String(PORT),
       VAULT_RAG_API_TOKEN: 'T',
+      // vt-0366: secret-mutation routes (/secrets/set/delete/rotate) require
+      // a separate FLEET_ADMIN_TOKEN since vt-0287; without it the route
+      // returns 503 "admin token not configured" rather than 401, even with
+      // a valid viewer bearer. Match it to viewer here so the bearer 'T'
+      // satisfies both checks.
+      VAULT_RAG_FLEET_ADMIN_TOKEN: 'T',
       VAULT_AGE_KEY_PATH: t.ageKey,
       VAULT_REPO_PATH: t.clone,
       VAULT_AGE_PATH: `${t.clone}/obsidian-vault/secrets/vault.age`,
