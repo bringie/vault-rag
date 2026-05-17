@@ -1064,6 +1064,25 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     } catch (e) {
       console.error(`[rag-api] retention start failed: ${e.message}`);
     }
+    // vt-0206: heartbeat reaper for sessions + workflow_runs. Runs every
+    // 5 minutes. Catches daemon crashes that don't trigger hub restart.
+    const REAPER_INTERVAL_MS = 5 * 60 * 1000;
+    const reaperTimer = setInterval(async () => {
+      try {
+        const sn = await fleetDb.reapStuckSessions(pg);
+        if (sn) console.log(`[rag-api] reaper: orphaned ${sn} stuck sessions`);
+      } catch (e) {
+        console.error(`[rag-api] session reaper failed: ${e.message}`);
+      }
+      try {
+        const wfDb = require('./lib/fleet-workflow-db');
+        const rn = await wfDb.reapStuckRuns(pg);
+        if (rn) console.log(`[rag-api] reaper: failed ${rn} stuck workflow_runs`);
+      } catch (e) {
+        console.error(`[rag-api] run reaper failed: ${e.message}`);
+      }
+    }, REAPER_INTERVAL_MS);
+    reaperTimer.unref?.();
     const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
     const PURGE_AGE = process.env.VAULT_RAG_FLEET_RETENTION || '30 days';
     setInterval(async () => {

@@ -301,6 +301,30 @@ async function orphanRunningSessions(c) {
   return rowCount;
 }
 
+// vt-0206: periodic heartbeat reaper for sessions/workflow_runs stuck
+// in 'running'. The startup-only orphanRunningSessions catches restart
+// crashes, but a daemon that dies WITHOUT a hub restart leaves rows
+// stuck forever. Two signals:
+//   1. host went offline (last_seen old) → all its running sessions
+//      are orphaned with status='orphaned' + ended_at=now()
+//   2. session has been 'running' for > maxAgeHours and its host is
+//      offline → orphaned regardless (defensive backstop).
+// Defaults: hostStaleSec=180 (3× heartbeat), maxAgeHours=24.
+async function reapStuckSessions(c, { hostStaleSec = 180, maxAgeHours = 24 } = {}) {
+  const r = await c.query(`
+    UPDATE fleet_sessions s
+       SET status = 'orphaned', ended_at = COALESCE(s.ended_at, now())
+      FROM fleet_hosts h
+     WHERE s.host_id = h.id
+       AND s.status = 'running'
+       AND (
+         h.last_seen < now() - ($1::text || ' seconds')::interval
+         OR s.started_at < now() - ($2::text || ' hours')::interval
+       )
+   RETURNING s.id`, [String(hostStaleSec), String(maxAgeHours)]);
+  return r.rowCount;
+}
+
 // Delete sessions that have been in a terminal state for at least `olderThan`
 // (e.g. '1 hour'). CASCADE removes their fleet_events.
 // LIMIT 1000 caps the AccessExclusiveLock duration on busy installs.
@@ -449,7 +473,7 @@ async function readMetricsRollupSince(c, hostId, interval) {
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
   createSession, getSession, listSessions, countSessions, updateSession,
-  markSessionRunning, markSessionExited, orphanRunningSessions, deleteClosedSessions,
+  markSessionRunning, markSessionExited, orphanRunningSessions, reapStuckSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
   listGroups, getGroup, getGroupByName, createGroup, updateGroup, deleteGroup,
   addHostToGroup, removeHostFromGroup, listGroupsForHost, listHostsInGroup,

@@ -127,6 +127,21 @@ async function orphanRunningRuns(c) {
   return rowCount;
 }
 
+// vt-0206: heartbeat reaper for stuck workflow_runs. Same intent as
+// reapStuckSessions but at the workflow_run level — a runner that
+// crashed silently leaves rows in 'running' forever. Default 24h.
+async function reapStuckRuns(c, { maxAgeHours = 24 } = {}) {
+  const r = await c.query(
+    `UPDATE fleet_workflow_runs
+        SET status = 'failed',
+            finished_at = now(),
+            state = state || '{"error":"reaped: stuck > ' || $1 || 'h"}'::jsonb
+      WHERE status IN ('pending','running')
+        AND started_at < now() - ($1::text || ' hours')::interval
+   RETURNING id`, [String(maxAgeHours)]);
+  return r.rowCount;
+}
+
 // --- vt-0110: triggers + suspension primitives ---
 
 async function listTriggeredWorkflows(c) {
@@ -230,7 +245,7 @@ async function fireEvent(c, eventName, payload) {
 
 module.exports = {
   listWorkflows, getWorkflow, createWorkflow, updateWorkflow, deleteWorkflow,
-  listRuns, getRun, createRun, updateRunStatus, updateRunState, orphanRunningRuns,
+  listRuns, getRun, createRun, updateRunStatus, updateRunState, orphanRunningRuns, reapStuckRuns,
   // vt-0110
   listTriggeredWorkflows, setWorkflowTrigger,
   createPendingApproval, getPendingApproval, listPendingApprovals, recordApprovalDecision,
