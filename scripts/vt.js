@@ -277,12 +277,19 @@ async function cmdSecrets(cfg, args) {
   }
   const sub = args.positional[0];
   const rest = args.positional.slice(1);
+  // C1 (audit 2026-05-17): set/delete/rotate are admin-gated server-side.
+  // Pick the admin token when present; fall back to the viewer token so
+  // read-only calls (get/list/verify) still work for vt deployments
+  // without a separate admin token (those endpoints accept viewer).
+  const adminTok = process.env.VAULT_RAG_FLEET_ADMIN_TOKEN || cfg.apiToken;
+  const ADMIN_ROUTES = new Set(['/secrets/set', '/secrets/delete', '/secrets/rotate']);
   const apiPost = async (route, body) => {
+    const tok = ADMIN_ROUTES.has(route) ? adminTok : cfg.apiToken;
     const url = `${cfg.apiBase.replace(/\/$/, '')}/api${route}`;
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${cfg.apiToken}`,
+        Authorization: `Bearer ${tok}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),

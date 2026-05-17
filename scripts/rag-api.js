@@ -1122,6 +1122,19 @@ const ROUTES = {
   '/secrets/verify':  handleSecretVerify,
 };
 
+// C1 (audit 2026-05-17): routes that mutate the secret vault MUST require
+// the admin bearer, not the viewer bearer. Pre-fix, an XSS-leaked viewer
+// token could `/secrets/set VAULT_RAG_API_TOKEN attacker` and take over
+// the entire deployment. checkAdminAuth falls back to the viewer token
+// when FLEET_ADMIN_TOKEN is unset (single-token mode); the explicit
+// `FLEET_ADMIN_TOKEN ||` predicate here refuses the call in that case
+// — operator must configure a separate admin token to mutate secrets.
+const ROUTE_ADMIN_ONLY = new Set([
+  '/secrets/set',
+  '/secrets/delete',
+  '/secrets/rotate',
+]);
+
 // vt-0317: server-side feature enforcement. Without this map, disabling
 // `vault_rag` via PATCH /fleet/features hid the nav but /api/search
 // kept responding — operator's "off" wasn't off. Map route → feature
@@ -1476,6 +1489,18 @@ const server = http.createServer(async (req, res) => {
 
   const handler = ROUTES[req.url];
   if (!handler) return send(res, 404, { error: 'not found' });
+  // C1 (audit 2026-05-17): admin gate for secret-mutating routes.
+  // Requires FLEET_ADMIN_TOKEN to be SET (not just viewer-fallback) and
+  // the request to carry it. Viewer bearer is rejected with 403 even
+  // though the outer gate accepted it as authenticated.
+  if (ROUTE_ADMIN_ONLY.has(req.url)) {
+    if (!FLEET_ADMIN_TOKEN) {
+      return send(res, 503, { error: 'admin token not configured — set VAULT_RAG_FLEET_ADMIN_TOKEN to enable secret mutations' });
+    }
+    if (!fleetRoutes.checkAdminAuth(req, fleetCtx)) {
+      return send(res, 403, { error: 'admin bearer required for this route' });
+    }
+  }
   // vt-0317: feature flag gate. Reject 503 when the route's feature is
   // disabled — operator's "off" in /fleet/features now actually means
   // off, not "UI-hide-only". Fail-open on lookup error.
