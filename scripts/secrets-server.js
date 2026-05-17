@@ -13,6 +13,7 @@ const http = require('node:http');
 const fs   = require('node:fs');
 const path = require('node:path');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
+const log  = require('./lib/log').for('secrets-server');
 
 // vt-0137: $HOME is a tmpfs; pre-create $HOME/.ssh so ssh can write known_hosts.
 try { fs.mkdirSync(path.join(process.env.HOME || '/root', '.ssh'), { recursive: true, mode: 0o700 }); } catch {}
@@ -21,7 +22,7 @@ const TOKEN = process.env.VAULT_RAG_SECRETS_TOKEN;
 const PORT  = parseInt(process.env.PORT || '5682', 10);
 
 if (!TOKEN) {
-  console.error('[secrets-server] FATAL: VAULT_RAG_SECRETS_TOKEN not set');
+  log.fatal('boot_no_token', { msg: 'VAULT_RAG_SECRETS_TOKEN not set' });
   process.exit(1);
 }
 
@@ -144,7 +145,7 @@ const server = http.createServer(async (req, res) => {
     outcome = e instanceof NotFound ? 'not_found'
             : e instanceof ConflictRetriesExhausted ? 'conflict'
             : 'error';
-    console.error(`[secrets-server] ${req.method} ${req.url}: ${e.stack || e.message}`);
+    log.error('request_error', { method: req.method, url: req.url, msg: e.stack || e.message });
     if (e instanceof NotFound) return send(res, 404, { error: e.message });
     if (e instanceof ConflictRetriesExhausted) return send(res, 409, { error: e.message });
     return send(res, e.statusCode || 500, { error: String(e.message || 'internal') });

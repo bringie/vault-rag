@@ -3,6 +3,7 @@
 // deps: { db, spawnClaude({node,prompt,ctx,runId}), broadcast(runId, frame) }
 const vm = require('vm');
 const wfDb = require('./fleet-workflow-db');
+const log = require('./log').for('fleet-workflow-runner');
 
 const TEMPLATE_RE = /\{\{([\w.]+)\}\}/g;
 
@@ -685,14 +686,14 @@ function createRunner(deps) {
 
   function start(runId) {
     runToCompletion(runId).catch(async (e) => {
-      console.error(`[fleet-workflow-runner] run ${runId} crashed:`, e);
+      log.error('run_crashed', { run_id: runId, msg: e.stack || e.message });
       // Best-effort: flip DB row to 'failed' so UI doesn't show stuck 'running'.
       // Inner try guards against cascading failure (e.g. db pool down).
       try {
         await wfDb.updateRunStatus(deps.db, runId, 'failed', `runner crash: ${e.message}`);
         deps.broadcast(runId, { type: 'run_state', run_id: runId, status: 'failed', error: e.message });
       } catch (e2) {
-        console.error(`[fleet-workflow-runner] run ${runId} cleanup also failed:`, e2);
+        log.error('run_cleanup_failed', { run_id: runId, msg: e2.stack || e2.message });
       }
     });
   }

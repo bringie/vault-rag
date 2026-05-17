@@ -1,6 +1,8 @@
 'use strict';
 // fleet-retention: 5-min rollup + 24h raw/7d rollup cleanup.
 
+const log = require('./log').for('fleet-retention');
+
 async function runRetention(pool) {
   // vt-0129: wrap rollup + delete in a single transaction so all statements
   // see the same `now()` snapshot. Without this, a metric write arriving
@@ -42,9 +44,9 @@ async function runRetention(pool) {
 
 function startRetention(db, intervalMs = 5 * 60 * 1000) {
   // Run once at boot, then every 5 min.
-  runRetention(db).catch(e => console.error('[retention] boot:', e.message));
+  runRetention(db).catch(e => log.error('boot_failed', { msg: e.message }));
   const t = setInterval(() => {
-    runRetention(db).catch(e => console.error('[retention] tick:', e.message));
+    runRetention(db).catch(e => log.error('tick_failed', { msg: e.message }));
   }, intervalMs);
   t.unref?.();
   return t;

@@ -4,6 +4,7 @@
 // so audit tables can't grow unbounded.
 
 const { Client } = require('pg');
+const log = require('./lib/log').for('audit-cleanup');
 
 const PG = {
   host:     process.env.VAULT_RAG_PG_HOST || 'vault-rag-postgres',
@@ -50,4 +51,4 @@ async function prune(pg, table, retainDays, where = 'true') {
   } finally {
     await pg.end();
   }
-})().catch(e => { console.error('[audit-cleanup] FATAL:', e.message); process.exit(1); });
+})().catch(e => { log.error('fatal', { msg: e.message }); process.exit(1); });

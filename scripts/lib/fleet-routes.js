@@ -11,6 +11,7 @@ const wfDb = require('./fleet-workflow-db');
 const { createRunner, validateDefinition } = require('./fleet-workflow-runner');
 const { RingBuffer } = require('./fleet-ring-buffer');
 const { EventBatcher } = require('./fleet-event-batcher');
+const log = require('./log').for('fleet-routes');
 
 function send(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -1101,7 +1102,7 @@ async function auditWorkflow(ctx, req, { op, workflow_id = null, run_id = null, 
       [op, workflow_id, run_id, _workflowCallerFp(req), via, outcome, definition_sha, JSON.stringify(detail)]
     );
   } catch (e) {
-    console.error(`[fleet] workflow_audit insert failed (op=${op}): ${e.message}`);
+    log.error('workflow_audit_insert_failed', { op, msg: e.message });
   }
 }
 function _defSha(def) {
@@ -1174,7 +1175,7 @@ async function ensureWorkflowRunner(ctx) {
     ctx._workflowRunnerInit = (async () => {
       // Orphan stranded runs from previous hub lifetime BEFORE creating new ones
       try { await wfDb.orphanRunningRuns(ctx.db); }
-      catch (e) { console.error('[fleet] orphan workflow runs:', e.message); }
+      catch (e) { log.error('orphan_workflow_runs_failed', { msg: e.message }); }
       ctx.workflowRunner = createRunner({
         db: ctx.db,
         spawnClaude: ({ node, prompt, runId, signal }) => spawnClaudeForWorkflow(ctx, node, prompt, runId, signal),
@@ -1738,7 +1739,7 @@ async function handleDaemonWs(ws, params, ctx) {
               await fleetDb.markSessionExited(ctx.db, row.id, null, 'orphaned');
             }
           }
-        } catch (e) { console.error(`[fleet] bye-frame reconcile failed: ${e.message}`); }
+        } catch (e) { log.error('bye_reconcile_failed', { host_id: host.id, msg: e.message }); }
         return;
       }
       if (f.type === 'spawn_ok') {
@@ -1821,7 +1822,7 @@ async function handleDaemonWs(ws, params, ctx) {
       consecutiveErrs = 0;
     } catch (e) {
       consecutiveErrs += 1;
-      console.error(`[fleet-routes] daemon frame error (${consecutiveErrs}/3): ${e.message}`);
+      log.error('daemon_frame_error', { count: consecutiveErrs, max: 3, msg: e.message });
       if (consecutiveErrs >= 3) {
         try { ws.close(1011, 'consecutive frame errors'); } catch {}
       }
@@ -1943,7 +1944,7 @@ async function handleWorkflowViewerWs(ws, params, ctx) {
       }
     }
   } catch (e) {
-    console.error('[fleet] workflow_viewer init:', e.message);
+    log.error('workflow_viewer_init_failed', { run_id: runId, msg: e.message });
   }
   ctx.bus.addWorkflowViewer(runId, ws);
 }
@@ -1957,7 +1958,7 @@ async function handleMetricsViewerWs(ws, params, ctx) {
     const meta = h.metadata || {};
     if (meta.latest_metrics) ws.send(JSON.stringify({ type: 'metrics', host_id: hostId, ...meta.latest_metrics }));
     if (meta.inventory)      ws.send(JSON.stringify({ type: 'inventory', host_id: hostId, ...meta.inventory }));
-  } catch (e) { console.error('[fleet] metrics_viewer init:', e.message); }
+  } catch (e) { log.error('metrics_viewer_init_failed', { host_id: hostId, msg: e.message }); }
   ctx.bus.addMetricsViewer(hostId, ws);
 }
 
@@ -2080,7 +2081,7 @@ function acceptWsUpgrade(ws, { role, auth, params, ctx, ticket }) {
                  : role === 'metrics_viewer'   ? handleMetricsViewerWs
                  :                                handleViewerWs;
   Promise.resolve(dispatch(ws, params, ctx)).catch((e) => {
-    console.error(`[fleet-routes] ws ${role}: ${e.stack || e.message}`);
+    log.error('ws_handler_error', { role, msg: e.stack || e.message });
     try { ws.close(1011, 'internal'); } catch {}
   });
 }
@@ -2104,7 +2105,7 @@ function tryDispatch(req, res, ctx) {
       // vt-0180: server-side log keeps the real message; client gets a
       // generic 500 so pg error strings, file paths, or stack content
       // don't leak. Request URL is in the log line for grep.
-      console.error(`[fleet-routes] ${req.url}: ${e.stack || e.message}`);
+      log.error('http_handler_error', { url: req.url, msg: e.stack || e.message });
       if (!res.headersSent) send(res, 500, { error: 'internal error' });
     });
   return true;

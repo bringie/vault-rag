@@ -5,6 +5,7 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const log = require('./log').for('git-sync');
 
 const DEBOUNCE_MS = 1500;
 
@@ -36,11 +37,11 @@ function trigger(vault) {
   try {
     const st = fs.statSync(script);
     if ((st.mode & 0o022) !== 0) {
-      console.error(`[git-sync] refusing to run ${script}: world/group-writable (mode=${(st.mode & 0o777).toString(8)})`);
+      log.error('script_unsafe_perms', { script, mode: (st.mode & 0o777).toString(8) });
       return;
     }
   } catch (e) {
-    console.error(`[git-sync] stat ${script}: ${e.message}`);
+    log.error('script_stat_failed', { script, msg: e.message });
     return;
   }
 
@@ -63,10 +64,10 @@ function trigger(vault) {
         stdio: 'ignore',
         detached: true,
       });
-      ch.on('error', (e) => console.error(`[git-sync] spawn: ${e.message}`));
+      ch.on('error', (e) => log.error('spawn_error', { msg: e.message }));
       ch.unref();
     } catch (e) {
-      console.error(`[git-sync] ${e.message}`);
+      log.error('run_error', { msg: e.message });
     }
   }, DEBOUNCE_MS);
   if (s.timer.unref) s.timer.unref();

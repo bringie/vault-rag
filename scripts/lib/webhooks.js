@@ -12,6 +12,7 @@
 const https = require('https');
 const http  = require('http');
 const crypto = require('crypto');
+const log = require('./log').for('webhooks');
 
 const MAX_ATTEMPTS = 3;
 const TIMEOUT_MS = 5000;
@@ -116,7 +117,7 @@ async function emit(pg, event, data) {
   } catch (e) {
     // Likely table missing — silent in dev/test where migrations not yet run.
     if (!/relation .* does not exist/.test(e.message)) {
-      console.error(`[webhooks] lookup failed: ${e.message}`);
+      log.error('lookup_failed', { msg: e.message });
     }
     return;
   }

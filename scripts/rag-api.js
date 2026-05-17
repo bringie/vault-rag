@@ -17,6 +17,11 @@ const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secret
 const { SecretsClient } = require('./lib/secrets-client.js');
 const tokmonRoutes = require('./lib/tokmon-routes');
 const { tokenEqual: sharedTokenEqual } = require('./lib/shared-auth');
+// vt-0210/vt-0243: structured logger + request-id correlation. Set
+// VAULT_RAG_LOG_FORMAT=json on prod to get parseable lines for log
+// aggregators; default 'text' keeps `docker logs` human-readable.
+const log = require('./lib/log').for('rag-api');
+const { requestId } = require('./lib/log');
 
 const TOKMON_INGEST_TOKEN = process.env.VAULT_RAG_TOKMON_INGEST_TOKEN || null;
 
@@ -35,7 +40,7 @@ const PORT  = parseInt(process.env.RAG_PORT || process.env.PORT || '5679', 10);
 const SKIP_PG = process.env.VAULT_SECRETS_SKIP_PG === '1';
 
 if (!TOKEN) {
-  console.error('[rag-api] FATAL: VAULT_RAG_API_TOKEN not set');
+  log.fatal('boot_no_token', { msg: 'VAULT_RAG_API_TOKEN not set' });
   process.exit(1);
 }
 if (!FLEET_ADMIN_TOKEN) {
@@ -72,7 +77,7 @@ async function pgConnect() {
   pg.on('error', (e) => {
     // Pool errors don't kill the pool — log and let in-flight handlers
     // see the error via their own catch. Idle clients are auto-recycled.
-    console.error(`[rag-api] pg pool error: ${e.message}`);
+    log.error('pg_pool_error', { msg: e.message });
   });
   // Smoke-test once at boot so we fail loudly instead of lazily on first
   // query. Caller (boot block) handles failure.
@@ -230,7 +235,7 @@ async function auditSecret(req, op, name, outcome) {
       `INSERT INTO secret_audit (op, name, caller_id, via, outcome) VALUES ($1,$2,$3,$4,$5)`,
       [op, name || null, callerFingerprint(req), 'http', outcome]));
   } catch (e) {
-    console.error(`[secret-audit] ${op} ${name || ''}: ${e.message}`);
+    log.error('secret_audit_insert_failed', { op, name: name || null, msg: e.message });
   }
 }
 function mapOutcome(e) {
@@ -284,7 +289,7 @@ async function handleNotesList(req, res) {
         const tagsByPath = Object.fromEntries(r.rows.map(row => [row.path, row.tags]));
         for (const e of entries) if (e.kind === 'file' && tagsByPath[e.path]) e.tags = tagsByPath[e.path];
       }
-    } catch (e) { console.error('[notes-list] tag overlay:', e.message); }
+    } catch (e) { log.error('notes_tag_overlay_failed', { msg: e.message }); }
   }
 
   send(res, 200, { entries: entries.slice(0, 5000) });
@@ -957,7 +962,7 @@ async function handlePutLocked(body, req) {
       [agent_id, finalRel, op, shaBefore, shaAfter, bytes]
     ));
   } catch (e) {
-    console.error(`[rag-api] audit insert failed: ${e.message}`);
+    log.error('audit_insert_failed', { msg: e.message });
   }
 
   gitSync.trigger(VAULT);
@@ -997,12 +1002,6 @@ const TASK_ROUTES = {
 };
 
 const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, adminToken: FLEET_ADMIN_TOKEN, db: null, version: '0.1.0' });
-
-// vt-0210: structured logger + request-id correlation. Set
-// VAULT_RAG_LOG_FORMAT=json on prod to get parseable lines for log
-// aggregators; default 'text' keeps `docker logs` human-readable.
-const log = require('./lib/log').for('rag-api');
-const { requestId } = require('./lib/log');
 
 // vt-0227: stable route templates for /metrics labels. Any segment that
 // looks like a uuid, sha, or note-path is collapsed to ":id" / ":sha"
@@ -1077,7 +1076,7 @@ const server = http.createServer(async (req, res) => {
   // endpoint to avoid routing traffic to a half-booted hub.
   if (req.method === 'GET' && req.url === '/readyz') {
     return handleReadyz(req, res).catch(e => {
-      console.error('[rag-api] /readyz', e.stack || e.message);
+      log.error('readyz_error', { msg: e.stack || e.message });
       send(res, 503, { ok: false, error: scrubError(e.message) });
     });
   }
@@ -1106,7 +1105,7 @@ const server = http.createServer(async (req, res) => {
   // vt-0221: unified audit feed for the Audit UI.
   if (req.method === 'GET' && req.url.startsWith('/audit')) {
     return handleAuditFeed(req, res).catch(e => {
-      console.error('[rag-api] /audit', e.stack || e.message);
+      log.error('audit_endpoint_error', { msg: e.stack || e.message });
       send(res, 500, { error: scrubError(e.message) });
     });
   }
@@ -1118,7 +1117,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 401, { error: 'unauthorized' });
     }
     return handleHealthDetail(req, res).catch(e => {
-      console.error('[rag-api] /healthz/detail', e.stack || e.message);
+      log.error('healthz_detail_error', { msg: e.stack || e.message });
       send(res, 500, { error: scrubError(e.message) });
     });
   }
@@ -1131,7 +1130,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/tokmon/ingest'
       && process.env.VAULT_RAG_TOKMON_INGEST_ENABLED !== '0') {
     return handleTokmonIngest(req, res).catch(e => {
-      console.error('[rag-api] /tokmon/ingest', e.stack || e.message);
+      log.error('tokmon_ingest_error', { msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }
@@ -1140,35 +1139,35 @@ const server = http.createServer(async (req, res) => {
   // doesn't exist). Optional tag overlay from chunks.
   if (req.method === 'GET' && req.url.startsWith('/notes/list')) {
     return handleNotesList(req, res).catch(e => {
-      console.error('[rag-api] /notes/list', e.stack || e.message);
+      log.error('notes_list_error', { msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }
   // vt-0158: basename→path index for wiki-link resolution.
   if (req.method === 'GET' && req.url.startsWith('/notes/index')) {
     return handleNotesIndex(req, res).catch(e => {
-      console.error('[rag-api] /notes/index', e.stack || e.message);
+      log.error('notes_index_error', { msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }
   // vt-0158: per-file git history.
   if (req.method === 'GET' && req.url.startsWith('/notes/history')) {
     return handleNotesHistory(req, res).catch(e => {
-      console.error('[rag-api] /notes/history', e.stack || e.message);
+      log.error('notes_history_error', { msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }
   // vt-0158: blob at sha for diffing previous revisions.
   if (req.method === 'GET' && req.url.startsWith('/notes/show')) {
     return handleNotesShow(req, res).catch(e => {
-      console.error('[rag-api] /notes/show', e.stack || e.message);
+      log.error('notes_show_error', { msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }
   // vt-0159: unified diff (patch for one commit, or arbitrary range).
   if (req.method === 'GET' && req.url.startsWith('/notes/diff')) {
     return handleNotesDiff(req, res).catch(e => {
-      console.error('[rag-api] /notes/diff', e.stack || e.message);
+      log.error('notes_diff_error', { msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message) });
     });
   }
@@ -1198,7 +1197,7 @@ const server = http.createServer(async (req, res) => {
       const out = await withPathLock(lockKey, () => handler({ vault: VAULT, body }));
       send(res, out.status, out.body);
     } catch (e) {
-      console.error(`[rag-api] ${req.url}: ${e.stack || e.message}`);
+      log.error('task_route_error', { url: req.url, msg: e.stack || e.message });
       send(res, e.statusCode || 500, { error: scrubError(e.message || String(e)) });
     }
     return;
@@ -1214,7 +1213,7 @@ const server = http.createServer(async (req, res) => {
     const out = await handler(body, req);
     send(res, 200, out);
   } catch (e) {
-    console.error(`[rag-api] ${req.url}: ${e.message}`);
+    log.error('route_error', { url: req.url, msg: e.message });
     const code = e.statusCode || (e.code && Number.isInteger(e.code) ? e.code : 400);
     send(res, code, { error: scrubError(e.message) });
   }
@@ -1222,7 +1221,7 @@ const server = http.createServer(async (req, res) => {
 
 // I10 (audit pass 2): strip pg connection details ("host=...", "port=...",
 // "user=...") and absolute file paths from error messages before they reach
-// the wire. Server-side logs keep the full message via console.error.
+// the wire. Server-side logs keep the full message via log.error.
 function scrubError(msg) {
   if (!msg) return 'internal error';
   return String(msg)
@@ -1239,7 +1238,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
 (async () => {
   if (!SKIP_PG) {
     try { await pgConnect(); }
-    catch (e) { console.error(`[rag-api] pg connect deferred: ${e.message}`); pg = null; }
+    catch (e) { log.error('pg_connect_deferred', { msg: e.message }); pg = null; }
   }
   // Connect to tokmon DB for cost queries (best-effort; cost endpoints return 503 if missing)
   let tokmonPg = null;
@@ -1251,11 +1250,11 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         idleTimeoutMillis: 30_000,
       });
       await tokmonPg.query('SELECT 1');
-      tokmonPg.on('error', (e) => { console.error(`[rag-api] tokmon pg pool error: ${e.message}`); });
+      tokmonPg.on('error', (e) => { log.error('tokmon_pool_error', { msg: e.message }); });
       fleetCtx.tokmonDb = tokmonPg;
       console.log(`[rag-api] tokmon db connected for fleet cost ingest`);
     } catch (e) {
-      console.error(`[rag-api] tokmon connect failed (cost endpoints will 503): ${e.message}`);
+      log.error('tokmon_connect_failed', { msg: e.message });
     }
   }
   // Hand pg client to fleet, run orphan flip + schedule retention.
@@ -1265,7 +1264,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
       const n = await fleetDb.orphanRunningSessions(pg);
       if (n) console.log(`[rag-api] fleet: orphaned ${n} sessions on startup`);
     } catch (e) {
-      console.error(`[rag-api] fleet orphan check failed: ${e.message}`);
+      log.error('fleet_orphan_check_failed', { msg: e.message });
     }
     // Retention runs only after pg is bound. If pg failed to connect at boot,
     // retention never starts — rag-api must restart once pg is reachable.
@@ -1274,7 +1273,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
       startRetention(pg);
       console.log('[rag-api] fleet metrics retention started');
     } catch (e) {
-      console.error(`[rag-api] retention start failed: ${e.message}`);
+      log.error('retention_start_failed', { msg: e.message });
     }
     // vt-0206: heartbeat reaper for sessions + workflow_runs. Runs every
     // 5 minutes. Catches daemon crashes that don't trigger hub restart.
@@ -1285,14 +1284,14 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         const sn = await fleetDb.reapStuckSessions(pg);
         if (sn) console.log(`[rag-api] reaper: orphaned ${sn} stuck sessions`);
       } catch (e) {
-        console.error(`[rag-api] session reaper failed: ${e.message}`);
+        log.error('session_reaper_failed', { msg: e.message });
       }
       try {
         const wfDb = require('./lib/fleet-workflow-db');
         const rn = await wfDb.reapStuckRuns(pg);
         if (rn) console.log(`[rag-api] reaper: failed ${rn} stuck workflow_runs`);
       } catch (e) {
-        console.error(`[rag-api] run reaper failed: ${e.message}`);
+        log.error('run_reaper_failed', { msg: e.message });
       }
       // vt-0223: emit host.offline webhook for hosts whose last_seen drifted
       // past the staleness threshold since the previous tick.
@@ -1307,7 +1306,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
           for (const h of stale) webhooks.emit(pg, 'host.offline', { host_name: h.name }).catch(() => {});
         }
       } catch (e) {
-        console.error(`[rag-api] host offline detector failed: ${e.message}`);
+        log.error('host_offline_detector_failed', { msg: e.message });
       }
     }, REAPER_INTERVAL_MS);
     reaperTimer.unref?.();
@@ -1325,7 +1324,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         }
         if (total) console.log(`[rag-api] fleet: purged ${total} events older than ${PURGE_AGE} (${passes} passes)`);
       } catch (e) {
-        console.error(`[rag-api] fleet purge failed: ${e.message}`);
+        log.error('fleet_purge_failed', { msg: e.message });
       }
     }, PURGE_INTERVAL_MS).unref?.();
 
@@ -1357,13 +1356,13 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
                  VALUES ('run', $1, $2, 'cron', 'cron', 'ok', $3)`,
                 [w.id, run.id, defSha]
               );
-            } catch (e) { console.error(`[rag-api] cron workflow_audit insert failed: ${e.message}`); }
+            } catch (e) { log.error('cron_audit_insert_failed', { workflow_id: w.id, run_id: run.id, msg: e.message }); }
           } catch (e) {
-            console.error(`[rag-api] trigger fire failed for ${w.name}: ${e.message}`);
+            log.error('trigger_fire_failed', { workflow_name: w.name, msg: e.message });
           }
         }
       } catch (e) {
-        console.error(`[rag-api] workflow trigger scan failed: ${e.message}`);
+        log.error('workflow_trigger_scan_failed', { msg: e.message });
       }
     }, 60 * 1000).unref?.();
 
@@ -1384,7 +1383,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
           if (r.rows) console.log(`[rag-api] cost rollup ${dayStr}: ${r.rows} rows`);
         }
       } catch (e) {
-        console.error(`[rag-api] cost rollup failed: ${e.message}`);
+        log.error('cost_rollup_failed', { msg: e.message });
       }
     }, 6 * 60 * 60 * 1000).unref?.();
     // Run once at startup so a fresh deploy seeds yesterday's data without
@@ -1396,7 +1395,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         const r = await fleetCost.aggregateDayRollup(fleetCtx.tokmonDb, pg, yest);
         if (r.rows) console.log(`[rag-api] cost rollup ${yest}: ${r.rows} rows (startup)`);
       } catch (e) {
-        console.error(`[rag-api] cost rollup (startup) failed: ${e.message}`);
+        log.error('cost_rollup_startup_failed', { msg: e.message });
       }
     }, 15_000).unref?.();
 
@@ -1422,7 +1421,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         }
         if (total) console.log(`[rag-api] tokmon: purged ${total} events older than ${TOKMON_RETAIN_DAYS} days (${passes} passes)`);
       } catch (e) {
-        console.error(`[rag-api] tokmon purge failed: ${e.message}`);
+        log.error('tokmon_purge_failed', { msg: e.message });
       }
     }, 24 * 60 * 60 * 1000).unref?.();
   }
@@ -1430,7 +1429,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     console.log(`[rag-api] listening on :${PORT} (vault=${VAULT}, pg=${SKIP_PG ? 'skipped' : `${PG.host}/${PG.database}`}, auth=Bearer)`);
   });
 })().catch(e => {
-  console.error(`[rag-api] FATAL: ${e.stack || e.message}`);
+  log.fatal('boot_fatal', { msg: e.stack || e.message });
   process.exit(1);
 });
 
@@ -1452,16 +1451,16 @@ async function shutdown(signal) {
   const doShutdown = async () => {
     server.closeIdleConnections?.();
     server.close((err) => {
-      if (err) console.error(`[rag-api] server.close error: ${err.message}`);
+      if (err) log.error('server_close_error', { msg: err.message });
     });
     try {
       const wss = server._fleetWss;
       if (wss) for (const ws of wss.clients) {
         try { ws.close(1001, 'shutdown'); } catch {}
       }
-    } catch (e) { console.error(`[rag-api] WS drain error: ${e.message}`); }
+    } catch (e) { log.error('ws_drain_error', { msg: e.message }); }
     try { await fleetCtx?.batcher?.flush?.(); }
-    catch (e) { console.error(`[rag-api] batcher flush error: ${e.message}`); }
+    catch (e) { log.error('batcher_flush_error', { msg: e.message }); }
     await cleanup();
   };
   const deadline = new Promise(r => setTimeout(r, DEADLINE_MS));
@@ -1472,11 +1471,11 @@ async function shutdown(signal) {
       deadline.then(() => 'deadline'),
     ]);
     if (winner === 'deadline') {
-      console.error('[rag-api] shutdown deadline hit — forcing exit');
+      log.error('shutdown_deadline', { msg: 'forcing exit after deadline' });
       exitCode = 1;
     }
   } catch (e) {
-    console.error(`[rag-api] shutdown error: ${e.message}`);
+    log.error('shutdown_error', { msg: e.message });
     exitCode = 1;
   }
   process.exit(exitCode);
