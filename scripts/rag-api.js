@@ -337,6 +337,88 @@ async function handleNotesIndex(req, res) {
   send(res, 200, { byBase, byBaseLower, all, truncated: all.length >= MAX });
 }
 
+// vt-0193: aggregated health snapshot for the Health dashboard.
+// Returns per-subsystem traffic-light status without forcing the UI to
+// query each endpoint separately. All checks are best-effort with short
+// timeouts so a wedged subsystem doesn't hang the response.
+async function handleHealthDetail(req, res) {
+  const out = {
+    ok: true,
+    ts: new Date().toISOString(),
+    subsystems: {},
+  };
+  // pg pool
+  try {
+    const r = await pg.query('SELECT 1 AS ok');
+    out.subsystems.pg = { status: 'ok', detail: `pool max=${pg.options?.max ?? '?'}, total=${pg.totalCount}, idle=${pg.idleCount}` };
+  } catch (e) {
+    out.ok = false;
+    out.subsystems.pg = { status: 'error', detail: scrubError(e.message) };
+  }
+  // secrets backend (lightweight probe)
+  try {
+    await secretsBackend().list();
+    out.subsystems.secrets = { status: 'ok' };
+  } catch (e) {
+    out.ok = false;
+    out.subsystems.secrets = { status: 'error', detail: scrubError(e.message) };
+  }
+  // git repo state + last commit
+  try {
+    const { execSync } = require('node:child_process');
+    const lastCommitTs = execSync('git -C ' + VAULT + ' log -1 --format=%aI', { timeout: 2000 }).toString().trim();
+    const ageMs = Date.now() - new Date(lastCommitTs).getTime();
+    out.subsystems.git = {
+      status: ageMs < 7 * 24 * 3600 * 1000 ? 'ok' : 'warn',
+      detail: lastCommitTs,
+      last_commit_age_seconds: Math.round(ageMs / 1000),
+    };
+  } catch (e) {
+    out.subsystems.git = { status: 'error', detail: scrubError(e.message) };
+  }
+  // age.key backup recency (file mtime). Looks for .bak.* in same dir as
+  // the active key.
+  try {
+    const ageKeyPath = process.env.VAULT_AGE_KEY || '/opt/vault-rag/.secrets/age.key';
+    const dir = path.dirname(ageKeyPath);
+    let mostRecent = null;
+    if (fs.existsSync(dir)) {
+      for (const f of fs.readdirSync(dir)) {
+        if (f.startsWith('age.key.bak.')) {
+          const st = fs.statSync(path.join(dir, f));
+          if (!mostRecent || st.mtimeMs > mostRecent) mostRecent = st.mtimeMs;
+        }
+      }
+    }
+    if (mostRecent) {
+      const ageMs = Date.now() - mostRecent;
+      out.subsystems.age_key_backup = {
+        status: ageMs < 30 * 24 * 3600 * 1000 ? 'ok' : 'warn',
+        detail: new Date(mostRecent).toISOString(),
+        age_seconds: Math.round(ageMs / 1000),
+      };
+    } else {
+      out.subsystems.age_key_backup = { status: 'warn', detail: 'no .bak.* file found' };
+    }
+  } catch (e) {
+    out.subsystems.age_key_backup = { status: 'error', detail: scrubError(e.message) };
+  }
+  // daemons online count + last_seen
+  try {
+    const r = await pg.query(`SELECT COUNT(*) FILTER (WHERE status='online') AS online, COUNT(*) AS total FROM fleet_hosts`);
+    const { online, total } = r.rows[0];
+    out.subsystems.daemons = {
+      status: parseInt(online, 10) > 0 ? 'ok' : 'warn',
+      detail: `${online}/${total} online`,
+      online: parseInt(online, 10),
+      total: parseInt(total, 10),
+    };
+  } catch (e) {
+    out.subsystems.daemons = { status: 'error', detail: scrubError(e.message) };
+  }
+  send(res, 200, out);
+}
+
 // vt-0158: git log for a single vault file. Returns the last N commits
 // touching that path with sha+ts+author+subject. Vault is a git repo
 // (Obsidian-Git on every device + vault-sync.sh on the hub auto-commit),
@@ -816,6 +898,18 @@ const fleetCtx = fleetRoutes.makeContext({ token: TOKEN, adminToken: FLEET_ADMIN
 const server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith('/api/')) req.url = req.url.slice(4);
   if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
+  // vt-0193: detailed health endpoint for the Health dashboard UI.
+  // Reports per-subsystem status without requiring secret-store reveals;
+  // viewer bearer suffices.
+  if (req.method === 'GET' && req.url.startsWith('/healthz/detail')) {
+    if (!checkAuth(req) && !(FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx))) {
+      return send(res, 401, { error: 'unauthorized' });
+    }
+    return handleHealthDetail(req, res).catch(e => {
+      console.error('[rag-api] /healthz/detail', e.stack || e.message);
+      send(res, 500, { error: scrubError(e.message) });
+    });
+  }
   // fleet routes (HTTP) — own dispatch handles auth + methods
   if (fleetRoutes.tryDispatch(req, res, fleetCtx)) return;
   // vt-0140: tokmon shipper ingest — uses its OWN token (X-Tokmon-Token header

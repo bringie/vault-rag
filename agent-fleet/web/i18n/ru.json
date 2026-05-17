@@ -251,5 +251,8 @@
   "wf_inspect.no_target": "(без цели)",
   "wf_inspect.target_group": "группа: {name}",
   "wf_inspect.target_host": "хост: {name}",
-  "wf_inspect.target_cap": "cap: {name}"
+  "wf_inspect.target_cap": "cap: {name}",
+  "nav.health": "🩺 здоровье",
+  "page.health": "СОСТОЯНИЕ СИСТЕМЫ",
+  "health.title": "СОСТОЯНИЕ СИСТЕМЫ"
 }

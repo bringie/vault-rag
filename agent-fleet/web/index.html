@@ -56,6 +56,7 @@
         <button id="nav-workflows" class="btn-ghost" data-i18n="nav.workflows">⎇ workflows</button>
         <button id="nav-prices"    class="btn-ghost" data-i18n="nav.prices">$ prices</button>
         <button id="nav-vault"     class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
+        <button id="nav-health"    class="btn-ghost" data-i18n="nav.health">🩺 health</button>
         <!-- vt-0152: flag glyphs in lang, glyph icons in theme -->
         <select id="lang-select" class="switcher" title="language">
           <option value="en">🇬🇧 EN</option>
@@ -69,9 +70,10 @@
           <option value="nord">❄ nord</option>
           <option value="hi-contrast">◐ hi-contrast</option>
         </select>
-        <button id="reload" data-i18n-title="nav.refresh" title="refresh" class="btn-icon">⟳</button>
-        <button id="stack-dot" class="btn-icon stack-dot" data-state="unknown" data-i18n-title="stack.dot_tip" title="docker stack status">●</button>
-        <button id="logout" class="btn-ghost" data-i18n="nav.abort">ABORT</button>
+        <!-- vt-0192: aria-label on icon buttons for screen readers -->
+        <button id="reload" data-i18n-title="nav.refresh" title="refresh" aria-label="refresh" class="btn-icon">⟳</button>
+        <button id="stack-dot" class="btn-icon stack-dot" data-state="unknown" data-i18n-title="stack.dot_tip" title="docker stack status" aria-label="docker stack status">●</button>
+        <button id="logout" class="btn-ghost" data-i18n="nav.abort" aria-label="abort session and clear token">ABORT</button>
       </div>
     </header>
 
@@ -515,6 +517,19 @@
     <div style="display:grid; grid-template-columns: 60% 40%; height: calc(100vh - 110px);">
       <div id="wf-run-canvas" class="wf-canvas-pane"></div>
       <div id="wf-run-detail" class="wf-inspector" data-i18n="workflows.click_node">Click a node for details.</div>
+    </div>
+  </div>
+
+  <!-- vt-0193: health dashboard -->
+  <div id="healthview" hidden>
+    <header class="archive-head overlay-header">
+      <h2 data-i18n="health.title">SYSTEM HEALTH</h2>
+      <span style="flex:1"></span>
+      <button id="health-reload" class="btn-ghost" title="reload" aria-label="reload">↻ reload</button>
+      <button id="healthview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+    </header>
+    <div class="health-grid" id="health-grid">
+      <div class="health-loading"><em>loading…</em></div>
     </div>
   </div>
 

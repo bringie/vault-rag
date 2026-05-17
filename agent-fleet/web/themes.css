@@ -1,5 +1,16 @@
 /* agent-fleet themes — switchable via [data-theme] on <html>.
-   Each theme defines: layout vars (bg/text/lines/etc) + 16-color ANSI palette for xterm. */
+   Each theme defines: layout vars (bg/text/lines/etc) + 16-color ANSI palette for xterm.
+
+   vt-0189: aliases for vault tab + diff classes. Earlier code used
+   `var(--border)` / `var(--bg-hover)` / `var(--accent-dim)` with hardcoded
+   dark fallbacks; in light/solarized/nord/hi-contrast that produced
+   dark-mode colors mid-UI. These resolve through the active theme's
+   `--line` / `--panel-2` / `--accent` tokens. */
+:root {
+  --border: var(--line);
+  --bg-hover: var(--panel-2);
+  --accent-dim: var(--panel-2);
+}
 
 /* dark (default) — tactical command-console aesthetic */
 :root, :root[data-theme="dark"] {

@@ -251,5 +251,8 @@
   "wf_inspect.no_target": "(sin destino)",
   "wf_inspect.target_group": "grupo: {name}",
   "wf_inspect.target_host": "host: {name}",
-  "wf_inspect.target_cap": "cap: {name}"
+  "wf_inspect.target_cap": "cap: {name}",
+  "nav.health": "🩺 salud",
+  "page.health": "ESTADO DEL SISTEMA",
+  "health.title": "ESTADO DEL SISTEMA"
 }

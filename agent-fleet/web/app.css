@@ -16,6 +16,15 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+
+/* vt-0192: global :focus-visible ring — many inputs/buttons kill outline
+   wholesale, leaving keyboard users blind. :focus-visible only triggers
+   for keyboard-style focus (Tab/arrow), not mouse clicks, so mouse-using
+   ops won't see the ring. */
+:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
 html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
@@ -401,11 +410,48 @@ body::after {
   display: grid; grid-template-rows: auto auto 1fr auto;
   overflow: auto;
 }
-#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview, #vaultview {
+#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview, #vaultview, #healthview {
   position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
   left: 0; right: 0; z-index: 80; background: var(--bg);
   display: flex; flex-direction: column; overflow: auto;
 }
+
+/* vt-0193: health dashboard */
+.health-grid {
+  display: grid; gap: 12px; padding: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+.health-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.health-card.health-ok    { border-left: 3px solid var(--ok); }
+.health-card.health-warn  { border-left: 3px solid var(--warn); }
+.health-card.health-error { border-left: 3px solid var(--danger); }
+.health-card-head {
+  display: flex; align-items: center; gap: 8px;
+  font: 11px/1.4 monospace;
+}
+.health-dot { font-size: 16px; line-height: 1; }
+.health-card.health-ok    .health-dot { color: var(--ok); }
+.health-card.health-warn  .health-dot { color: var(--warn); }
+.health-card.health-error .health-dot { color: var(--danger); }
+.health-name { font-weight: 600; flex: 1; }
+.health-status {
+  font-size: 10px; padding: 2px 6px; border-radius: 3px;
+  background: var(--bg-hover); color: var(--text-dim);
+}
+.health-detail {
+  font: 11px/1.5 monospace; color: var(--text-dim);
+  word-break: break-all;
+}
+.health-summary {
+  grid-column: 1 / -1;
+  padding: 10px; text-align: center;
+  font: 11px/1.4 monospace; color: var(--text-dim);
+  border-top: 1px solid var(--line); margin-top: 8px;
+}
+.health-loading { padding: 24px; color: var(--text-dim); }
 
 /* Modals get higher z-index than page overlays so they sit above topbar/footer */
 #group-detail-modal, #price-modal, #editor { z-index: 200 !important; }
@@ -884,10 +930,11 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   white-space:pre; overflow:auto; margin:0;
   max-height:calc(85vh - 200px);
 }
-.vault-diff .diff-add  { color:#7ec699; display:block; background:rgba(126,198,153,.08); }
-.vault-diff .diff-del  { color:#f08080; display:block; background:rgba(240,128,128,.08); }
-.vault-diff .diff-hunk { color:#6cf;    display:block; }
-.vault-diff .diff-meta { color:var(--text-dim, #888); display:block; }
+/* vt-0189: theme-aware diff colors */
+.vault-diff .diff-add  { color:var(--ok);     display:block; background:color-mix(in srgb, var(--ok) 8%, transparent); }
+.vault-diff .diff-del  { color:var(--danger); display:block; background:color-mix(in srgb, var(--danger) 8%, transparent); }
+.vault-diff .diff-hunk { color:var(--accent); display:block; }
+.vault-diff .diff-meta { color:var(--text-dim); display:block; }
 @media (max-width:768px) {
   .vault-history-body { flex-direction:column; }
   .vault-history-list { width:auto; border-right:none; border-bottom:1px solid var(--border, #333); max-height:40vh; }

@@ -1060,9 +1060,10 @@
     'workflow-runs': { panels: ['workflowrunviewer'], nav: 'workflows', title: 'page.workflow_run',    open: arg => window.openWorkflowRunViewer?.(arg) },
     prices:          { panels: ['pricesview'],        nav: 'prices',    title: 'page.prices',          open: () => window.openPricesView?.() },
     vault:           { panels: ['vaultview'],         nav: 'vault',     title: 'page.vault',           open: () => window.openVaultView?.() },
+    health:          { panels: ['healthview'],        nav: 'health',    title: 'page.health',          open: () => openHealthView() },
   };
-  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview'];
-  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault'];
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview'];
+  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health'];
 
   function setPage(name, arg) {
     const p = PAGES[name] || PAGES.dashboard;
@@ -1417,6 +1418,49 @@
     }
   }
 
+  // ============ Health dashboard (vt-0193) ============
+  async function openHealthView() {
+    const grid = $('health-grid');
+    if (!grid) return;
+    grid.innerHTML = '<div class="health-loading"><em>loading…</em></div>';
+    let data;
+    try {
+      const r = await fetch('/api/healthz/detail', {
+        headers: { authorization: 'Bearer ' + state.token },
+      });
+      data = await r.json();
+    } catch (e) {
+      grid.innerHTML = `<div class="health-card health-error"><em>fetch failed: ${esc(e.message)}</em></div>`;
+      return;
+    }
+    grid.innerHTML = '';
+    const labels = {
+      pg: 'POSTGRES',
+      secrets: 'SECRETS BACKEND',
+      git: 'VAULT GIT',
+      age_key_backup: 'AGE KEY BACKUP',
+      daemons: 'FLEET DAEMONS',
+    };
+    for (const [key, sub] of Object.entries(data.subsystems || {})) {
+      const card = document.createElement('div');
+      card.className = `health-card health-${sub.status}`;
+      const dot = sub.status === 'ok' ? '●' : sub.status === 'warn' ? '◐' : '✕';
+      card.innerHTML = `
+        <div class="health-card-head">
+          <span class="health-dot">${dot}</span>
+          <span class="health-name">${esc(labels[key] || key)}</span>
+          <span class="health-status">${esc(sub.status)}</span>
+        </div>
+        <div class="health-detail">${esc(sub.detail || '')}</div>
+      `;
+      grid.appendChild(card);
+    }
+    const summary = document.createElement('div');
+    summary.className = 'health-summary';
+    summary.textContent = `${data.ok ? 'all systems nominal' : 'degraded'} · checked ${new Date(data.ts).toLocaleTimeString()}`;
+    grid.appendChild(summary);
+  }
+
   // ============ Groups page ============
   async function openGroupsView() {
     $('groupsview-close').onclick = () => navigate('/dashboard');
@@ -1681,6 +1725,10 @@
     // vt-0146: vault tab
     const vNav = $('nav-vault'); if (vNav) vNav.onclick = () => navigate('/vault');
     const vBack = $('vaultview-close'); if (vBack) vBack.onclick = () => navigate('/dashboard');
+    // vt-0193: health dashboard nav
+    const hNav = $('nav-health'); if (hNav) hNav.onclick = () => navigate('/health');
+    const hBack = $('healthview-close'); if (hBack) hBack.onclick = () => navigate('/dashboard');
+    const hReload = $('health-reload'); if (hReload) hReload.onclick = () => openHealthView();
     const wfNew = $('wf-new'); if (wfNew) wfNew.onclick = () => navigate('/workflows/new');
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
