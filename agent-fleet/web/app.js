@@ -1848,6 +1848,7 @@
       if (el) el.onkeydown = (e) => { if (e.key === 'Enter') openAuditView(); };
     });
     const wfNew = $('wf-new'); if (wfNew) wfNew.onclick = () => navigate('/workflows/new');
+    const wfTpl = $('wf-from-template'); if (wfTpl) wfTpl.onclick = () => window.openWorkflowTemplatePicker?.();
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
     setOverlay(true, 'STANDBY', 'select a session');

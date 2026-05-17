@@ -465,6 +465,87 @@
     }
   }
 
+  // vt-0254: workflow template picker. /workflows/templates lives on
+  // rag-api root (not /fleet/*), and accepts viewer OR admin bearer.
+  async function fetchTemplates() {
+    const res = await fetch('/workflows/templates', {
+      headers: { 'authorization': `Bearer ${token()}` },
+    });
+    if (!res.ok) {
+      let msg = `${res.status}`;
+      try { const j = await res.json(); msg += ' ' + (j.error || ''); } catch {}
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  async function openTemplatePicker() {
+    const dlg = document.getElementById('wf-tpl-picker');
+    const body = document.getElementById('wf-tpl-body');
+    if (!dlg || !body) return;
+    body.textContent = t('workflows.loading');
+    try { dlg.showModal(); } catch { return; }
+    let data;
+    try { data = await fetchTemplates(); }
+    catch (e) {
+      body.innerHTML = `<p style="color:var(--text-dim)">${esc(t('workflows.tpl_error_prefix', { msg: e.message }))}</p>`;
+      return;
+    }
+    const tpls = (data && Array.isArray(data.templates)) ? data.templates : [];
+    if (!tpls.length) {
+      body.innerHTML = `<p style="color:var(--text-dim)">${esc(t('workflows.tpl_empty'))}</p>`;
+      return;
+    }
+    body.innerHTML = tpls.map(tpl => `
+      <div class="wf-tpl-card">
+        <div class="wf-tpl-card-row">
+          <span class="wf-tpl-name">${esc(tpl.name || tpl.id)}</span>
+          <span style="flex:1"></span>
+          <span class="wf-tpl-tags">${(tpl.tags || []).map(esc).join(' · ')}</span>
+          <button class="btn-row" data-tpl-id="${esc(tpl.id)}">${esc(t('workflows.btn.use_template'))}</button>
+        </div>
+        <div class="wf-tpl-desc">${esc(tpl.description || '')}</div>
+      </div>
+    `).join('');
+    body.querySelectorAll('[data-tpl-id]').forEach(btn => {
+      btn.onclick = async () => {
+        const tpl = tpls.find(x => x.id === btn.dataset.tplId);
+        if (!tpl) return;
+        const defaultName = `${tpl.name} (copy)`;
+        const name = prompt(t('workflows.tpl_name_prompt'), defaultName);
+        if (!name) return;
+        btn.disabled = true;
+        try {
+          const created = await api('/workflows', {
+            method: 'POST',
+            body: JSON.stringify({ name, definition: tpl.definition }),
+          });
+          dlg.close();
+          if (created && created.id) location.hash = `#/workflows/${created.id}/edit`;
+          else openWorkflowsList();
+        } catch (e) {
+          alert(e.message);
+          btn.disabled = false;
+        }
+      };
+    });
+  }
+
+  function bindPickerClose() {
+    const closeBtn = document.getElementById('wf-tpl-close');
+    if (closeBtn && !closeBtn._bound) {
+      closeBtn._bound = true;
+      closeBtn.onclick = () => {
+        const dlg = document.getElementById('wf-tpl-picker');
+        try { dlg && dlg.close(); } catch {}
+      };
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindPickerClose);
+  } else { bindPickerClose(); }
+
   window.openWorkflowsList = openWorkflowsList;
   window.openWorkflowEditor = openWorkflowEditor;
+  window.openWorkflowTemplatePicker = openTemplatePicker;
 })();

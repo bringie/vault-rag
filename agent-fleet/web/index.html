@@ -471,6 +471,7 @@
     <header class="archive-head overlay-header">
       <h2 data-i18n="workflows.title">WORKFLOWS</h2>
       <span style="flex:1"></span>
+      <button id="wf-from-template" class="btn-ghost" data-i18n="workflows.from_template">+ from template</button>
       <button id="wf-new" class="btn-ghost" data-i18n="workflows.new">+ new workflow</button>
       <button id="workflowsview-close" class="btn-ghost" data-i18n="common.back">× back</button>
     </header>
@@ -607,6 +608,18 @@
         <button id="secret-reveal-close" class="btn-ghost">× close</button>
       </div>
       <pre id="secret-reveal-value" class="secret-reveal-value"></pre>
+    </div>
+  </dialog>
+
+  <!-- vt-0254: workflow template picker -->
+  <dialog id="wf-tpl-picker">
+    <div class="wf-tpl-frame">
+      <div class="wf-tpl-head">
+        <span class="lbl" data-i18n="workflows.template_picker_title">WORKFLOW TEMPLATES //</span>
+        <span style="flex:1"></span>
+        <button id="wf-tpl-close" class="btn-ghost" data-i18n="common.close">× close</button>
+      </div>
+      <div id="wf-tpl-body" class="wf-tpl-body"></div>
     </div>
   </dialog>
 

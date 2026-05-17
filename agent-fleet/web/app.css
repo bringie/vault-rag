@@ -940,6 +940,33 @@ dialog#secret-reveal::backdrop { background:rgba(0,0,0,.7); }
   margin:0; max-height:40vh; overflow:auto;
 }
 
+/* vt-0254: workflow template picker */
+dialog#wf-tpl-picker {
+  background:transparent; border:none; padding:0; max-width:90vw;
+}
+dialog#wf-tpl-picker::backdrop { background:rgba(0,0,0,.7); }
+.wf-tpl-frame {
+  background:var(--bg, #0a0a0a); border:1px solid var(--accent, #6cf); border-radius:4px;
+  padding:14px 18px; min-width:640px; max-width:90vw;
+  box-shadow:0 0 20px rgba(102,204,255,.25);
+}
+.wf-tpl-head {
+  display:flex; gap:8px; align-items:center; margin-bottom:10px;
+  padding-bottom:8px; border-bottom:1px solid var(--border, #333);
+  font:11px/1.4 monospace;
+}
+.wf-tpl-body { max-height:60vh; overflow:auto; }
+.wf-tpl-card {
+  border:1px solid var(--border, #333); border-radius:3px;
+  padding:10px 12px; margin-bottom:8px;
+  display:flex; flex-direction:column; gap:6px;
+}
+.wf-tpl-card:hover { border-color:var(--accent, #6cf); }
+.wf-tpl-card-row { display:flex; gap:8px; align-items:center; }
+.wf-tpl-name { font-weight:bold; font-family:var(--font-display, monospace); }
+.wf-tpl-tags { font-size:11px; color:var(--text-dim, #888); }
+.wf-tpl-desc { font-size:12px; color:var(--text, #ccc); line-height:1.4; }
+
 /* vt-0160: search bar in tree pane + search result rendering */
 .vault-search-bar {
   display:flex; gap:6px; padding:8px; border-bottom:1px solid var(--border, #333);
