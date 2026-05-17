@@ -176,9 +176,26 @@ if [[ -f Caddyfile.tmpl ]]; then
         mv Caddyfile.new Caddyfile
         echo "$TMPL_SHA" > "$MARKER"
         ok "Caddyfile regenerated"
-        log "reloading Caddy (no downtime)…"
+        # vt-0277: prefer `caddy reload` (zero downtime) but fall back to
+        # container restart when the bind-mount overlay shows a stale
+        # file. Symptom: reload returns "config is unchanged" even after
+        # the host file is updated (Docker overlay-fs caching of the
+        # mount inode). Restart forces a fresh fopen. ~500ms downtime —
+        # acceptable for structural config changes (security headers,
+        # new rate-limit zones, etc.).
+        log "reloading Caddy…"
         if docker compose exec -T vault-rag-caddy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile > /dev/null 2>&1; then
-          ok "caddy reloaded without downtime"
+          ok "caddy reload returned ok — verifying header propagation"
+          # Sanity probe: re-fetch / and check that one of the headers
+          # we just declared is actually live. If not, fall through to
+          # restart. The check uses host loopback (Caddy is in host
+          # network mode) to avoid DNS dependency.
+          if curl -skI -m 3 https://127.0.0.1/ 2>/dev/null | grep -qi 'x-frame-options:'; then
+            ok "caddy reloaded without downtime"
+          else
+            warn "reload returned ok but headers did not propagate (stale-mount race) — restarting"
+            docker compose restart vault-rag-caddy 2>&1 | tail -2
+          fi
         else
           warn "caddy reload failed — falling back to container restart"
           docker compose restart vault-rag-caddy 2>&1 | tail -2
