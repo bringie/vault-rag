@@ -1121,8 +1121,9 @@
     vault:           { panels: ['vaultview'],         nav: 'vault',     title: 'page.vault',           open: () => window.openVaultView?.() },
     health:          { panels: ['healthview'],        nav: 'health',    title: 'page.health',          open: () => openHealthView() },
     audit:           { panels: ['auditview'],         nav: 'audit',     title: 'page.audit',           open: () => openAuditView() },
+    'recycle-bin':   { panels: ['recyclebinview'],    nav: 'groups',    title: 'page.recycle_bin',     open: () => window.openRecycleBinView?.() },
   };
-  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview'];
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview','recyclebinview'];
   const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit'];
 
   function setPage(name, arg) {
@@ -1570,6 +1571,50 @@
     grid.appendChild(summary);
   }
 
+  // vt-0255: Recycle bin page
+  async function openRecycleBinView() {
+    const grpBody = $('recycle-groups-rows');
+    const wfBody  = $('recycle-workflows-rows');
+    if (!grpBody || !wfBody) return;
+    grpBody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1em; color:var(--text-dim)">loading…</td></tr>`;
+    wfBody.innerHTML  = grpBody.innerHTML;
+    let data;
+    try { data = await api('GET', '/recycle-bin'); }
+    catch (e) {
+      const err = `<tr><td colspan="3" style="text-align:center; padding:1em; color:var(--text-dim)">error: ${esc(e.message)}</td></tr>`;
+      grpBody.innerHTML = err; wfBody.innerHTML = err;
+      return;
+    }
+    const fmt = (iso) => iso ? new Date(iso).toLocaleString() : '—';
+    const groups = (data && data.groups) || [];
+    const workflows = (data && data.workflows) || [];
+    grpBody.innerHTML = groups.length === 0
+      ? `<tr><td colspan="3" style="text-align:center; padding:1em; color:var(--text-faint)">empty</td></tr>`
+      : groups.map(g => `<tr>
+          <td>${esc(g.name)}</td>
+          <td>${fmt(g.deleted_at)}</td>
+          <td><button class="btn-row" data-restore-group="${esc(g.id)}">restore</button></td>
+        </tr>`).join('');
+    wfBody.innerHTML = workflows.length === 0
+      ? `<tr><td colspan="3" style="text-align:center; padding:1em; color:var(--text-faint)">empty</td></tr>`
+      : workflows.map(w => `<tr>
+          <td>${esc(w.name)}</td>
+          <td>${fmt(w.deleted_at)}</td>
+          <td><button class="btn-row" data-restore-workflow="${esc(w.id)}">restore</button></td>
+        </tr>`).join('');
+    grpBody.querySelectorAll('[data-restore-group]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { await api('POST', `/groups/${b.dataset.restoreGroup}/restore`); openRecycleBinView(); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    });
+    wfBody.querySelectorAll('[data-restore-workflow]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { await api('POST', `/workflows/${b.dataset.restoreWorkflow}/restore`); openRecycleBinView(); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    });
+  }
+  window.openRecycleBinView = openRecycleBinView;
+
   // ============ Groups page ============
   async function openGroupsView() {
     $('groupsview-close').onclick = () => navigate('/dashboard');
@@ -1849,6 +1894,10 @@
     });
     const wfNew = $('wf-new'); if (wfNew) wfNew.onclick = () => navigate('/workflows/new');
     const wfTpl = $('wf-from-template'); if (wfTpl) wfTpl.onclick = () => window.openWorkflowTemplatePicker?.();
+    const grpTrash = $('grp-trash'); if (grpTrash) grpTrash.onclick = () => navigate('/recycle-bin');
+    const wfTrash  = $('wf-trash');  if (wfTrash)  wfTrash.onclick  = () => navigate('/recycle-bin');
+    const rcReload = $('recycle-reload'); if (rcReload) rcReload.onclick = () => window.openRecycleBinView?.();
+    const rcBack = $('recyclebinview-close'); if (rcBack) rcBack.onclick = () => navigate('/groups');
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
     setOverlay(true, 'STANDBY', 'select a session');

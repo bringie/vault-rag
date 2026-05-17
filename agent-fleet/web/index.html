@@ -395,6 +395,7 @@
       </div>
       <div>
         <button id="grp-new" class="btn-ghost" data-i18n="groups.new">+ new group</button>
+        <button id="grp-trash" class="btn-ghost" data-i18n="recycle_bin.open">🗑 trash</button>
         <button id="groupsview-close" class="btn-ghost" data-i18n="common.back">× back</button>
       </div>
     </header>
@@ -466,6 +467,37 @@
     </div>
   </div>
 
+  <!-- vt-0255: RECYCLE BIN PAGE -->
+  <div id="recyclebinview" hidden>
+    <header class="archive-head overlay-header">
+      <h2 data-i18n="recycle_bin.title">RECYCLE BIN</h2>
+      <span style="flex:1"></span>
+      <button id="recycle-reload" class="btn-ghost" data-i18n="common.reload">↻ reload</button>
+      <button id="recyclebinview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+    </header>
+    <div class="archive-table-wrap">
+      <h3 style="margin:.6em 0 .3em; font-family:var(--font-display, monospace)" data-i18n="recycle_bin.groups">GROUPS (soft-deleted)</h3>
+      <table class="archive-table">
+        <thead><tr>
+          <th data-i18n="recycle_bin.col.name">name</th>
+          <th data-i18n="recycle_bin.col.deleted_at">deleted</th>
+          <th data-i18n="recycle_bin.col.actions">actions</th>
+        </tr></thead>
+        <tbody id="recycle-groups-rows"></tbody>
+      </table>
+      <h3 style="margin:1.2em 0 .3em; font-family:var(--font-display, monospace)" data-i18n="recycle_bin.workflows">WORKFLOWS (soft-deleted)</h3>
+      <table class="archive-table">
+        <thead><tr>
+          <th data-i18n="recycle_bin.col.name">name</th>
+          <th data-i18n="recycle_bin.col.deleted_at">deleted</th>
+          <th data-i18n="recycle_bin.col.actions">actions</th>
+        </tr></thead>
+        <tbody id="recycle-workflows-rows"></tbody>
+      </table>
+      <p class="lbl" style="margin-top:1em; color:var(--text-dim)" data-i18n="recycle_bin.note">Items older than 30 days are permanently purged by the reaper.</p>
+    </div>
+  </div>
+
   <!-- WORKFLOWS LIST PAGE -->
   <div id="workflowsview" hidden>
     <header class="archive-head overlay-header">
@@ -473,6 +505,7 @@
       <span style="flex:1"></span>
       <button id="wf-from-template" class="btn-ghost" data-i18n="workflows.from_template">+ from template</button>
       <button id="wf-new" class="btn-ghost" data-i18n="workflows.new">+ new workflow</button>
+      <button id="wf-trash" class="btn-ghost" data-i18n="recycle_bin.open">🗑 trash</button>
       <button id="workflowsview-close" class="btn-ghost" data-i18n="common.back">× back</button>
     </header>
     <div id="wf-list-body"></div>

@@ -488,9 +488,11 @@
     let data;
     try { data = await fetchTemplates(); }
     catch (e) {
+      if (!dlg.open) return;
       body.innerHTML = `<p style="color:var(--text-dim)">${esc(t('workflows.tpl_error_prefix', { msg: e.message }))}</p>`;
       return;
     }
+    if (!dlg.open) return;
     const tpls = (data && Array.isArray(data.templates)) ? data.templates : [];
     if (!tpls.length) {
       body.innerHTML = `<p style="color:var(--text-dim)">${esc(t('workflows.tpl_empty'))}</p>`;

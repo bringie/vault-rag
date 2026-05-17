@@ -1328,6 +1328,33 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
       }
     }, PURGE_INTERVAL_MS).unref?.();
 
+    // vt-0255: recycle-bin reaper. Soft-deleted groups/workflows older
+    // than RECYCLE_RETAIN_DAYS get hard-deleted so the trash list stays
+    // bounded. Default 30d; override via env. Runs once on boot (after
+    // pg is bound) and then on the same 24h tick as fleet/tokmon purge.
+    const RECYCLE_RETAIN_DAYS = parseInt(process.env.VAULT_RAG_RECYCLE_RETAIN_DAYS || '30', 10);
+    const reapRecycle = async () => {
+      try {
+        const g = await pg.query(
+          `DELETE FROM fleet_groups
+            WHERE deleted_at IS NOT NULL
+              AND deleted_at < now() - ($1 || ' days')::interval
+            RETURNING id`, [String(RECYCLE_RETAIN_DAYS)]);
+        const w = await pg.query(
+          `DELETE FROM fleet_workflows
+            WHERE deleted_at IS NOT NULL
+              AND deleted_at < now() - ($1 || ' days')::interval
+            RETURNING id`, [String(RECYCLE_RETAIN_DAYS)]);
+        if (g.rowCount || w.rowCount) {
+          console.log(`[rag-api] recycle-bin reaper: purged ${g.rowCount} groups + ${w.rowCount} workflows older than ${RECYCLE_RETAIN_DAYS}d`);
+        }
+      } catch (e) {
+        log.error('recycle_reap_failed', { msg: e.message });
+      }
+    };
+    setInterval(reapRecycle, PURGE_INTERVAL_MS).unref?.();
+    setTimeout(reapRecycle, 30_000).unref?.();
+
     // vt-0110: workflow trigger scheduler. Scans fleet_workflows where
     // trigger is set; if `now - last_run_at >= every_ms`, kicks a new run.
     // Coarse 60s tick. every_ms minimum 60_000 (enforced at API layer).
