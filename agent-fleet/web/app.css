@@ -110,13 +110,14 @@ body::after {
 .auth-hint { color: var(--text-faint); font-size: .78em; margin: 1.2em 0 0; letter-spacing: .04em; }
 
 /* ============ APP SHELL ============ */
-/* topbar (56px) + footbar (28px) are position:fixed (see below). main is in the
- * normal flow and would slide under the topbar without offset — push it down. */
+/* vt-0270: topbar (56px) + footbar (64px after vt-0260 — was 28px) are
+ * position:fixed (see below). main is in the normal flow and would slide
+ * under the topbar without offset — push it down. */
 #app { display: block; min-height: 100vh; }
 #app > main {
-  height: calc(100vh - var(--topbar-h, 56px) - var(--footbar-h, 28px));
-  padding-top: var(--topbar-h, 56px);
-  padding-bottom: var(--footbar-h, 28px);
+  height: calc(100vh - var(--topbar-h) - var(--footbar-h));
+  padding-top: var(--topbar-h);
+  padding-bottom: var(--footbar-h);
   box-sizing: content-box;
 }
 
@@ -887,7 +888,7 @@ body::after {
 @media (max-width: 768px) {
   .grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .rail { display: none; }
-  .rail.open { display: block; position: fixed; inset: 56px 0 28px 0; z-index: 50; overflow: auto; }
+  .rail.open { display: block; position: fixed; inset: var(--topbar-h) 0 var(--footbar-h) 0; z-index: 50; overflow: auto; }
   .viewer-meta { display: none; }
   .status-bar { gap: 1em; }
   .status-bar .stat:nth-child(4) { display: none; }

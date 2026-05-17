@@ -519,6 +519,13 @@ async function handleDispatch({ req, res, body, ctx }) {
   for (const k of STRUCTURED_SPAWN_FIELDS) {
     if (body[k] == null) continue;
     if (k === 'dangerous') structured[k] = Boolean(body[k]);
+    else if (k === 'allowed_tools') {
+      // vt-0266: array of short strings — coerce + sanitize per element.
+      if (Array.isArray(body[k])) {
+        const clean = body[k].filter(t => typeof t === 'string' && t.length <= 64);
+        if (clean.length) structured[k] = clean;
+      }
+    }
     else if (typeof body[k] === 'string' || typeof body[k] === 'number') structured[k] = body[k];
     // silently drop objects/arrays for string-typed fields
   }
@@ -530,6 +537,12 @@ async function handleDispatch({ req, res, body, ctx }) {
   // vt-0259: prepend assigned role prompts (ordered by position) to the
   // system_prompt. Roles compose with brain_prompt, not replace it; the
   // final stack is: <brain>\n\n<role1>\n\n<role2>\n\n<per-call>.
+  // vt-0264: belt-and-suspenders cap on dispatch — the assignment-time
+  // cap (≤8 roles, ≤64 KiB combined) prevents most bloat, but a role
+  // edited AFTER assignment, or a per-call system_prompt added on top,
+  // can still push the combined string over ARG_MAX. If we exceed
+  // MAX_DISPATCH_SYSTEM_PROMPT_BYTES, drop the per-call addition (it's
+  // the least essential — the operator can re-specify) and warn loud.
   let appliedRoleNames = [];
   if (resolvedGroup) {
     try {
@@ -547,10 +560,43 @@ async function handleDispatch({ req, res, body, ctx }) {
           const firstWithModel = roles.find(r => r.default_model);
           if (firstWithModel) structured.model = firstWithModel.default_model;
         }
+        // vt-0266: forward the role-defined allowed_tools to the daemon.
+        // Roles compose by UNION — if any role grants Bash, Bash is allowed.
+        // If the caller already specified allowed_tools, INTERSECT with the
+        // union so caller is always at-most-as-permissive as the roles
+        // (defence-in-depth: caller can narrow but not widen).
+        const roleTools = new Set();
+        for (const r of roles) {
+          const t = Array.isArray(r.allowed_tools) ? r.allowed_tools : [];
+          for (const x of t) if (typeof x === 'string') roleTools.add(x);
+        }
+        if (roleTools.size > 0) {
+          if (Array.isArray(structured.allowed_tools)) {
+            structured.allowed_tools = structured.allowed_tools.filter(t => roleTools.has(t));
+          } else {
+            structured.allowed_tools = Array.from(roleTools);
+          }
+        }
       }
     } catch (e) {
       log.error('group_roles_lookup_failed', { group: resolvedGroup.name, msg: e.message });
     }
+  }
+  // ARG_MAX on Linux is ~128 KiB; daemon spawn argv carries system_prompt
+  // as a single argument (--append-system-prompt). Cap at 96 KiB so other
+  // argv (--model, --allowed-tools …) still fits.
+  const MAX_DISPATCH_SYSTEM_PROMPT_BYTES = 96 * 1024;
+  if (structured.system_prompt
+      && Buffer.byteLength(structured.system_prompt, 'utf8') > MAX_DISPATCH_SYSTEM_PROMPT_BYTES) {
+    log.warn('dispatch_system_prompt_truncated', {
+      group: resolvedGroup ? resolvedGroup.name : null,
+      original_bytes: Buffer.byteLength(structured.system_prompt, 'utf8'),
+      cap: MAX_DISPATCH_SYSTEM_PROMPT_BYTES,
+    });
+    // Truncate at a UTF-8-safe boundary. Cheap: slice at cap, then trim
+    // any partial multibyte trailer by re-encoding.
+    const buf = Buffer.from(structured.system_prompt, 'utf8').slice(0, MAX_DISPATCH_SYSTEM_PROMPT_BYTES - 64);
+    structured.system_prompt = buf.toString('utf8') + '\n\n[truncated by dispatcher: combined prompt exceeded cap]';
   }
 
   const sessionMetadata = { ...(metadata || {}), ...structured };
@@ -1572,10 +1618,14 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
 
   // vt-0225: recycle bin endpoints. GET lists soft-deleted; POST restores.
-  if (method === 'GET' && path === '/fleet/recycle-bin') {
+  // vt-0269: paginated. ?limit=&offset= (defaults 100/0, cap 500).
+  if (method === 'GET' && path.startsWith('/fleet/recycle-bin')) {
+    const u = new URL('http://x' + req.url);
+    const limit  = parseInt(u.searchParams.get('limit')  || '100', 10);
+    const offset = parseInt(u.searchParams.get('offset') || '0',  10);
     return Promise.all([
-      fleetDb.listDeletedGroups(ctx.db),
-      require('./fleet-workflow-db').listDeletedWorkflows(ctx.db),
+      fleetDb.listDeletedGroups(ctx.db, { limit, offset }),
+      require('./fleet-workflow-db').listDeletedWorkflows(ctx.db, { limit, offset }),
     ]).then(([groups, workflows]) => send(res, 200, { groups, workflows }))
       .catch(e => send(res, 500, { error: e.message }));
   }
@@ -1594,8 +1644,13 @@ function dispatchHttp(req, res, ctx) {
 
   // vt-0259: Agent roles. List is viewer; mutations are admin (handled by
   // the outer isAdminPath gate). assign/unassign hang under /fleet/groups/.
+  // vt-0267: viewer bearer gets the redacted shape (prompt → prompt_sha,
+  // prompt_bytes) so it never sees the raw prompt text. Admin bearer
+  // gets the full row.
   if (method === 'GET'    && path === '/fleet/agent-roles') {
-    return fleetDb.listAgentRoles(ctx.db).then(rs => send(res, 200, rs))
+    const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
+    const fn = isAdmin ? fleetDb.listAgentRoles : fleetDb.listAgentRolesSummary;
+    return fn(ctx.db).then(rs => send(res, 200, rs))
       .catch(e => send(res, 500, { error: e.message }));
   }
   if (method === 'POST'   && path === '/fleet/agent-roles') {
@@ -1621,9 +1676,21 @@ function dispatchHttp(req, res, ctx) {
   }
   if (method === 'GET'    && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
     const id = path.split('/')[3];
-    return fleetDb.getAgentRole(ctx.db, id).then(r =>
-      r ? send(res, 200, r) : send(res, 404, { error: 'role not found' })
-    ).catch(e => send(res, 500, { error: e.message }));
+    const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
+    return fleetDb.getAgentRole(ctx.db, id).then(r => {
+      if (!r) return send(res, 404, { error: 'role not found' });
+      if (isAdmin) return send(res, 200, r);
+      // vt-0267: redact prompt for viewer; keep sha + size for "is this the
+      // role I think it is" UI checks.
+      const crypto = require('node:crypto');
+      const summary = {
+        ...r,
+        prompt_bytes: Buffer.byteLength(r.prompt || '', 'utf8'),
+        prompt_sha: crypto.createHash('sha256').update(r.prompt || '').digest('hex'),
+      };
+      delete summary.prompt;
+      send(res, 200, summary);
+    }).catch(e => send(res, 500, { error: e.message }));
   }
   if (method === 'PATCH'  && new RegExp(`^/fleet/agent-roles/${SID_RE}$`, 'i').test(path)) {
     const id = path.split('/')[3];
@@ -1645,8 +1712,19 @@ function dispatchHttp(req, res, ctx) {
   }
   if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
     const id = path.split('/')[3];
-    return fleetDb.listGroupRoles(ctx.db, id).then(rs => send(res, 200, rs))
-      .catch(e => send(res, 500, { error: e.message }));
+    const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
+    return fleetDb.listGroupRoles(ctx.db, id).then(rs => {
+      if (!isAdmin) {
+        // vt-0267: redact prompt for viewers.
+        const crypto = require('node:crypto');
+        for (const r of rs) {
+          r.prompt_bytes = Buffer.byteLength(r.prompt || '', 'utf8');
+          r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
+          delete r.prompt;
+        }
+      }
+      send(res, 200, rs);
+    }).catch(e => send(res, 500, { error: e.message }));
   }
   if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
     const groupId = path.split('/')[3];
@@ -1656,6 +1734,30 @@ function dispatchHttp(req, res, ctx) {
       if (!role) return send(res, 404, { error: 'role not found' });
       const grp = await fleetDb.getGroup(ctx.db, groupId);
       if (!grp) return send(res, 404, { error: 'group not found' });
+      // vt-0264: cap composition. Hard limits: ≤ MAX_ROLES_PER_GROUP roles,
+      // and combined-prompt size (brain + roles + 4 KiB headroom for the
+      // per-call refinement) ≤ MAX_COMBINED_BYTES. Reject loudly at
+      // assignment, not at dispatch (ARG_MAX-on-daemon is a confusing
+      // place to debug "too many roles").
+      const MAX_ROLES_PER_GROUP = 8;
+      const MAX_COMBINED_BYTES  = 65536;
+      const existing = await fleetDb.listGroupRoles(ctx.db, groupId);
+      if (existing.some(r => r.id === b.role_id)) {
+        // Re-assigning an existing role just updates position — skip cap.
+      } else if (existing.length >= MAX_ROLES_PER_GROUP) {
+        return send(res, 422, { error: `group already has ${MAX_ROLES_PER_GROUP} roles (max)` });
+      } else {
+        const brainBytes = Buffer.byteLength(grp.brain_prompt || '', 'utf8');
+        const existingBytes = existing.reduce((sum, r) => sum + Buffer.byteLength(r.prompt || '', 'utf8'), 0);
+        const newBytes = Buffer.byteLength(role.prompt || '', 'utf8');
+        const headroom = 4096;
+        const total = brainBytes + existingBytes + newBytes + headroom;
+        if (total > MAX_COMBINED_BYTES) {
+          return send(res, 422, {
+            error: `combined prompt would exceed ${MAX_COMBINED_BYTES} bytes (current ${brainBytes + existingBytes}, role adds ${newBytes}, +${headroom} headroom)`,
+          });
+        }
+      }
       await fleetDb.assignRoleToGroup(ctx.db, groupId, b.role_id,
         Number.isFinite(b.position) ? b.position : 0);
       send(res, 201, { group_id: groupId, role_id: b.role_id });

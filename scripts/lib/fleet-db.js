@@ -56,13 +56,18 @@ async function listGroups(c, { includeDeleted = false } = {}) {
   return rows;
 }
 // vt-0225: soft-delete instead of hard. listDeletedGroups + restoreGroup.
-async function listDeletedGroups(c) {
+// vt-0269: paginated. limit clamped to [1, 500].
+async function listDeletedGroups(c, { limit = 100, offset = 0 } = {}) {
+  const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
+  const off = Math.max(0, parseInt(offset, 10) || 0);
   const { rows } = await c.query(
     `SELECT id, name, description, color, deleted_at
        FROM fleet_groups
       WHERE deleted_at IS NOT NULL
-      ORDER BY deleted_at DESC`);
-  return rows;
+      ORDER BY deleted_at DESC
+      LIMIT $1 OFFSET $2`, [lim, off]);
+  const cnt = await c.query(`SELECT count(*)::int AS n FROM fleet_groups WHERE deleted_at IS NOT NULL`);
+  return { rows, total: cnt.rows[0].n, limit: lim, offset: off };
 }
 async function restoreGroup(c, id) {
   const { rows } = await c.query(
@@ -514,6 +519,26 @@ async function listAgentRoles(c, { includeDeleted = false } = {}) {
   return rows;
 }
 
+// vt-0267: viewer-safe summary — prompt body redacted, sha+length kept
+// so the UI can show "12 KB / sha 9f3a…" without leaking ops-sensitive
+// instructions (e.g. internal credential paths, system layout hints).
+// SHA is computed in Node to avoid pulling in pgcrypto.
+async function listAgentRolesSummary(c, { includeDeleted = false } = {}) {
+  const crypto = require('node:crypto');
+  const { rows } = await c.query(
+    `SELECT id, name, description, prompt, default_model, allowed_tools,
+            octet_length(prompt) AS prompt_bytes,
+            created_at, updated_at, deleted_at
+       FROM fleet_agent_roles
+       ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'}
+       ORDER BY lower(name) ASC`);
+  for (const r of rows) {
+    r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
+    delete r.prompt;
+  }
+  return rows;
+}
+
 async function getAgentRole(c, id) {
   const { rows } = await c.query(
     `SELECT id, name, description, prompt, default_model, allowed_tools, created_at, updated_at, deleted_at
@@ -596,4 +621,6 @@ module.exports = {
   // vt-0259
   listAgentRoles, getAgentRole, createAgentRole, updateAgentRole, deleteAgentRole,
   listGroupRoles, assignRoleToGroup, unassignRoleFromGroup,
+  // vt-0267
+  listAgentRolesSummary,
 };

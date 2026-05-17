@@ -1685,8 +1685,12 @@
       return;
     }
     const fmt = (iso) => iso ? new Date(iso).toLocaleString() : '—';
-    const groups = (data && data.groups) || [];
-    const workflows = (data && data.workflows) || [];
+    // vt-0269: endpoints now return {rows, total, limit, offset}.
+    // Older shape (array) still tolerated for graceful upgrades.
+    const groups    = Array.isArray(data?.groups)    ? data.groups
+                    : (data?.groups?.rows    || []);
+    const workflows = Array.isArray(data?.workflows) ? data.workflows
+                    : (data?.workflows?.rows || []);
     grpBody.innerHTML = groups.length === 0
       ? `<tr><td colspan="3" style="text-align:center; padding:1em; color:var(--text-faint)">empty</td></tr>`
       : groups.map(g => `<tr>
@@ -1793,20 +1797,59 @@
       return;
     }
     if (!dlg.open) return;
-    const assignedSet = new Set(assigned.map(r => r.id));
-    body.innerHTML = allRoles.length === 0
+    const assignedById = new Map(assigned.map(r => [r.id, r]));
+    // vt-0268: composition order matters. Show assigned roles first (in
+    // position order, with up/down buttons), then unassigned, then a hint.
+    const unassigned = allRoles.filter(r => !assignedById.has(r.id));
+    body.innerHTML = (allRoles.length === 0
       ? `<p style="color:var(--text-faint)">no roles defined yet — create one in Settings → roles.</p>`
-      : allRoles.map(r => `
-          <div class="ar-role-row ${assignedSet.has(r.id) ? 'attached' : ''}">
-            <strong>${esc(r.name)}</strong>
-            <span class="ar-role-desc">${esc(r.description || '')}</span>
-            ${assignedSet.has(r.id)
-              ? `<button class="btn-row" data-unassign="${esc(r.id)}">remove</button>`
-              : `<button class="btn-row" data-assign="${esc(r.id)}">assign</button>`}
-          </div>`).join('');
+      : (assigned.length
+          ? `<div class="lbl" style="margin:.3em 0">ASSIGNED (composition order, top → bottom)</div>` +
+            assigned.map((r, idx) => `
+              <div class="ar-role-row attached" data-pos="${idx}">
+                <span class="lbl" style="min-width:1.8em;text-align:right">${idx + 1}.</span>
+                <strong>${esc(r.name)}</strong>
+                <span class="ar-role-desc">${esc(r.description || '')}</span>
+                <button class="btn-row" data-up="${esc(r.id)}" ${idx === 0 ? 'disabled' : ''}>↑</button>
+                <button class="btn-row" data-down="${esc(r.id)}" ${idx === assigned.length - 1 ? 'disabled' : ''}>↓</button>
+                <button class="btn-row" data-unassign="${esc(r.id)}">remove</button>
+              </div>`).join('')
+          : `<div class="lbl" style="margin:.3em 0;color:var(--text-faint)">no roles assigned yet</div>`)
+      + (unassigned.length
+          ? `<div class="lbl" style="margin:1em 0 .3em">AVAILABLE</div>` +
+            unassigned.map(r => `
+              <div class="ar-role-row">
+                <strong>${esc(r.name)}</strong>
+                <span class="ar-role-desc">${esc(r.description || '')}</span>
+                <button class="btn-row" data-assign="${esc(r.id)}">assign</button>
+              </div>`).join('')
+          : ''));
+    // Up/down: re-POST assignments with new positions. Backend's
+    // assignRoleToGroup is upsert-with-position, so we just renumber.
+    async function reorderTo(newOrder) {
+      try {
+        await Promise.all(newOrder.map((r, i) =>
+          api('POST', `/groups/${group.id}/roles`, { role_id: r.id, position: i })));
+        openGroupRolesPicker(group);
+      } catch (e) { alert(e.message); }
+    }
+    body.querySelectorAll('[data-up]').forEach(b => b.onclick = () => {
+      const idx = assigned.findIndex(r => r.id === b.dataset.up);
+      if (idx <= 0) return;
+      const next = assigned.slice();
+      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+      reorderTo(next);
+    });
+    body.querySelectorAll('[data-down]').forEach(b => b.onclick = () => {
+      const idx = assigned.findIndex(r => r.id === b.dataset.down);
+      if (idx < 0 || idx >= assigned.length - 1) return;
+      const next = assigned.slice();
+      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+      reorderTo(next);
+    });
     body.querySelectorAll('[data-assign]').forEach(b => b.onclick = async () => {
       b.disabled = true;
-      try { await api('POST', `/groups/${group.id}/roles`, { role_id: b.dataset.assign }); openGroupRolesPicker(group); }
+      try { await api('POST', `/groups/${group.id}/roles`, { role_id: b.dataset.assign, position: assigned.length }); openGroupRolesPicker(group); }
       catch (e) { alert(e.message); b.disabled = false; }
     });
     body.querySelectorAll('[data-unassign]').forEach(b => b.onclick = async () => {

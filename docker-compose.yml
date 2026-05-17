@@ -1,8 +1,15 @@
 x-logging: &default-logging
-  driver: json-file
+  # vt-0265: switched from json-file to local. The local driver
+  # natively gzips rotated chunks and the 'max-size' + 'max-file'
+  # combo is honoured properly without needing host-level logrotate
+  # copytruncate (which lost lines and confused Promtail/Vector
+  # readers that follow file positions). 7 files × 10 MiB ≈ ~70 MiB
+  # uncompressed budget per container, compressed in practice 5-15 MiB.
+  # `docker logs` keeps working transparently.
+  driver: local
   options:
     max-size: "10m"
-    max-file: "3"
+    max-file: "7"
 
 services:
   vault-rag-ollama:

@@ -63,14 +63,46 @@ echo "Pending commits:"
 git log --oneline "$LOCAL..$REMOTE" | head -20
 echo
 
-# What migrations are new?
+# vt-0263: detect new migrations by diffing on-disk sql/*.sql against the
+# .migrations-applied sidecar. The earlier `git diff $LOCAL..$REMOTE`
+# approach silently skipped migrations on re-runs where $LOCAL was already
+# at $REMOTE (we hit this with sql/025-agent-roles.sql — the new file was
+# in the working tree but git diff found nothing, so the apply block was
+# never entered).
+MIGRATIONS_APPLIED_FILE=".migrations-applied"
 NEW_MIGRATIONS=()
-for f in $(git diff --name-only "$LOCAL..$REMOTE" -- 'sql/*.sql' 2>/dev/null); do
-  [[ -f "$f" ]] || continue
-  NEW_MIGRATIONS+=("$f")
+declare -A _applied=()
+# Seed the sidecar from the DB if it doesn't exist. On a brand-new host
+# the rag-api boot run already ran every sql/*.sql, so they're effectively
+# applied — record them as such, so the first upgrade after install does
+# not try to replay 001-NNN. We detect "DB is initialised" by probing for
+# vault_audit (the first table created in 001-init.sql).
+if [[ ! -f "$MIGRATIONS_APPLIED_FILE" ]]; then
+  if docker exec -i vault-rag-postgres psql -U postgres -d vault_rag -tAc \
+       "SELECT to_regclass('vault_audit')::text" 2>/dev/null | grep -q '^vault_audit$'; then
+    log "seeding $MIGRATIONS_APPLIED_FILE from existing sql/*.sql (one-time)"
+    { echo "# vt-0263 sidecar — one entry per applied migration filename";
+      for f in sql/*.sql; do basename "$f"; done | sort; } > "$MIGRATIONS_APPLIED_FILE"
+  fi
+fi
+if [[ -f "$MIGRATIONS_APPLIED_FILE" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+    _applied["$line"]=1
+  done < "$MIGRATIONS_APPLIED_FILE"
+fi
+shopt -s nullglob
+for f in sql/*.sql; do
+  base=$(basename "$f")
+  if [[ -z "${_applied[$base]:-}" ]]; then
+    NEW_MIGRATIONS+=("$f")
+  fi
 done
+shopt -u nullglob
+# Sort by filename (lexicographic == numeric prefix on our scheme: 001-, 002-, …)
 if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
-  echo "New migrations to apply:"
+  IFS=$'\n' NEW_MIGRATIONS=($(sort <<<"${NEW_MIGRATIONS[*]}")); unset IFS
+  echo "New migrations to apply (vs $MIGRATIONS_APPLIED_FILE):"
   printf '  %s\n' "${NEW_MIGRATIONS[@]}"
   echo
 fi
@@ -166,6 +198,8 @@ if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
       warn "  docker compose -f $REPO_DIR/docker-compose.yml up -d --no-deps vault-rag-api vault-rag-secrets"
       exit 1
     fi
+    # vt-0263: record successful migration so re-runs don't replay or skip.
+    echo "$(basename "$sql")" >> "$MIGRATIONS_APPLIED_FILE"
   done
   ok "migrations applied"
 fi

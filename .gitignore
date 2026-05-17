@@ -11,3 +11,5 @@ backups/
 *.bak.*
 Caddyfile
 credentials/
+.caddyfile.tmpl.applied.sha
+.migrations-applied

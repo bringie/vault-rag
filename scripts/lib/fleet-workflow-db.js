@@ -25,11 +25,16 @@ async function listWorkflows(c, { includeDeleted = false } = {}) {
   return rows;
 }
 // vt-0225: trash bin helpers.
-async function listDeletedWorkflows(c) {
+// vt-0269: paginated. limit clamped to [1, 500].
+async function listDeletedWorkflows(c, { limit = 100, offset = 0 } = {}) {
+  const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
+  const off = Math.max(0, parseInt(offset, 10) || 0);
   const { rows } = await c.query(
     `SELECT id, name, description, deleted_at FROM fleet_workflows
-      WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`);
-  return rows;
+      WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC
+      LIMIT $1 OFFSET $2`, [lim, off]);
+  const cnt = await c.query(`SELECT count(*)::int AS n FROM fleet_workflows WHERE deleted_at IS NOT NULL`);
+  return { rows, total: cnt.rows[0].n, limit: lim, offset: off };
 }
 async function restoreWorkflow(c, id) {
   const { rows } = await c.query(
