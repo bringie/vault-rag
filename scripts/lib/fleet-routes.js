@@ -864,46 +864,9 @@ async function handleCleanupSessions({ req, res, body, ctx }) {
 
 // vt-0287 slice 5: host file ops moved to scripts/lib/fleet/hosts.js.
 
-// Strip both CSI sequences (\x1b[...) — including private-prefix variants like
-// \x1b[?2004h — and 2-byte ESC sequences (\x1b7, \x1b8, \x1b], etc.), and OSC
-// strings. Also flattens TUI cursor-control noise that survives ANSI removal:
-//   - bare \r (cursor-to-col-0) → drop, otherwise renders as newline in <pre>
-//   - \b (backspace) → drop
-//   - BEL → drop
-// Result: readable for archive transcript view. For full TUI fidelity use
-// xterm replay (see vt-0116 follow-up).
-function stripAnsi(s) {
-  return s
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')   // OSC ...BEL or ...ST
-    .replace(/\x1b\[[\d;?<>]*[A-Za-z]/g, '')              // CSI ...final
-    .replace(/\x1b[()][\x20-\x7e]/g, '')                  // charset designate
-    .replace(/\x1b[78=>cDEHMNOPVZ\\]/g, '')               // simple 2-byte ESC
-    .replace(/\r\n/g, '\n')                               // CRLF → LF
-    .replace(/\r/g, '')                                   // lone CR drop
-    .replace(/[\x07\x08]/g, '');                          // BEL + BS drop
-}
-
-async function handleTranscriptTxt(req, res, ctx) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/transcript\\.txt$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  const rows = await fleetDb.readTranscript(ctx.db, m[1], { sinceSeq: 0, kind: 'pty_out' });
-  const raw = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8');
-  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-  res.end(stripAnsi(raw));
-}
-
-// vt-0117: raw transcript bytes — for xterm replay in the archive viewer.
-// No stripping; full ANSI/escape stream so TUIs render correctly.
-async function handleTranscriptBin(req, res, ctx) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/transcript\\.bin$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  const rows = await fleetDb.readTranscript(ctx.db, m[1], { sinceSeq: 0, kind: 'pty_out' });
-  const buf = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0)));
-  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': buf.length });
-  res.end(buf);
-}
+// vt-0287 slice 7: transcript handlers moved to scripts/lib/fleet/transcripts.js.
+// stripAnsi() is re-exported by that module for dispatch handler reuse.
+const { stripAnsi } = require('./fleet/transcripts');
 
 // vt-0287 slice 2: pricing handlers moved to scripts/lib/fleet/prices.js
 // — routed via the sub-module dispatcher in dispatchHttp.
@@ -1094,6 +1057,7 @@ function _getSubRoutes() {
     require('./fleet/groups'),
     require('./fleet/hosts'),
     require('./fleet/cost'),
+    require('./fleet/transcripts'),
   ];
   const extDeps = {
     ...deps,
@@ -1275,12 +1239,8 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/kill$`, 'i').test(path)) {
     return readBody(req).then(b => handlePostKill({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
-  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/transcript\\.txt$`, 'i').test(path)) {
-    return handleTranscriptTxt(req, res, ctx);
-  }
-  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/transcript\\.bin$`, 'i').test(path)) {
-    return handleTranscriptBin(req, res, ctx);
-  }
+  // vt-0287 slice 7: transcript .txt/.bin dispatched via sub-module router
+  // (scripts/lib/fleet/transcripts.js).
 
   // Pricing
   // vt-0287 slice 2: /fleet/prices/* moved to scripts/lib/fleet/prices.js
