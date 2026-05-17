@@ -253,12 +253,6 @@ async function handleWsTicket({ req, res, body, ctx }) {
   send(res, 200, { ticket, role: requested, scope, expires_in_ms: WS_TICKET_TTL_MS });
 }
 
-function pathMatch(url, prefix) {
-  const path = url.split('?')[0];
-  if (!path.startsWith(prefix + '/')) return null;
-  return path.slice(prefix.length + 1);
-}
-
 const SID_RE = '[0-9a-f-]{36}';
 
 // vt-0284: known Claude/Codex tool names. Validated at role
@@ -674,199 +668,18 @@ async function handleDispatch({ req, res, body, ctx }) {
   });
 }
 
-async function handleListSessions({ req, res, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const filter = {
-    hostId: url.searchParams.get('host_id') || undefined,
-    status: url.searchParams.get('status') || undefined,
-    since:  url.searchParams.get('since')   || undefined,
-    until:  url.searchParams.get('until')   || undefined,
-    query:  url.searchParams.get('q')       || undefined,
-    limit:  parseInt(url.searchParams.get('limit') || '100', 10),
-    offset: parseInt(url.searchParams.get('offset') || '0', 10),
-  };
-  if (url.searchParams.get('with_count') === '1') {
-    const [rows, total] = await Promise.all([
-      fleetDb.listSessions(ctx.db, filter),
-      fleetDb.countSessions(ctx.db, filter),
-    ]);
-    send(res, 200, { rows, total, limit: filter.limit, offset: filter.offset });
-  } else {
-    const rows = await fleetDb.listSessions(ctx.db, filter);
-    send(res, 200, rows);
-  }
-}
-
-async function handlePatchSession({ req, res, body, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  if (!body) return send(res, 422, { error: 'body required' });
-  const patch = {};
-  if ('notes' in body) patch.notes = body.notes;
-  if ('label' in body) patch.label = body.label;
-  const s = await fleetDb.updateSession(ctx.db, m[1], patch);
-  if (!s) return send(res, 404, { error: 'session not found' });
-  send(res, 200, s);
-}
-
-async function handleBroadcast({ req, res, body, ctx }) {
-  if (!body) return send(res, 422, { error: 'body required' });
-  const { tag, group, cwd, args, env, label, metadata } = body;
-  if (!tag && !group && !body.all) return send(res, 422, { error: 'tag|group|all required' });
-  const all = await fleetDb.listHosts(ctx.db);
-  let candidates = all.filter(h => h.status === 'online');
-  if (tag) {
-    // Effective tag: direct h.capabilities ∪ group labels — matches handleDispatch (vt-0078)
-    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
-    const taggedIds = new Set(taggedHosts.map(h => h.id));
-    candidates = candidates.filter(h => taggedIds.has(h.id));
-  }
-  if (group) {
-    const g = await fleetDb.getGroupByName(ctx.db, group);
-    if (!g) return send(res, 404, { error: `group not found: ${group}` });
-    const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
-    const memberIds = new Set(members.map(h => h.id));
-    candidates = candidates.filter(h => memberIds.has(h.id));
-  }
-  if (!candidates.length) return send(res, 404, { error: 'no matching online hosts' });
-  const results = [];
-  for (const host of candidates) {
-    try {
-      const s = await fleetDb.createSession(ctx.db, {
-        hostId: host.id, cwd: cwd || '~',
-        args: args || [], env: env || {},
-        createdBy: 'broadcast',
-        label: label || (tag ? `bcast:${tag}` : 'bcast:all'),
-        metadata: { ...(metadata || {}), broadcast: true, tag: tag || null },
-      });
-      if (ctx.bus) ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env });
-      results.push({ session_id: s.id, host_id: host.id, host_name: host.name, display_name: host.display_name, ok: true });
-    } catch (e) {
-      results.push({ host_id: host.id, host_name: host.name, ok: false, error: e.message });
-    }
-  }
-  send(res, 201, { count: results.length, results });
-}
-
-// vt-0287 slice 6: cost + timeline handlers moved to
-// scripts/lib/fleet/cost.js — dispatched via sub-module router.
-
-// Spawn schema (vt-0102). Two shapes accepted:
-//   Legacy:  { host_id, cwd, args:[...], env? }
-//   Generic: { host_id, cwd, agent?, prompt?, model?, system_prompt?,
-//              allowed_tools?, resume_session_id?, dangerous?, args?, env? }
-// Server stores raw fields in fleet_sessions.args/metadata; daemon picks
-// backend on its side via vt-0096 contract.
-const STRUCTURED_SPAWN_FIELDS = [
-  'agent', 'prompt', 'model', 'system_prompt',
-  'allowed_tools', 'resume_session_id', 'dangerous',
-];
-async function handleCreateSession({ body, res, ctx }) {
-  if (!body || !body.host_id) return send(res, 422, { error: 'host_id required' });
-  if (!body.cwd) return send(res, 422, { error: 'cwd required' });
-  const host = await fleetDb.getHost(ctx.db, body.host_id);
-  if (!host) return send(res, 422, { error: 'host_id not found' });
-  // Carry structured fields into metadata so the row remains the source of
-  // truth for a future re-run (POST /sessions with rerun_of: <sid>).
-  const metadata = { ...(body.metadata || {}) };
-  for (const k of STRUCTURED_SPAWN_FIELDS) {
-    if (body[k] != null) metadata[k] = body[k];
-  }
-  const s = await fleetDb.createSession(ctx.db, {
-    hostId: body.host_id, cwd: body.cwd,
-    args: body.args, env: body.env,
-    createdBy: body.created_by, label: body.label, metadata,
-  });
-  if (ctx.bus) {
-    // Forward both legacy args and structured fields. The daemon decides
-    // which path to take via hasStructuredFields() (see ws-client.js).
-    const payload = {
-      session_id: s.id, cwd: s.cwd, args: s.args, env: s.env || {},
-    };
-    for (const k of STRUCTURED_SPAWN_FIELDS) {
-      if (body[k] != null) payload[k] = body[k];
-    }
-    ctx.bus.requestSpawn(host.id, payload);
-  }
-  send(res, 201, { session_id: s.id });
-}
-
-async function handleGetSession({ req, res, ctx }) {
-  const id = pathMatch(req.url, '/fleet/sessions');
-  const s = await fleetDb.getSession(ctx.db, id);
-  if (!s) return send(res, 404, { error: 'session not found' });
-  send(res, 200, s);
-}
-
-async function handlePostInput({ req, res, body, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/input$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  if (!body || typeof body.data !== 'string') return send(res, 422, { error: 'data required' });
-  const s = await fleetDb.getSession(ctx.db, m[1]);
-  if (!s) return send(res, 404, { error: 'session not found' });
-  if (ctx.bus) ctx.bus.sendInput(s.id, s.host_id, body.data);
-  res.writeHead(204); res.end();
-}
-
-async function handlePostKill({ req, res, body, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/kill$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  const signal = (body && body.signal) || 'SIGTERM';
-  const s = await fleetDb.getSession(ctx.db, m[1]);
-  if (!s) return send(res, 404, { error: 'session not found' });
-  // Orphaned/pending sessions: pty is already gone (daemon restart). Mark dead
-  // in DB and broadcast session_exit so any attached viewer unblocks.
-  if (s.status === 'orphaned' || s.status === 'pending') {
-    await fleetDb.markSessionExited(ctx.db, s.id, -1, 'killed');
-    if (ctx.bus) ctx.bus.broadcastViewers(s.id, { type: 'session_exit', exit_code: -1 });
-    res.writeHead(204); res.end();
-    return;
-  }
-  if (s.status === 'exited' || s.status === 'killed') {
-    res.writeHead(204); res.end();
-    return;
-  }
-  // Running session: forward kill to daemon. If host offline, mark as killed.
-  const sent = ctx.bus && ctx.bus.sendKill(s.id, s.host_id, signal);
-  if (!sent) {
-    await fleetDb.markSessionExited(ctx.db, s.id, -1, 'killed');
-    if (ctx.bus) ctx.bus.broadcastViewers(s.id, { type: 'session_exit', exit_code: -1 });
-  }
-  res.writeHead(204); res.end();
-}
-
-// ============ Groups ============
-
-// vt-0287 slice 4: group CRUD + host membership moved to
-// scripts/lib/fleet/groups.js (sub-module dispatch).
-
-// Allowlist for older_than: avoids users bypassing intent (e.g. '0 seconds'
-// would delete every closed session). Also blocks confusing Postgres errors
-// from malformed interval strings leaking out of the 500 handler.
-const CLEANUP_OLDER_THAN_ALLOWED = new Set([
-  '1 hour', '6 hours', '12 hours', '1 day', '3 days', '7 days', '30 days',
-]);
-async function handleCleanupSessions({ req, res, body, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const olderThan = (body && body.older_than) || url.searchParams.get('older_than') || '1 hour';
-  if (!CLEANUP_OLDER_THAN_ALLOWED.has(olderThan)) {
-    return send(res, 422, {
-      error: 'invalid older_than',
-      allowed: [...CLEANUP_OLDER_THAN_ALLOWED],
-    });
-  }
-  const r = await fleetDb.deleteClosedSessions(ctx.db, olderThan);
-  send(res, 200, { deleted: r.deleted, limited: r.limited, older_than: olderThan });
-}
+// vt-0287 slice 6: cost + timeline handlers moved to scripts/lib/fleet/cost.js.
+// vt-0287 slice 8: session CRUD + broadcast + cleanup moved to
+// scripts/lib/fleet/sessions.js.
 
 // vt-0287 slice 5: host file ops moved to scripts/lib/fleet/hosts.js.
 
 // vt-0287 slice 7: transcript handlers moved to scripts/lib/fleet/transcripts.js.
 // stripAnsi() is re-exported by that module for dispatch handler reuse.
 const { stripAnsi } = require('./fleet/transcripts');
+// vt-0287 slice 8: session handlers moved to scripts/lib/fleet/sessions.js.
+// STRUCTURED_SPAWN_FIELDS re-exported for handleDispatch (still inline).
+const { STRUCTURED_SPAWN_FIELDS } = require('./fleet/sessions');
 
 // vt-0287 slice 2: pricing handlers moved to scripts/lib/fleet/prices.js
 // — routed via the sub-module dispatcher in dispatchHttp.
@@ -1058,6 +871,7 @@ function _getSubRoutes() {
     require('./fleet/hosts'),
     require('./fleet/cost'),
     require('./fleet/transcripts'),
+    require('./fleet/sessions'),
   ];
   const extDeps = {
     ...deps,
@@ -1205,42 +1019,12 @@ function dispatchHttp(req, res, ctx) {
     return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
-  // sessions
-  if (method === 'GET'  && path === '/fleet/sessions') return handleListSessions({ req, res, ctx });
-  if (method === 'POST' && path === '/fleet/sessions') {
-    return readBody(req).then(b => handleCreateSession({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST' && path === '/fleet/sessions/cleanup') {
-    return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'PATCH' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchSession({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST' && path === '/fleet/broadcast') {
-    return readBody(req).then(b => handleBroadcast({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
+  // vt-0287 slice 8: /fleet/sessions CRUD + cleanup + /fleet/broadcast +
+  // session :id GET/PATCH/input/kill dispatched via sub-module router
+  // (scripts/lib/fleet/sessions.js).
   // vt-0287 slice 6: /fleet/cost/* + /fleet/sessions/:id/{cost,timeline} +
-  // /fleet/sessions/{cost-batch,by-bucket} dispatched via sub-module router
-  // (scripts/lib/fleet/cost.js).
-
-  // vt-0287: recycle-bin (vt-0225), feature flags (vt-0311), agent-roles
-  // (vt-0259/0264/0267/0271/0284), and group→role assignment have all
-  // moved to scripts/lib/fleet/{recycle,features,agent-roles}.js. The
-  // sub-module router above (line ~1730) dispatches them BEFORE this
-  // point, so reaching here means an unhandled method/path that should
-  // fall through to the next group of inline handlers below.
-
-  // vt-0287 slice 4: groups CRUD + host membership dispatched via the
-  // sub-module table above (scripts/lib/fleet/groups.js).
-  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) return handleGetSession({ req, res, ctx });
-  if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/input$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePostInput({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/kill$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePostKill({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  // vt-0287 slice 7: transcript .txt/.bin dispatched via sub-module router
-  // (scripts/lib/fleet/transcripts.js).
+  // /fleet/sessions/{cost-batch,by-bucket} (scripts/lib/fleet/cost.js).
+  // vt-0287 slice 7: transcript .txt/.bin (scripts/lib/fleet/transcripts.js).
 
   // Pricing
   // vt-0287 slice 2: /fleet/prices/* moved to scripts/lib/fleet/prices.js
