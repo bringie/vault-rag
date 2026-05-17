@@ -206,14 +206,24 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
     {
       method: 'GET',
       pattern: new RegExp(`^/fleet/hosts/(${SID_RE})/roles$`, 'i'),
-      // GET is viewer-readable per the admin:false override; prompts
-      // are redacted for viewer by listAgentRoles itself in vt-0267.
+      // GET is viewer-readable per the admin:false override. vt-0376:
+      // prompt field is admin-only (vt-0267 contract — peer endpoint at
+      // /fleet/groups/:id/roles enforces this); previous comment was
+      // wrong. Mirror the group-roles redaction inline here.
       admin: false,
       handler(req, res, ctx, match) {
         const hostId = match[1];
-        return fleetDb.listHostRoles(ctx.db, hostId)
-          .then(rs => send(res, 200, rs))
-          .catch(e => send(res, 500, { error: e.message }));
+        const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
+        return fleetDb.listHostRoles(ctx.db, hostId).then(rs => {
+          if (!isAdmin) {
+            for (const r of rs) {
+              r.prompt_bytes = Buffer.byteLength(r.prompt || '', 'utf8');
+              r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
+              delete r.prompt;
+            }
+          }
+          send(res, 200, rs);
+        }).catch(e => send(res, 500, { error: e.message }));
       },
     },
     {
@@ -266,17 +276,25 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
     },
     {
       // GET resolved effective roles — for the UI to render what WILL
-      // actually be applied at spawn (group-replaces-host). Useful for
-      // the pixel-office role-badge that needs to show the effective
-      // role, not just the locally-assigned one.
+      // actually be applied at spawn (group-replaces-host). Same redaction
+      // as the /roles endpoint above: viewer gets prompt_bytes + sha,
+      // admin gets the raw prompt.
       method: 'GET',
       pattern: new RegExp(`^/fleet/hosts/(${SID_RE})/roles/effective$`, 'i'),
       admin: false,
       handler(req, res, ctx, match) {
         const hostId = match[1];
-        return fleetDb.resolveEffectiveRoles(ctx.db, hostId)
-          .then(rs => send(res, 200, rs))
-          .catch(e => send(res, 500, { error: e.message }));
+        const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
+        return fleetDb.resolveEffectiveRoles(ctx.db, hostId).then(rs => {
+          if (!isAdmin) {
+            for (const r of rs) {
+              r.prompt_bytes = Buffer.byteLength(r.prompt || '', 'utf8');
+              r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
+              delete r.prompt;
+            }
+          }
+          send(res, 200, rs);
+        }).catch(e => send(res, 500, { error: e.message }));
       },
     },
   ];

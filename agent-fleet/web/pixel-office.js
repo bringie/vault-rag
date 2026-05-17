@@ -16,9 +16,10 @@
 // not fleet-wide events).
 (function () {
   function token() { return localStorage.fleetToken || ''; }
-  async function api(path) {
+  async function api(path, { signal } = {}) {
     const r = await fetch('/fleet' + path, {
       headers: { authorization: `Bearer ${token()}` },
+      signal,
     });
     if (!r.ok) throw new Error(`${r.status}: ${path}`);
     return r.json();
@@ -53,6 +54,12 @@
   // vt-0375: per-avatar animation state — drives idle bob, typing wiggle,
   // and the "transition emoji" (e.g. ✅ when a session just exited).
   let _animState = {};      // host_id → { startedAt, lastRunning, emoji?, emojiUntil? }
+  // vt-0376: in-flight guard + abort controller so a slow API doesn't let
+  // pollers stack and overwrite each other's state last-arrival-wins.
+  let _inFlight = false;
+  let _pollAbort = null;
+  let _lastSuccess = 0;     // performance.now() — drives stale indicator
+  let _visHandler = null;   // pause poll + rAF when tab hidden
   const NOW = () => performance.now();
 
   // -------------------------------------------------------------------------
@@ -98,25 +105,51 @@
     updateStatus('— loading —');
     await refreshState();
 
-    if (_pollTimer) clearInterval(_pollTimer);
-    _pollTimer = setInterval(async () => {
-      try { await refreshState(); } catch (e) { /* swallow */ }
-    }, 5000);
+    startPolling();
     _running = true;
     // vt-0375: animation loop runs at rAF — independent of the 5 s data
     // poll so idle bob + typing wiggle stay smooth between polls.
     const tick = () => {
       if (!_running) return;
-      render();
+      // rAF is throttled by the browser to ~1 Hz on hidden tabs; we still
+      // want to skip draw work entirely while hidden so the GPU is idle.
+      if (!document.hidden) render();
       _rafId = requestAnimationFrame(tick);
     };
     _rafId = requestAnimationFrame(tick);
+
+    // vt-0376: pause polling on tab hide; resume immediately on show.
+    _visHandler = () => {
+      if (document.hidden) stopPolling();
+      else if (_running && !_pollTimer) {
+        startPolling();
+        // Catch up immediately on resume — operator just came back to a
+        // potentially stale view.
+        refreshState();
+      }
+    };
+    document.addEventListener('visibilitychange', _visHandler);
+  }
+
+  function startPolling() {
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(() => refreshState(), 5000);
+  }
+
+  function stopPolling() {
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    // Cancel any in-flight fetch — the next resume call will re-issue.
+    if (_pollAbort) { try { _pollAbort.abort(); } catch {} _pollAbort = null; }
   }
 
   function closePixelOfficeView() {
     _running = false;
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    stopPolling();
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+    if (_visHandler) {
+      document.removeEventListener('visibilitychange', _visHandler);
+      _visHandler = null;
+    }
     location.hash = '#/dashboard';
   }
 
@@ -126,34 +159,60 @@
   }
 
   async function refreshState() {
-    const [hosts, sessions] = await Promise.all([
-      api('/hosts'),
-      api('/sessions?status=running'),
-    ]);
-    // Stable order — keeps each host on the same desk between polls. Sort by
-    // name so a fresh-up host slots in alphabetically rather than jumping.
-    _hosts = hosts.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    const newRunning = {};
-    for (const s of sessions) {
-      newRunning[s.host_id] = (newRunning[s.host_id] || 0) + 1;
-    }
-    // vt-0375: transition emojis — fire when running-count crosses 0 in
-    // either direction. Stays visible for 4 s above the avatar.
-    const now = NOW();
-    for (const h of _hosts) {
-      const prev = _runningById[h.id] || 0;
-      const cur  = newRunning[h.id] || 0;
-      const st = _animState[h.id] || (_animState[h.id] = { startedAt: now });
-      if (prev === 0 && cur > 0) {
-        st.emoji = '💭'; st.emojiUntil = now + 4000;
-      } else if (prev > 0 && cur === 0) {
-        st.emoji = '✅'; st.emojiUntil = now + 4000;
+    // vt-0376: in-flight guard — drop the tick if the prior one is still
+    // running. Without this, slow API (>5 s) lets pollers stack and
+    // late-arriving responses overwrite newer state last-arrival-wins.
+    if (_inFlight) return;
+    _inFlight = true;
+    _pollAbort = new AbortController();
+    const { signal } = _pollAbort;
+    try {
+      const [hosts, sessions] = await Promise.all([
+        api('/hosts', { signal }),
+        api('/sessions?status=running', { signal }),
+      ]);
+      // Stable order — keeps each host on the same desk between polls. Sort
+      // by name so a fresh-up host slots in alphabetically rather than jumping.
+      _hosts = hosts.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      const liveIds = new Set(_hosts.map(h => h.id));
+      const newRunning = {};
+      for (const s of sessions) {
+        newRunning[s.host_id] = (newRunning[s.host_id] || 0) + 1;
       }
+      // vt-0375/vt-0376: transition emojis fire when running-count crosses 0
+      // in either direction. Stays visible for 4 s above the avatar.
+      const now = NOW();
+      for (const h of _hosts) {
+        const prev = _runningById[h.id] || 0;
+        const cur  = newRunning[h.id] || 0;
+        const st = _animState[h.id] || (_animState[h.id] = { startedAt: now });
+        if (prev === 0 && cur > 0) {
+          st.emoji = '💭'; st.emojiUntil = now + 4000;
+        } else if (prev > 0 && cur === 0) {
+          st.emoji = '✅'; st.emojiUntil = now + 4000;
+        }
+      }
+      // vt-0376: reap vanished hosts to prevent unbounded _animState growth
+      // and stale transition emojis if a host id is recycled.
+      for (const id of Object.keys(_animState)) {
+        if (!liveIds.has(id)) delete _animState[id];
+      }
+      _runningById = newRunning;
+      _lastSuccess = now;
+      const online = _hosts.filter(h => h.status === 'online').length;
+      const working = _hosts.filter(h => (_runningById[h.id] || 0) > 0).length;
+      updateStatus(`${_hosts.length} hosts · ${online} online · ${working} working`);
+    } catch (e) {
+      if (e.name === 'AbortError') return;  // expected — pollers cancel on close
+      // vt-0376: surface stale-poll state so a frozen office doesn't look fresh.
+      const ageS = _lastSuccess ? Math.round((NOW() - _lastSuccess) / 1000) : -1;
+      updateStatus(ageS >= 0
+        ? `(stale · last update ${ageS}s ago) ${e.message}`
+        : `(poll error) ${e.message}`);
+    } finally {
+      _inFlight = false;
+      _pollAbort = null;
     }
-    _runningById = newRunning;
-    const online = _hosts.filter(h => h.status === 'online').length;
-    const working = _hosts.filter(h => (_runningById[h.id] || 0) > 0).length;
-    updateStatus(`${_hosts.length} hosts · ${online} online · ${working} working`);
   }
 
   // --- Drawing -------------------------------------------------------------
@@ -399,9 +458,26 @@
         }
         const j = await r.json();
         const out = (j.output || '(no output)').slice(0, 6000);
-        statusEl.innerHTML = j.session_id
-          ? `done · exit=${j.exit_code ?? '?'} · <a href="#/sessions/${esc(j.session_id)}" style="color:var(--accent)">full session</a>`
-          : `done · exit=${j.exit_code ?? '?'}`;
+        // vt-0376: build status DOM with textContent + appendChild rather
+        // than innerHTML — even though exit_code is a number from a
+        // trusted daemon today, an unsanitized template was the vector
+        // flagged by the security audit. session_id was already esc'd.
+        const exitCode = (j.exit_code == null) ? '?' : Number(j.exit_code);
+        statusEl.textContent = '';
+        statusEl.appendChild(document.createTextNode(`done · exit=${exitCode}`));
+        if (j.session_id && /^[0-9a-f-]{36}$/i.test(j.session_id)) {
+          statusEl.appendChild(document.createTextNode(' · '));
+          const a = document.createElement('a');
+          a.href = `#/sessions/${j.session_id}`;
+          a.textContent = 'full session';
+          a.style.color = 'var(--accent)';
+          statusEl.appendChild(a);
+        }
+        // vt-0376: also surface 429 Retry-After if the daemon backpressures.
+        const retry = r.headers.get('retry-after');
+        if (r.status === 429 && retry) {
+          statusEl.appendChild(document.createTextNode(` (retry in ${retry}s)`));
+        }
         resultEl.textContent = out;
         resultEl.style.display = 'block';
       } catch (e) {

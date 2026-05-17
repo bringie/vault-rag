@@ -61,6 +61,9 @@
         <button id="nav-vault"     class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
         <button id="nav-archive"   class="btn-ghost" data-i18n="nav.archive">📜 archive</button>
         <button id="nav-cost"      class="btn-ghost" data-i18n="nav.cost">$ trends</button>
+        <!-- vt-0376: pixel-office promoted to top header (was buried in footer
+             settings cluster where users couldn't find it). -->
+        <button id="nav-pixel-office" class="btn-ghost" data-i18n="nav.pixel_office">🏢 office</button>
         <!-- vt-0192: aria-label on icon buttons for screen readers -->
         <button id="reload" data-i18n-title="nav.refresh" title="refresh" aria-label="refresh" class="btn-icon">⟳</button>
         <button id="stack-dot" class="btn-ghost stack-dot" data-state="unknown" data-i18n-title="stack.dot_tip" title="docker stack status" aria-label="docker stack status"><span class="stack-dot-icon">●</span> <span class="stack-dot-text" data-i18n="stack.checking">—</span></button>
@@ -296,7 +299,7 @@
         <button id="nav-health"      class="btn-ghost" data-i18n="nav.health">🩺 health</button>
         <button id="nav-audit"       class="btn-ghost" data-i18n="nav.audit">📋 audit</button>
         <button id="nav-agent-roles" class="btn-ghost" data-i18n="nav.agent_roles">🎭 roles</button>
-        <button id="nav-pixel-office" class="btn-ghost" data-i18n="nav.pixel_office">🏢 office</button>
+        <!-- vt-0376: nav-pixel-office moved to top header — duplicate id removed. -->
         <span style="flex:1"></span>
         <!-- vt-0152: flag glyphs in lang, glyph icons in theme -->
         <select id="lang-select" class="switcher" title="language">
