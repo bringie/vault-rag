@@ -1824,14 +1824,15 @@
                 <button class="btn-row" data-assign="${esc(r.id)}">assign</button>
               </div>`).join('')
           : ''));
-    // Up/down: re-POST assignments with new positions. Backend's
-    // assignRoleToGroup is upsert-with-position, so we just renumber.
+    // vt-0271: atomic batch reorder via PUT. The earlier impl did N
+    // concurrent POSTs, which on partial failure left positions in an
+    // inconsistent state with no auto-refresh — alert + manual retry
+    // was the operator's only recourse. PUT does it in a single tx.
     async function reorderTo(newOrder) {
       try {
-        await Promise.all(newOrder.map((r, i) =>
-          api('POST', `/groups/${group.id}/roles`, { role_id: r.id, position: i })));
+        await api('PUT', `/groups/${group.id}/roles`, { role_ids: newOrder.map(r => r.id) });
         openGroupRolesPicker(group);
-      } catch (e) { alert(e.message); }
+      } catch (e) { alert(e.message); openGroupRolesPicker(group); }
     }
     body.querySelectorAll('[data-up]').forEach(b => b.onclick = () => {
       const idx = assigned.findIndex(r => r.id === b.dataset.up);

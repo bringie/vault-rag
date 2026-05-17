@@ -521,9 +521,12 @@ async function handleDispatch({ req, res, body, ctx }) {
     if (k === 'dangerous') structured[k] = Boolean(body[k]);
     else if (k === 'allowed_tools') {
       // vt-0266: array of short strings — coerce + sanitize per element.
+      // vt-0271: an explicit empty array IS a valid intent (= "deny all
+      // tools for this dispatch"). Forward it; the role-union block
+      // below will respect it and INTERSECT to [] regardless of role
+      // grants.
       if (Array.isArray(body[k])) {
-        const clean = body[k].filter(t => typeof t === 'string' && t.length <= 64);
-        if (clean.length) structured[k] = clean;
+        structured[k] = body[k].filter(t => typeof t === 'string' && t.length <= 64);
       }
     }
     else if (typeof body[k] === 'string' || typeof body[k] === 'number') structured[k] = body[k];
@@ -593,8 +596,10 @@ async function handleDispatch({ req, res, body, ctx }) {
       original_bytes: Buffer.byteLength(structured.system_prompt, 'utf8'),
       cap: MAX_DISPATCH_SYSTEM_PROMPT_BYTES,
     });
-    // Truncate at a UTF-8-safe boundary. Cheap: slice at cap, then trim
-    // any partial multibyte trailer by re-encoding.
+    // Truncate at a UTF-8-safe boundary. Buffer.slice may cut mid-codepoint;
+    // Buffer.toString('utf8') replaces the dangling bytes with U+FFFD rather
+    // than dropping silently — downstream LLM sees one '�' which is
+    // harmless. The trailing marker line is the operator-visible signal.
     const buf = Buffer.from(structured.system_prompt, 'utf8').slice(0, MAX_DISPATCH_SYSTEM_PROMPT_BYTES - 64);
     structured.system_prompt = buf.toString('utf8') + '\n\n[truncated by dispatcher: combined prompt exceeded cap]';
   }
@@ -1725,6 +1730,22 @@ function dispatchHttp(req, res, ctx) {
       }
       send(res, 200, rs);
     }).catch(e => send(res, 500, { error: e.message }));
+  }
+  // vt-0271: atomic batch reorder. Caller PUTs the full ordered role-id
+  // array; we replace all assignments for the group in a single tx.
+  if (method === 'PUT'    && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
+    const groupId = path.split('/')[3];
+    return readBody(req).then(async (b) => {
+      if (!Array.isArray(b.role_ids)) return send(res, 422, { error: 'role_ids array required' });
+      if (b.role_ids.length > 8) return send(res, 422, { error: 'max 8 roles per group' });
+      // Validate each role exists and is not soft-deleted.
+      for (const rid of b.role_ids) {
+        const r = await fleetDb.getAgentRole(ctx.db, rid);
+        if (!r) return send(res, 404, { error: `role not found: ${rid}` });
+      }
+      await fleetDb.reorderGroupRoles(ctx.db, groupId, b.role_ids);
+      send(res, 200, { group_id: groupId, role_ids: b.role_ids });
+    }).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/roles$`, 'i').test(path)) {
     const groupId = path.split('/')[3];

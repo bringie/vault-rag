@@ -397,7 +397,9 @@ body::after {
   border-top: 1px solid var(--line);
   font-size: .72em; color: var(--text-faint); letter-spacing: .12em;
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
-  height: var(--footbar-h, 64px);
+  /* vt-0271: no fallback — :root defines --footbar-h, removing it should
+     fail loud (invisible footer) rather than silently misalign main. */
+  height: var(--footbar-h);
 }
 .footbar-row {
   display: flex; align-items: center; gap: .5em; flex: 1; min-height: 0;

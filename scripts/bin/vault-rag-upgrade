@@ -199,12 +199,32 @@ if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
       exit 1
     fi
     # vt-0263: record successful migration so re-runs don't replay or skip.
-    echo "$(basename "$sql")" >> "$MIGRATIONS_APPLIED_FILE"
+    # vt-0271: explicit check — if the sidecar write fails (disk full, RO fs)
+    # we'd silently leak the applied state and replay on next run.
+    if ! echo "$(basename "$sql")" >> "$MIGRATIONS_APPLIED_FILE"; then
+      warn "wrote migration $sql to DB but failed to update $MIGRATIONS_APPLIED_FILE"
+      warn "next upgrade will attempt to re-apply $sql — abort + fix disk before re-running"
+      exit 1
+    fi
   done
   ok "migrations applied"
 fi
 
-# 6. restart hub containers (preserve dependencies — postgres stays up)
+# 5b. docker-compose.yml structural changes — if x-logging or another
+# top-level anchor changed in this update, the --no-deps recreate of
+# api+secrets in step 6 only flips those two; postgres/ollama/caddy
+# retain the OLD config until they're recreated. Detect by diffing
+# the file across $LOCAL..HEAD and force a full `docker compose up -d`
+# (without --no-deps) when docker-compose.yml moved.
+if git diff --quiet "$LOCAL..HEAD" -- docker-compose.yml; then
+  log "docker-compose.yml unchanged — restarting hub only"
+else
+  log "docker-compose.yml changed — re-applying compose to ALL containers (config flip)"
+  docker compose up -d 2>&1 | tail -8
+fi
+
+# 6. restart hub containers (preserve dependencies — postgres stays up).
+# When the compose-wide re-apply above ran, this is a no-op for api+secrets.
 log "restarting vault-rag-api + vault-rag-secrets…"
 docker compose up -d --no-deps vault-rag-api vault-rag-secrets 2>&1 | tail -5
 

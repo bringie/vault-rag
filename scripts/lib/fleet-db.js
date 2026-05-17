@@ -608,6 +608,33 @@ async function unassignRoleFromGroup(c, groupId, roleId) {
     [groupId, roleId]);
 }
 
+// vt-0271: atomic batch-reorder of group roles. Caller passes the full
+// ordered array of role IDs currently assigned; we renumber position in
+// a single transaction. Roles not in `roleIds` are removed (the UI doesn't
+// use that today, but the contract is "this is the new set"). All-or-nothing.
+async function reorderGroupRoles(c, groupId, roleIds) {
+  // pg.Pool gives connect(); single Client doesn't have .release. Reuse
+  // the withTx pattern from fleet-routes if available, else BEGIN/COMMIT
+  // directly on the passed client (tests/single-client mode).
+  const isPool = typeof c.connect === 'function' && typeof c.query === 'function' && !c.release;
+  const client = isPool ? await c.connect() : c;
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM fleet_group_roles WHERE group_id = $1', [groupId]);
+    for (let i = 0; i < roleIds.length; i++) {
+      await client.query(
+        `INSERT INTO fleet_group_roles (group_id, role_id, position) VALUES ($1,$2,$3)`,
+        [groupId, roleIds[i], i]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    if (isPool && client.release) client.release();
+  }
+}
+
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
   createSession, getSession, listSessions, countSessions, updateSession,
@@ -623,4 +650,6 @@ module.exports = {
   listGroupRoles, assignRoleToGroup, unassignRoleFromGroup,
   // vt-0267
   listAgentRolesSummary,
+  // vt-0271
+  reorderGroupRoles,
 };
