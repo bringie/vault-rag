@@ -154,7 +154,12 @@ backup() {
     # (roles), and pg_dumpall's CREATE ROLE statements fail on restore when
     # the user dumping is also a current role on the target ("cannot drop
     # current user"). The vault-rag schema lives in one DB; this is enough.
-    if ! docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" --no-password --clean --if-exists "$PG_DB" > "$BK_STAGING/pg-dumpall.sql" 2>/dev/null; then
+    # vt-0291: --lock-wait-timeout so a long migration / workflow tx can't
+    # block the backup forever. 60s long enough for normal contention,
+    # short enough that the cron job won't run past the next tick. Also
+    # dropped `2>/dev/null` — let stderr surface so silent failures are
+    # debuggable (architect verification finding).
+    if ! docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" --no-password --lock-wait-timeout=60000 --clean --if-exists "$PG_DB" > "$BK_STAGING/pg-dumpall.sql"; then
       echo "pg_dump failed (container=$PG_CONTAINER user=$PG_USER db=$PG_DB) — refusing partial backup" >&2
       rm -f "$BK_STAGING/pg-dumpall.sql"
       exit 1

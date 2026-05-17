@@ -113,11 +113,33 @@ function requireAdmin(req, res, ctx) {
 const WS_TICKET_TTL_MS = parseInt(process.env.VAULT_RAG_WS_TICKET_TTL_MS || '60000', 10);
 const WS_TICKET_DERIVATION = 'fleet-ws-ticket-v1';
 const _consumedTickets = new Map();
+// vt-0295: hard cap defends against operators who set
+// WS_TICKET_TTL_MS=86400000 for convenience and then leak xterm tabs:
+// the Map would grow unbounded across the long TTL window.
+const CONSUMED_TICKETS_MAX = 10000;
 const _consumedSweepTimer = setInterval(() => {
   const now = Date.now();
   for (const [sig, exp] of _consumedTickets) if (exp < now) _consumedTickets.delete(sig);
 }, 30_000);
 _consumedSweepTimer.unref?.();
+function _recordConsumedTicket(sigHash, exp) {
+  if (_consumedTickets.size >= CONSUMED_TICKETS_MAX) {
+    log.warn('consumed_tickets_cap_hit', { size: _consumedTickets.size, cap: CONSUMED_TICKETS_MAX });
+    // Drop the oldest by sweeping expired first; if still over, drop
+    // the head of the insertion order (FIFO via Map iteration).
+    const now = Date.now();
+    for (const [sig, e] of _consumedTickets) {
+      if (e < now) _consumedTickets.delete(sig);
+      if (_consumedTickets.size < CONSUMED_TICKETS_MAX) break;
+    }
+    while (_consumedTickets.size >= CONSUMED_TICKETS_MAX) {
+      const first = _consumedTickets.keys().next().value;
+      if (first === undefined) break;
+      _consumedTickets.delete(first);
+    }
+  }
+  _consumedTickets.set(sigHash, exp);
+}
 // vt-0187: transactional helper for write pairs that must land together.
 // Each ctx.db is a pg.Pool (vt-0186) so we acquire a dedicated client for
 // BEGIN/COMMIT — Pool.query() per call would dispatch each statement to a
@@ -1035,7 +1057,9 @@ async function handleHostFilePut({ req, res, body, ctx }) {
 }
 
 async function handleSessionCost({ req, res, ctx }) {
-  const m = req.url.match(new RegExp(`^/fleet/sessions/(${SID_RE})/cost$`, 'i'));
+  // vt-0288: strip query before regex — `$` anchor against raw req.url
+  // 404'd whenever a client added `?_=ts` etc.
+  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/sessions/(${SID_RE})/cost$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
   const s = await fleetDb.getSession(ctx.db, m[1]);
@@ -1462,7 +1486,8 @@ async function handleListPendingApprovals({ res, ctx }) {
 
 async function handleApprovalDecision({ req, res, body, ctx }) {
   // POST /fleet/workflow-runs/:runId/approvals/:nodeId  {decision, by, note}
-  const m = req.url.match(new RegExp(`^/fleet/workflow-runs/(${SID_RE})/approvals/([\\w.-]+)$`, 'i'));
+  // vt-0288: strip query before regex.
+  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/workflow-runs/(${SID_RE})/approvals/([\\w.-]+)$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   if (!body || !['approve', 'reject'].includes(body.decision)) {
     return send(res, 422, { error: 'decision must be approve or reject' });
@@ -1491,7 +1516,8 @@ async function handleFireWorkflowEvent({ req, res, body, ctx }) {
 
 async function handleSetWorkflowTrigger({ req, res, body, ctx }) {
   // PUT /fleet/workflows/:id/trigger  {every_ms?: number} or {} to clear
-  const m = req.url.match(new RegExp(`^/fleet/workflows/(${SID_RE})/trigger$`, 'i'));
+  // vt-0288: strip query before regex.
+  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/workflows/(${SID_RE})/trigger$`, 'i'));
   if (!m) return send(res, 404, { error: 'not found' });
   const trigger = body && Object.keys(body).length ? body : null;
   if (trigger && trigger.every_ms != null) {
@@ -2100,6 +2126,17 @@ async function handleDaemonWs(ws, params, ctx) {
       if (f.type === 'file_err') {
         ctx.bus.resolveFileReq(f.req_id, f, true); return;
       }
+      if (f.type === 'pty_gap') {
+        // vt-0290: daemon dropped pty_data bytes during a WS outage.
+        // Forward the marker to viewers; they render an explicit gap
+        // line instead of silently splicing post-reconnect output.
+        ctx.bus.broadcastViewers(f.session_id, {
+          type: 'pty_gap',
+          session_id: f.session_id,
+          dropped_bytes: Number(f.dropped_bytes) || 0,
+        });
+        return;
+      }
       if (f.type === 'reconciliation') {
         for (const s of (f.sessions || [])) {
           if (s.alive) {
@@ -2380,7 +2417,7 @@ function acceptWsUpgrade(ws, { role, auth, params, ctx, ticket }) {
           log.warn('ws_ticket_replay_refused', { sig: sigHash });
           return ws.close(4001, 'ticket already used');
         }
-        if (sigHash) _consumedTickets.set(sigHash, verified.exp);
+        if (sigHash) _recordConsumedTicket(sigHash, verified.exp);
         // Ticket role must match (or be a generic 'viewer' that fits the requested role).
         if (verified.role === role || verified.role === 'viewer') ticketOk = true;
       }

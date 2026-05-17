@@ -495,6 +495,32 @@ async function handleHealthDetail(req, res) {
   } catch (e) {
     out.subsystems.git = { status: 'error', detail: scrubError(e.message) };
   }
+  // vt-0300: git-sync push status from lib/git-sync (vt-0289 plumbing).
+  // Surfaces "haven't pushed in 6h" to the operator at 03:00 without
+  // forcing them to grep logs.
+  try {
+    const gitSyncStatus = gitSync.status?.() || {};
+    const now = Math.floor(Date.now() / 1000);
+    const okAge = gitSyncStatus.last_ok_epoch
+      ? now - gitSyncStatus.last_ok_epoch : null;
+    const failAge = gitSyncStatus.last_fail_epoch
+      ? now - gitSyncStatus.last_fail_epoch : null;
+    let status = 'ok';
+    let detail = okAge != null ? `last push ${okAge}s ago` : 'no successful push yet';
+    if (okAge == null || okAge > 6 * 3600) {
+      status = 'warn'; out.ok = false;
+      detail = okAge == null
+        ? 'no successful push since boot (operator may not have set VAULT_GIT_REMOTE)'
+        : `no successful push in ${Math.round(okAge / 60)} min`;
+    }
+    if (failAge != null && (okAge == null || failAge < okAge)) {
+      status = 'warn';
+      detail += ` · last failure ${failAge}s ago`;
+    }
+    out.subsystems.git_sync = { status, detail, last_ok_epoch: gitSyncStatus.last_ok_epoch || null, last_fail_epoch: gitSyncStatus.last_fail_epoch || null };
+  } catch (e) {
+    out.subsystems.git_sync = { status: 'error', detail: scrubError(e.message) };
+  }
   // age.key backup recency (file mtime). Looks for .bak.* in same dir as
   // the active key.
   try {
@@ -1394,6 +1420,28 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     setInterval(reapRecycle, PURGE_INTERVAL_MS).unref?.();
     setTimeout(reapRecycle, 30_000).unref?.();
 
+    // vt-0296: daily cleanup of closed sessions. fleet_sessions has no
+    // retention by default; closed rows accumulate forever unless an
+    // operator manually hits /fleet/sessions/cleanup. 30 days matches
+    // workflow/recycle retention. Drains in 1000-row batches.
+    const CLOSED_SESSIONS_RETAIN = process.env.VAULT_RAG_CLOSED_SESSIONS_RETAIN || '30 days';
+    const reapClosedSessions = async () => {
+      try {
+        let total = 0, limited = true, passes = 0;
+        while (limited && passes < 50) {
+          const r = await fleetDb.deleteClosedSessions(pg, CLOSED_SESSIONS_RETAIN);
+          total += r.deleted;
+          limited = r.limited;
+          passes += 1;
+        }
+        if (total) log.info('closed_sessions_purged', { count: total, retain: CLOSED_SESSIONS_RETAIN, passes });
+      } catch (e) {
+        log.error('closed_sessions_purge_failed', { msg: e.message });
+      }
+    };
+    setInterval(reapClosedSessions, PURGE_INTERVAL_MS).unref?.();
+    setTimeout(reapClosedSessions, 45_000).unref?.();
+
     // vt-0110: workflow trigger scheduler. Scans fleet_workflows where
     // trigger is set; if `now - last_run_at >= every_ms`, kicks a new run.
     // Coarse 60s tick. every_ms minimum 60_000 (enforced at API layer).
@@ -1407,6 +1455,14 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
           if (!w.trigger || typeof w.trigger.every_ms !== 'number') continue;
           const last = w.last_run_at ? new Date(w.last_run_at).getTime() : 0;
           if (now - last < w.trigger.every_ms) continue;
+          // vt-0292: skip-fire if a run for this workflow is still active.
+          // Without this guard a workflow that takes 5 min on a
+          // every_ms=60000 trigger spawns 5 parallel runs and exhausts
+          // the pg pool.
+          if (w.has_active_run) {
+            log.info('trigger_skip_active_run', { workflow_name: w.name });
+            continue;
+          }
           // Fire: create run + start the runner (same path as POST /workflows/:id/run).
           try {
             const run = await wfDb.createRun(pg, { workflowId: w.id, snapshot: w.definition });

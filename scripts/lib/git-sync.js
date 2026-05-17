@@ -6,8 +6,25 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 const log = require('./log').for('git-sync');
+const metrics = require('./metrics');
 
 const DEBOUNCE_MS = 1500;
+
+// vt-0289: observability for git push failures. Previously the spawn was
+// fire-and-forget with stdio:'ignore' — a deploy key expired, branch
+// diverged, or DNS blip would silently drop the push and the operator
+// would only find out by comparing replicas days later.
+const _syncResults = metrics.counter('vault_git_sync_total',
+  'vault-sync.sh push attempts by outcome', ['outcome']);
+const _syncLastOk = metrics.gauge('vault_git_sync_last_ok_seconds',
+  'epoch seconds of the most recent successful vault-sync push (0 = never)');
+const _syncLastFail = metrics.gauge('vault_git_sync_last_fail_seconds',
+  'epoch seconds of the most recent failed vault-sync push (0 = never)');
+// Module-local view for status() — avoids reaching into metrics-lib privates.
+let _lastOkEpoch = 0;
+let _lastFailEpoch = 0;
+_syncLastOk.set({}, 0);
+_syncLastFail.set({}, 0);
 
 const state = new Map();
 
@@ -58,19 +75,57 @@ function trigger(vault) {
     if (!s.pending) return;
     s.pending = false;
     try {
+      // vt-0289: capture stdout/stderr (last 4 KiB each) + exit code so
+      // we can record outcomes. Still non-blocking — the caller's
+      // /api/put response already returned. Don't `unref` immediately:
+      // we need the `exit` event.
       const ch = spawn('bash', [script, 'push'], {
         cwd: vault,
         env: minimalEnv(),
-        stdio: 'ignore',
-        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
-      ch.on('error', (e) => log.error('spawn_error', { msg: e.message }));
-      ch.unref();
+      const cap = (buf, chunk) => Buffer.concat([buf, chunk]).slice(-4096);
+      let stdoutTail = Buffer.alloc(0);
+      let stderrTail = Buffer.alloc(0);
+      ch.stdout.on('data', (c) => { stdoutTail = cap(stdoutTail, c); });
+      ch.stderr.on('data', (c) => { stderrTail = cap(stderrTail, c); });
+      ch.on('error', (e) => {
+        _syncResults.inc({ outcome: 'spawn_error' });
+        _lastFailEpoch = Math.floor(Date.now() / 1000); _syncLastFail.set({}, _lastFailEpoch);
+        log.error('spawn_error', { msg: e.message });
+      });
+      ch.on('close', (code) => {
+        if (code === 0) {
+          _syncResults.inc({ outcome: 'ok' });
+          _lastOkEpoch = Math.floor(Date.now() / 1000);
+          _syncLastOk.set({}, _lastOkEpoch);
+        } else {
+          _syncResults.inc({ outcome: 'failed' });
+          _lastFailEpoch = Math.floor(Date.now() / 1000); _syncLastFail.set({}, _lastFailEpoch);
+          log.error('push_failed', {
+            exit_code: code,
+            vault,
+            stdout: stdoutTail.toString('utf8'),
+            stderr: stderrTail.toString('utf8'),
+          });
+        }
+      });
     } catch (e) {
+      _syncResults.inc({ outcome: 'spawn_error' });
+      _lastFailEpoch = Math.floor(Date.now() / 1000); _syncLastFail.set({}, _lastFailEpoch);
       log.error('run_error', { msg: e.message });
     }
   }, DEBOUNCE_MS);
   if (s.timer.unref) s.timer.unref();
 }
 
-module.exports = { trigger };
+// vt-0289: expose status for /healthz/detail to surface "git push hasn't
+// succeeded in 2 hours" without forcing the operator to grep logs.
+function status() {
+  return {
+    last_ok_epoch:   _lastOkEpoch,
+    last_fail_epoch: _lastFailEpoch,
+  };
+}
+
+module.exports = { trigger, status };

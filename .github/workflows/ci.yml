@@ -59,7 +59,10 @@ jobs:
 
       - name: rag-api smoke tests
         working-directory: scripts
-        run: node --test rag-api.test.js || echo "(some tests may fail on missing secrets backend — see vt-0186 notes)"
+        # vt-0297: dropped `|| echo` — either the tests pass or fix them.
+        # If a test legitimately requires the secrets backend it should
+        # skip itself, not turn the CI line green via the fallback.
+        run: node --test rag-api.test.js
 
       - name: Daemon tests
         working-directory: agent-fleet/daemon

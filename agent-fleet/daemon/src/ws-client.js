@@ -202,8 +202,38 @@ function computeBackoff(attempt) {
   return Math.min(MAX_BACKOFF, Math.max(0, Math.round(exp + jitter)));
 }
 
+// vt-0290: per-session drop accounting. When the WS is down we still
+// emit pty_data into safeSend, which silently no-ops. Tracking the
+// dropped byte count lets us emit a `pty_gap` frame on reconnect so
+// the viewer can render "[N bytes lost during reconnect]" instead of
+// pretending the transcript is contiguous. Full replay (real ring
+// buffer) is tracked as vt-0299.
+const _droppedBySession = new Map();
+function _recordDrop(sessionId, bytes) {
+  _droppedBySession.set(sessionId, (_droppedBySession.get(sessionId) || 0) + bytes);
+}
+function _takeDrops() {
+  const out = [];
+  for (const [sid, bytes] of _droppedBySession) {
+    if (bytes > 0) out.push({ session_id: sid, dropped_bytes: bytes });
+  }
+  _droppedBySession.clear();
+  return out;
+}
+
 function safeSend(ws, obj) {
-  if (!ws || ws.readyState !== 1) return;
+  if (!ws || ws.readyState !== 1) {
+    // vt-0290: account for dropped pty_data bytes per session. We only
+    // track pty_data drops because other frame types (metrics, ping,
+    // inventory) are periodic and re-sent next tick; losing one of
+    // those is invisible to the user.
+    if (obj && obj.type === 'pty_data' && obj.session_id && typeof obj.data === 'string') {
+      // data is base64 — decoded length is ~3/4 of the encoded length.
+      const approxBytes = Math.floor(obj.data.length * 3 / 4);
+      _recordDrop(obj.session_id, approxBytes);
+    }
+    return;
+  }
   try { ws.send(JSON.stringify(obj)); }
   catch (e) {
     // vt-0183: silent drop made circular-ref / oversized frames invisible.
@@ -391,6 +421,14 @@ async function runDaemon(opts) {
         return { session_id: id, pid: info.pid, alive, last_seq: info.last_seq, ...(alive ? {} : { exit_code: -1 }) };
       });
       if (recon.length) ws.send(JSON.stringify({ type: 'reconciliation', sessions: recon }));
+      // vt-0290: emit per-session pty_gap frames for any bytes the
+      // daemon had to drop while the WS was down. Hub broadcasts these
+      // to viewers so the transcript shows an explicit gap marker
+      // instead of silently splicing post-reconnect output.
+      const drops = _takeDrops();
+      for (const d of drops) {
+        ws.send(JSON.stringify({ type: 'pty_gap', session_id: d.session_id, dropped_bytes: d.dropped_bytes }));
+      }
       for (const [id] of local) if (!ptyMgr.sessions.has(id)) store.delete(id);
 
       // Initial inventory frame — fresh on every (re)connect.

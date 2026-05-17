@@ -66,3 +66,19 @@ groups:
     annotations:
       summary: "no successful pg backup in 36h"
       runbook: "Check ofelia logs for the pg-backup job. /var/backups/vault-rag should have a fresh file daily at 03:30 UTC."
+
+  - alert: VaultGitSyncFailing
+    expr: increase(vault_git_sync_total{outcome="failed"}[15m]) >= 3
+    for: 5m
+    labels: { severity: critical, service: vault-sync }
+    annotations:
+      summary: "vault-sync.sh push failed {{ $value }} times in 15 min"
+      runbook: "docker logs vault-rag-api | grep push_failed. Common causes: deploy key expired, remote diverged, DNS blip, disk full on Forgejo."
+
+  - alert: VaultGitSyncSilent
+    expr: (vault_git_sync_last_ok_seconds == 0) or (time() - vault_git_sync_last_ok_seconds > 6 * 60 * 60)
+    for: 30m
+    labels: { severity: warning, service: vault-sync }
+    annotations:
+      summary: "no successful vault git push in 6h"
+      runbook: "Either VAULT_GIT_REMOTE is not set (expected: no sync) OR pushes are failing silently. Check vault_git_sync_total{outcome='failed'} and recent /api/put traffic."

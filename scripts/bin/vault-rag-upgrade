@@ -267,4 +267,19 @@ for i in $(seq 1 30); do
   sleep 1
 done
 warn "/readyz did not return 200 within 30s — check 'docker compose logs vault-rag-api'"
+# vt-0294: rollback recipe — code is on disk but containers are stuck;
+# operator should roll back to the recorded SHA. Note: if a migration
+# was applied in this run, it's already in .migrations-applied and the
+# DB. Operator must manually drop or down-migrate before re-trying.
+warn ""
+warn "ROLLBACK:"
+warn "  git -C $REPO_DIR reset --hard $LOCAL"
+warn "  docker compose -f $REPO_DIR/docker-compose.yml up -d"
+warn ""
+if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
+  warn "WARNING: the following migrations were applied in this run BEFORE /readyz failed:"
+  printf '  %s\n' "${NEW_MIGRATIONS[@]}" >&2
+  warn "Either keep them (they're additive — old code typically still works) OR"
+  warn "manually down-migrate + edit $MIGRATIONS_APPLIED_FILE before next upgrade."
+fi
 exit 1

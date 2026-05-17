@@ -188,9 +188,20 @@ async function reapStuckRuns(c, { maxAgeHours = 24 } = {}) {
 // --- vt-0110: triggers + suspension primitives ---
 
 async function listTriggeredWorkflows(c) {
+  // vt-0292: `last_run_at` previously took MAX(created_at) of ALL runs,
+  // including in-progress ones. A long-running workflow with
+  // every_ms=60000 would get a new run fired every minute while the
+  // previous run was still going, exhausting the pg pool. Now we ALSO
+  // expose `has_active_run` so the scheduler can skip-fire instead of
+  // racing into pool starvation.
   const { rows } = await c.query(
     `SELECT id, name, definition, trigger,
-            (SELECT MAX(created_at) FROM fleet_workflow_runs WHERE workflow_id = w.id) AS last_run_at
+            (SELECT MAX(created_at) FROM fleet_workflow_runs WHERE workflow_id = w.id) AS last_run_at,
+            EXISTS (
+              SELECT 1 FROM fleet_workflow_runs
+               WHERE workflow_id = w.id
+                 AND status NOT IN ('done','failed','cancelled')
+            ) AS has_active_run
      FROM fleet_workflows w
      WHERE trigger IS NOT NULL`);
   return rows;
