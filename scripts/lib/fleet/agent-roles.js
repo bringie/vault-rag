@@ -30,6 +30,7 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
       pattern: /^\/fleet\/agent-roles$/,
       handler(req, res, ctx) {
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           if (!b.name || typeof b.name !== 'string' || b.name.length > 64) {
             return send(res, 422, { error: 'name required (string, <=64 chars)' });
           }
@@ -81,6 +82,7 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
       handler(req, res, ctx, match) {
         const id = match[1];
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           if (b.prompt !== undefined && (typeof b.prompt !== 'string' || b.prompt.length > 32768)) {
             return send(res, 422, { error: 'prompt invalid (string, <=32768)' });
           }
@@ -133,6 +135,7 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
       handler(req, res, ctx, match) {
         const groupId = match[1];
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           if (!Array.isArray(b.role_ids)) return send(res, 422, { error: 'role_ids array required' });
           if (b.role_ids.length > 8) return send(res, 422, { error: 'max 8 roles per group' });
           for (const rid of b.role_ids) {
@@ -152,6 +155,7 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
       handler(req, res, ctx, match) {
         const groupId = match[1];
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           if (!b.role_id) return send(res, 422, { error: 'role_id required' });
           const role = await fleetDb.getAgentRole(ctx.db, b.role_id);
           if (!role) return send(res, 404, { error: 'role not found' });

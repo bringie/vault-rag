@@ -21,6 +21,7 @@ function register({ fleetDb, callerFp }) {
       handler(req, res, ctx, match) {
         const name = match[1];
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           if (typeof b.enabled !== 'boolean') return send(res, 422, { error: 'enabled (boolean) required' });
           await fleetDb.setFeature(ctx.db, name, b.enabled, callerFp(req));
           send(res, 200, { name, enabled: b.enabled });

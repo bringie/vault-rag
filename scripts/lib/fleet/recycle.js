@@ -16,7 +16,12 @@ function register({ fleetDb, fleetWorkflowDb }) {
       method: 'GET',
       pattern: /^\/fleet\/recycle-bin$/,
       handler(req, res, ctx) {
-        const u = new URL('http://x' + req.url);
+        // vt-0356 (security audit H1): use relative-URL form matching the
+        // other 12 sub-modules — `'http://x' + req.url` lets a crafted
+        // req.url re-anchor the host parser (e.g. '@evil/...' would yield
+        // host=evil). Today route regex pre-filters but the pattern is
+        // broken-by-design.
+        const u = new URL(req.url, 'http://x');
         const limit  = parseInt(u.searchParams.get('limit')  || '100', 10);
         const offset = parseInt(u.searchParams.get('offset') || '0',  10);
         return Promise.all([

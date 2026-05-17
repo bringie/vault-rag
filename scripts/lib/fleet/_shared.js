@@ -40,14 +40,15 @@ function stripAnsi(s) {
     .replace(/[\x07\x08]/g, '');                          // BEL + BS drop
 }
 
-// HTTP response helper. vt-0354: also auto-logs http_handler_error on 5xx —
-// without this, every sub-module catch block that ends in `send(res, 500,
-// {error: e.message})` was a silent failure (operator only saw the
-// response). The original inline handlers relied on dispatchHttp's outer
-// tryDispatch catch for logging; sub-module catches resolved the promise
-// before it could fire, so observability was lost during the split.
+// HTTP response helper. vt-0354 auto-logs `http_handler_error` ONLY on
+// status === 500 — that's the bucket where a sub-module catch swallowed
+// an unexpected exception. 502 (daemon vanished / WS file roundtrip) and
+// 503 (tokmon db unavailable / host offline / mux not connected) are
+// legitimate operator-visible degradations and would spam the log on
+// every cost page hit in a deployment without tokmon (architect-review
+// finding, vt-0356).
 function send(res, status, body) {
-  if (status >= 500) {
+  if (status === 500) {
     const url = res.req && res.req.url;
     const msg = body && body.error;
     log.error('http_handler_error', { url, status, msg });

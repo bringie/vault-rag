@@ -18,7 +18,7 @@ function basenameOnly(p) {
   return path.basename(p);
 }
 
-function register({ fleetDb, checkAdminAuth }) {
+function register({ fleetDb, checkAdminAuth, callerFp }) {
   return [
     // ---- GET list of tmux sessions on a host ----
     {
@@ -88,13 +88,16 @@ function register({ fleetDb, checkAdminAuth }) {
             return send(res, 503, { error: `dispatch failed: ${e.message}` });
           }
 
-          // Audit (best-effort; never blocks).
+          // Audit (best-effort; never blocks). vt-0356 security-audit H3:
+          // store SHA-256 fingerprint (callerFp), NOT the raw bearer prefix —
+          // a leaked DB dump would otherwise yield first 41 chars of the
+          // admin token in plaintext.
           try {
             await ctx.db.query(
               `INSERT INTO auth_audit (op, role, caller_id, caller_ip, user_agent, outcome, detail)
                VALUES ('tmux_attach', 'admin', $1, $2, $3, 'ok', $4)`,
               [
-                (req.headers.authorization || '').slice(0, 48),
+                callerFp ? callerFp(req) : null,
                 req.socket?.remoteAddress || null,
                 (req.headers['user-agent'] || '').slice(0, 200),
                 JSON.stringify({

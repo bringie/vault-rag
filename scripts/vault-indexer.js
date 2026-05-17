@@ -4,7 +4,7 @@
 // vault-indexer: pull vault git, embed changed .md, upsert pgvector,
 // rebuild backlinks, bump meta.last_indexed_sha. Idempotent.
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs   = require('fs');
 const path = require('path');
 const { Client } = require('pg');
@@ -19,14 +19,16 @@ const PG = {
   port:     5432,
 };
 
-const git = (args) =>
-  execSync(`git -C ${VAULT} ${args}`, { encoding: 'utf8' }).trim();
+// vt-0356 (security audit C1): execFileSync with argv array — no shell, no
+// template interpolation. Callers pass argv as an array; we prepend `-C VAULT`.
+const git = (argv) =>
+  execFileSync('git', ['-C', VAULT, ...argv], { encoding: 'utf8' }).trim();
 
 async function main() {
-  try { git('pull --quiet --rebase --autostash'); }
+  try { git(['pull', '--quiet', '--rebase', '--autostash']); }
   catch (e) { console.error(`[indexer] git pull warn: ${e.message}`); }
 
-  const headSha = git('rev-parse HEAD');
+  const headSha = git(['rev-parse', 'HEAD']);
 
   const pg = new Client(PG);
   await pg.connect();
@@ -36,14 +38,14 @@ async function main() {
 
   let changed = [];
   if (!lastSha) {
-    const all = git('ls-files -- "*.md"').split('\n').filter(Boolean);
+    const all = git(['ls-files', '--', '*.md']).split('\n').filter(Boolean);
     changed = all.map(p => ({ status: 'A', path: p }));
   } else if (lastSha === headSha) {
     console.log(`[indexer] no changes since ${lastSha.slice(0, 7)}`);
     await pg.end();
     return;
   } else {
-    const diff = git(`diff --name-status ${lastSha} ${headSha} -- "*.md"`);
+    const diff = git(['diff', '--name-status', lastSha, headSha, '--', '*.md']);
     changed = diff.split('\n').filter(Boolean).map(line => {
       const parts = line.split(/\t/);
       return { status: parts[0][0], path: parts[parts.length - 1], oldPath: parts[0].startsWith('R') ? parts[1] : null };

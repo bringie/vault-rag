@@ -74,6 +74,7 @@ function register({ fleetDb }) {
       pattern: /^\/fleet\/webhooks$/,
       handler(req, res, ctx) {
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           const errs = validatePayload(b);
           if (errs.length) return send(res, 422, { error: errs.join('; ') });
           try {
@@ -97,6 +98,7 @@ function register({ fleetDb }) {
       pattern: new RegExp(`^/fleet/webhooks/(${SID_RE})$`, 'i'),
       handler(req, res, ctx, m) {
         return readBody(req).then(async (b) => {
+          if (!b) return send(res, 422, { error: 'body required' });
           const errs = validatePayload(b, { partial: true });
           if (errs.length) return send(res, 422, { error: errs.join('; ') });
           try {
