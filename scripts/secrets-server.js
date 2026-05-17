@@ -99,24 +99,55 @@ const ROUTES = {
   '/secrets/verify': async () => await handler.verify(),
 };
 
+// vt-0256: minimal Prometheus metrics for the secrets-server.
+const metrics = require('./lib/metrics');
+const _opsCount = metrics.counter('secrets_server_ops_total',
+  'Secret backend ops by route + outcome', ['route', 'outcome']);
+const _opsDur = metrics.histogram('secrets_server_op_duration_ms',
+  'Secret backend op duration', ['route'], [5, 25, 100, 500, 2000]);
+
 const server = http.createServer(async (req, res) => {
+  const t0 = Date.now();
+  let route = (req.url || '').split('?')[0];
+  let outcome = 'ok';
   try {
     // Health pre-auth so docker healthcheck doesn't need to know the token.
     if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true });
+    // vt-0256: /metrics no-auth (operator IP-allowlists at reverse proxy).
+    if (req.method === 'GET' && req.url === '/metrics') {
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
+      res.end(metrics.exposition());
+      return;
+    }
     if (!tokenEqual(req.headers.authorization || '', `Bearer ${TOKEN}`)) {
+      outcome = 'unauthorized';
       return send(res, 401, { error: 'unauthorized' });
     }
-    if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    if (req.method !== 'POST') {
+      outcome = 'method_not_allowed';
+      return send(res, 405, { error: 'method not allowed' });
+    }
     const handlerFn = ROUTES[req.url];
-    if (!handlerFn) return send(res, 404, { error: 'not found' });
+    if (!handlerFn) {
+      outcome = 'not_found';
+      return send(res, 404, { error: 'not found' });
+    }
     const body = await readBody(req);
     const out = await handlerFn(body);
     send(res, 200, out);
   } catch (e) {
+    outcome = e instanceof NotFound ? 'not_found'
+            : e instanceof ConflictRetriesExhausted ? 'conflict'
+            : 'error';
     console.error(`[secrets-server] ${req.method} ${req.url}: ${e.stack || e.message}`);
     if (e instanceof NotFound) return send(res, 404, { error: e.message });
     if (e instanceof ConflictRetriesExhausted) return send(res, 409, { error: e.message });
     return send(res, e.statusCode || 500, { error: String(e.message || 'internal') });
+  } finally {
+    if (route !== '/metrics' && route !== '/healthz') {
+      _opsCount.inc({ route, outcome });
+      _opsDur.observe({ route }, Date.now() - t0);
+    }
   }
 });
 

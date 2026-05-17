@@ -106,6 +106,43 @@ ok "now at $(git log -1 --format='%h %s')"
 log "docker compose pull…"
 docker compose pull 2>&1 | tail -10 || warn "docker compose pull had issues (local-build images expected)"
 
+# 5a. regenerate Caddyfile from .tmpl if .tmpl changed (vt-0250).
+#     Earlier prod had Caddyfile and Caddyfile.tmpl drift because no step
+#     in the upgrade pipeline did envsubst. Now: if .tmpl exists AND its
+#     hash differs from a sidecar marker, regenerate + reload Caddy.
+if [[ -f Caddyfile.tmpl ]]; then
+  TMPL_SHA=$(sha256sum Caddyfile.tmpl | cut -d' ' -f1)
+  MARKER=".caddyfile.tmpl.applied.sha"
+  PREV_SHA=$(cat "$MARKER" 2>/dev/null || echo none)
+  if [[ "$TMPL_SHA" != "$PREV_SHA" ]]; then
+    log "Caddyfile.tmpl changed → regenerating Caddyfile…"
+    if [[ -f Caddyfile ]]; then
+      cp Caddyfile "Caddyfile.bak.$(date +%Y%m%d-%H%M)"
+    fi
+    # Source .env for envsubst variables (VAULT_RAG_DOMAIN, _ACME_EMAIL, ...).
+    if [[ -f .env ]]; then
+      set -a
+      # shellcheck disable=SC1091
+      . .env
+      set +a
+    fi
+    if ! envsubst < Caddyfile.tmpl > Caddyfile.new; then
+      warn "envsubst failed — keeping previous Caddyfile."
+      rm -f Caddyfile.new
+    else
+      mv Caddyfile.new Caddyfile
+      echo "$TMPL_SHA" > "$MARKER"
+      ok "Caddyfile regenerated"
+      log "reloading Caddy (no downtime)…"
+      docker compose exec -T vault-rag-caddy caddy reload --config /etc/caddy/Caddyfile 2>&1 | tail -3 \
+        || warn "caddy reload failed — falling back to container restart"
+      docker compose restart vault-rag-caddy 2>&1 | tail -2
+    fi
+  else
+    ok "Caddyfile up-to-date (tmpl unchanged)"
+  fi
+fi
+
 # 5. apply migrations
 if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
   log "applying ${#NEW_MIGRATIONS[@]} migration(s)…"

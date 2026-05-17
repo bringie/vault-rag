@@ -17,6 +17,10 @@
     currentSha: null,
     editing: false,
   };
+  // vt-0252: expose for palette autocomplete (indexAll is populated by
+  // openNotesMode → /api/notes/index).
+  window.__vaultState = state;
+  window.openVaultNote = (p) => openNote(p);  // called by palette
 
   const WRITABLE_PREFIXES = [
     '00-inbox/', '03-sessions/', '04-tasks/', '06-resources/notes/', 'agents/',

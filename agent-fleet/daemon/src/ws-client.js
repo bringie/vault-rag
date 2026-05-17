@@ -193,6 +193,44 @@ async function runDaemon(opts) {
   fs.mkdirSync(opts.stateDir, { recursive: true });
   const backoff = opts.backoffOverride || computeBackoff;
   const store = new SessionStore(opts.stateDir);
+
+  // vt-0251: graceful daemon shutdown. systemd default stop sends
+  // SIGTERM then KILLs after 90s; without a handler the process drops
+  // the WS dirty + every PTY gets SIGKILL'd, losing any unflushed
+  // pty_data and producing zombie sessions on the hub. Handler:
+  //   1. send a 'bye' frame to the hub so it can mark sessions cleanly
+  //   2. SIGTERM every active PTY (10s deadline before letting the
+  //      shutdown timer run out and systemd SIGKILLs us)
+  //   3. close WS, exit 0
+  let _daemonShuttingDown = false;
+  function daemonShutdown(signal) {
+    if (_daemonShuttingDown) return;
+    _daemonShuttingDown = true;
+    console.log(`[daemon] ${signal} — graceful shutdown`);
+    const ws = _currentWs && _currentWs.readyState === 1 ? _currentWs : null;
+    try {
+      if (ws) {
+        const alive = [];
+        for (const id of (ptyMgrRef.current?.sessions?.keys?.() || [])) alive.push(id);
+        ws.send(JSON.stringify({ type: 'bye', alive_sessions: alive }));
+      }
+    } catch {}
+    try {
+      for (const id of (ptyMgrRef.current?.sessions?.keys?.() || [])) {
+        ptyMgrRef.current.kill(id, 'SIGTERM');
+      }
+    } catch (e) { console.error(`[daemon] pty kill on shutdown: ${e.message}`); }
+    setTimeout(() => {
+      try { ws?.close(1001, 'shutdown'); } catch {}
+      process.exit(0);
+    }, 1500);
+  }
+  process.on('SIGTERM', () => daemonShutdown('SIGTERM'));
+  process.on('SIGINT',  () => daemonShutdown('SIGINT'));
+  // ptyMgr is created below; use a ref object so the handler captures
+  // it once available without rewriting the whole function.
+  const ptyMgrRef = { current: null };
+  let _currentWs = null;
   // Backend registry — built-in claude + anything declared in backends.json.
   // Config path defaults to /etc/agent-fleet/backends.json on prod installs;
   // dev overrides via --backends-config or AGENT_FLEET_BACKENDS_PATH.
@@ -246,6 +284,7 @@ async function runDaemon(opts) {
   }
   // PtyManager keeps claudeBin as the default; per-spawn we override via env.
   const ptyMgr = new PtyManager({ claudeBin: opts.claudeBin });
+  ptyMgrRef.current = ptyMgr;
   let ws = null;
   let attempt = 0;
   let hostId = null;
@@ -297,6 +336,7 @@ async function runDaemon(opts) {
       url.searchParams.set('host_name', opts.hostName);
       url.searchParams.set('daemon_version', '0.1.0');
       ws = new WebSocket(url.toString(), { headers: { authorization: `Bearer ${opts.token}` } });
+      _currentWs = ws;  // vt-0251: expose to shutdown handler
       await new Promise((resolve, reject) => {
         ws.once('open', resolve);
         ws.once('error', reject);

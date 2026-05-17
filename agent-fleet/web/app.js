@@ -18,6 +18,10 @@
     pollTimer: null,
     backoff: 800,
   };
+  // vt-0252: expose state to other modules (palette.js Cmd+K reads
+  // window.fleetState.hosts/sessions for fuzzy autocomplete; vault.js
+  // doesn't need this but follows the same convention via __vaultState).
+  window.fleetState = state;
 
   // ============ Auth ============
   function readToken() {
