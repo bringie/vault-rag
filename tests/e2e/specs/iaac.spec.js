@@ -112,9 +112,10 @@ test.describe('Prices PATCH @smoke @prices', () => {
       });
       expect(pr.status()).toBe(200);
       const patched = await pr.json();
-      expect(patched.input_per_mtok).toBeCloseTo(1.5, 3);
+      // pg numeric columns deserialize as strings — parseFloat for compare.
+      expect(parseFloat(patched.input_per_mtok)).toBeCloseTo(1.5, 3);
       expect(patched.note).toBe('after');
-      expect(patched.output_per_mtok).toBeCloseTo(2.0, 3); // unchanged
+      expect(parseFloat(patched.output_per_mtok)).toBeCloseTo(2.0, 3); // unchanged
     } finally {
       // cleanup
       await c.delete(`/api/fleet/prices/${created.id}`);
