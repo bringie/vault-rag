@@ -66,14 +66,28 @@
     _ctx.imageSmoothingEnabled = false;
     _ctx.scale(dpr, dpr);
 
-    // vt-0373 (Phase 4): click → prompt bubble. Single listener; hit-test
-    // against avatar bounding boxes computed by deskPos.
-    canvas.onclick = (ev) => {
+    // vt-0373 (Phase 4): left-click → prompt bubble.
+    // vt-0374 (Phase 5): right-click (contextmenu) → role picker.
+    function hitForEvent(ev) {
       const rect = canvas.getBoundingClientRect();
       const x = (ev.clientX - rect.left) * (CANVAS_W / rect.width);
       const y = (ev.clientY - rect.top)  * (CANVAS_H / rect.height);
-      const hit = hostAt(x, y);
-      if (hit) openPromptBubble(hit, ev.clientX - rect.left, ev.clientY - rect.top);
+      return {
+        host: hostAt(x, y),
+        bubbleX: ev.clientX - rect.left,
+        bubbleY: ev.clientY - rect.top,
+      };
+    }
+    canvas.onclick = (ev) => {
+      const { host, bubbleX, bubbleY } = hitForEvent(ev);
+      if (host) openPromptBubble(host, bubbleX, bubbleY);
+    };
+    canvas.oncontextmenu = (ev) => {
+      const { host, bubbleX, bubbleY } = hitForEvent(ev);
+      if (host) {
+        ev.preventDefault();
+        openRolePickerBubble(host, bubbleX, bubbleY);
+      }
     };
 
     updateStatus('— loading —');
@@ -342,6 +356,98 @@
         sendBtn.disabled = false;
       }
     };
+  }
+
+  // --- Role picker bubble (vt-0374) ----------------------------------------
+
+  async function openRolePickerBubble(host, anchorX, anchorY) {
+    const overlay = document.getElementById('po-overlay');
+    if (!overlay) return;
+    overlay.innerHTML = '';
+    const bubble = document.createElement('div');
+    bubble.className = 'po-bubble';
+    bubble.style.left = `${Math.min(anchorX + 12, CANVAS_W - 320)}px`;
+    bubble.style.top  = `${Math.min(anchorY + 12, CANVAS_H - 280)}px`;
+    bubble.innerHTML = `
+      <div style="display:flex;align-items:center;gap:.5em;margin-bottom:.4em">
+        <strong>${esc(host.display_name || host.name)}</strong>
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:var(--text-dim)">roles</span>
+        <button class="btn-ghost" data-po-close style="font-size:11px">×</button>
+      </div>
+      <div id="po-roles-body" style="font-size:11px;color:var(--text-dim)">loading…</div>
+      <div style="margin-top:.4em;font-size:10px;color:var(--text-faint)">
+        Group roles override host roles at spawn. /roles/effective shows what
+        will actually be applied.
+      </div>
+    `;
+    overlay.appendChild(bubble);
+    bubble.querySelector('[data-po-close]').onclick = () => { overlay.innerHTML = ''; };
+    await renderRolePickerBody(host, bubble);
+  }
+
+  async function renderRolePickerBody(host, bubble) {
+    const body = bubble.querySelector('#po-roles-body');
+    try {
+      const [all, assigned, effective] = await Promise.all([
+        api('/agent-roles'),
+        api(`/hosts/${host.id}/roles`),
+        api(`/hosts/${host.id}/roles/effective`),
+      ]);
+      const assignedIds = new Set((assigned || []).map(r => r.id));
+      const effectiveIds = new Set((effective || []).map(r => r.id));
+      const groupOverrides = effective.length && assigned.length && (effective[0].id !== (assigned[0] && assigned[0].id));
+      const rows = (all || []).map(r => {
+        const checked = assignedIds.has(r.id) ? 'checked' : '';
+        const eff = effectiveIds.has(r.id);
+        const effLabel = eff ? '<span title="will be applied at spawn" style="color:#3affb0">●</span>' : '<span style="color:#506075">○</span>';
+        return `<label style="display:flex;align-items:center;gap:.5em;padding:.25em 0;cursor:pointer">
+          <input type="checkbox" data-po-role="${esc(r.id)}" ${checked}>
+          <span>${esc(r.name)}</span>
+          <span style="flex:1"></span>
+          ${effLabel}
+        </label>`;
+      }).join('');
+      body.innerHTML = `
+        <div style="max-height:220px;overflow:auto">${rows || '<em>(no roles defined — create some in /agent-roles)</em>'}</div>
+        ${groupOverrides ? '<div style="margin-top:.4em;color:var(--accent);font-size:10px">group roles currently override this host\'s assignment</div>' : ''}
+      `;
+      body.querySelectorAll('[data-po-role]').forEach(cb => {
+        cb.onchange = async () => {
+          const roleId = cb.dataset.poRole;
+          cb.disabled = true;
+          try {
+            if (cb.checked) {
+              const r = await fetch(`/fleet/hosts/${host.id}/roles`, {
+                method: 'POST',
+                headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ role_id: roleId }),
+              });
+              if (!r.ok) {
+                let msg = `${r.status}`;
+                try { const j = await r.json(); msg += ' ' + (j.error || ''); } catch {}
+                throw new Error(msg);
+              }
+            } else {
+              const r = await fetch(`/fleet/hosts/${host.id}/roles/${roleId}`, {
+                method: 'DELETE',
+                headers: { authorization: `Bearer ${token()}` },
+              });
+              if (!r.ok && r.status !== 204) throw new Error(`${r.status}`);
+            }
+            // Re-render to refresh the effective dot.
+            await renderRolePickerBody(host, bubble);
+          } catch (e) {
+            cb.checked = !cb.checked;
+            alert('role change failed: ' + e.message);
+          } finally {
+            cb.disabled = false;
+          }
+        };
+      });
+    } catch (e) {
+      body.innerHTML = `<span style="color:var(--danger)">error: ${esc(e.message)}</span>`;
+    }
   }
 
   window.openPixelOfficeView = openPixelOfficeView;
