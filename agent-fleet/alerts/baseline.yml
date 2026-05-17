@@ -1,0 +1,68 @@
+# vt-0274: baseline alert rules for vmalert.
+#
+# Scrape sources: vault-rag-vmsingle gathers metrics from rag-api,
+# secrets-server, postgres-exporter, node-exporter, cadvisor.
+# vmalert evaluates these rules every 30s and POSTs firing alerts to
+# the configured webhook URL (see VAULT_RAG_ALERT_WEBHOOK_URL in .env).
+#
+# Personal/team SLO assumptions:
+#   - p99 search latency < 1s
+#   - /readyz uptime > 99.5% per month
+#   - no more than 5 admin-token rejections per minute (else: brute)
+#   - disk < 80%
+#   - no container restart-loop (>3 in 1h)
+#
+# Tune thresholds in .env without editing this file by overriding the
+# alert with `vmalert --rule.params=...` once you actually have N+1 ops.
+
+groups:
+- name: vault-rag.baseline
+  interval: 30s
+  rules:
+  - alert: PgPoolWaiting
+    expr: rag_api_pg_pool_total{state="waiting"} > 5
+    for: 2m
+    labels: { severity: warning, service: rag-api }
+    annotations:
+      summary: "rag-api pg pool has {{ $value }} waiters"
+      runbook: "Slow query holding pool; check pg_stat_activity for long-running queries. statement_timeout should kill within 30s."
+
+  - alert: SecretsServerUnauthorizedSpike
+    expr: rate(secrets_server_ops_total{outcome="unauthorized"}[1m]) > 0.5
+    for: 1m
+    labels: { severity: critical, service: secrets-server }
+    annotations:
+      summary: "secrets-server is rejecting auth ({{ $value }}/s)"
+      runbook: "Brute-force or misconfigured client. Inspect caller IPs via auth_audit + secret_audit tables."
+
+  - alert: ReadyzFailing
+    expr: probe_success{job="readyz"} == 0
+    for: 90s
+    labels: { severity: critical, service: rag-api }
+    annotations:
+      summary: "rag-api /readyz has been failing for 90s"
+      runbook: "Hub is not ready. Check `docker compose logs vault-rag-api` and `docker ps --filter health=unhealthy`."
+
+  - alert: DiskFillingFast
+    expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 0.80
+    for: 5m
+    labels: { severity: warning, service: host }
+    annotations:
+      summary: "root disk {{ $value | humanizePercentage }} full"
+      runbook: "Check /var/lib/docker/volumes (postgres + grafana grow fastest), /var/backups/vault-rag (vt-0272 retention)."
+
+  - alert: ContainerRestartLoop
+    expr: increase(container_start_time_seconds{name=~"vault-rag-.+"}[1h]) > 3
+    for: 5m
+    labels: { severity: critical, service: docker }
+    annotations:
+      summary: "{{ $labels.name }} restarted more than 3 times in the last hour"
+      runbook: "docker compose logs {{ $labels.name }} --tail 200. Look for OOM, healthcheck timeouts, config errors."
+
+  - alert: PgBackupStale
+    expr: (time() - pg_backup_last_ok_seconds) > 60 * 60 * 36
+    for: 30m
+    labels: { severity: critical, service: backup }
+    annotations:
+      summary: "no successful pg backup in 36h"
+      runbook: "Check ofelia logs for the pg-backup job. /var/backups/vault-rag should have a fresh file daily at 03:30 UTC."

@@ -69,8 +69,28 @@ services:
       - POSTGRES_DB=vault_rag
     volumes:
       - vault-rag-pgdata:/var/lib/postgresql/data
+      # vt-0272: backup target. Daily pg_dump lands here; host bind-mount
+      # so we can rsync/scp off-host. Retention managed by the ofelia job.
+      - /var/backups/vault-rag:/backups:rw
     networks:
       - vault-rag-net
+    labels:
+      # vt-0272: daily pg_dump at 03:30 UTC. Custom format + compression
+      # (-Fc + -Z 6). Output goes to /backups/vault_rag-YYYY-MM-DD.dump
+      # (host: /var/backups/vault-rag/). Retention 30d enforced by
+      # cleanup loop in the same command.
+      ofelia.enabled: "true"
+      ofelia.job-exec.pg-backup.schedule: "0 30 3 * * *"
+      ofelia.job-exec.pg-backup.command: "/bin/sh -c 'set -e; D=$(date -u +%F); F=/backups/vault_rag-$D.dump; pg_dump -U $POSTGRES_USER -d vault_rag -Fc -Z 6 -f $F.tmp && mv $F.tmp $F && chmod 0640 $F && find /backups -name vault_rag-*.dump -mtime +30 -delete; echo backup_ok $F $(stat -c%s $F) bytes'"
+      ofelia.job-exec.pg-backup.no-overlap: "true"
+      # vt-0273: weekly DR smoke. Verify the latest dump is *readable*
+      # by pg_restore --list — catches corrupt dump files (truncated by
+      # disk-full or interrupted pg_dump). NOT a full DR test (that
+      # requires a disposable pg + age decrypt); operator runs
+      # tests/dr-restore.sh manually before major releases.
+      ofelia.job-exec.pg-backup-verify.schedule: "0 0 4 * * 0"
+      ofelia.job-exec.pg-backup-verify.command: "/bin/sh -c 'set -e; LATEST=$(ls -1t /backups/vault_rag-*.dump 2>/dev/null | head -1); if [ -z \"$LATEST\" ]; then echo NO_BACKUPS; exit 1; fi; pg_restore --list \"$LATEST\" > /dev/null && echo dr_smoke_ok $LATEST'"
+      ofelia.job-exec.pg-backup-verify.no-overlap: "true"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${VAULT_RAG_PG_USER} -d vault_rag"]
       interval: 10s
@@ -513,6 +533,42 @@ services:
       - vault-rag-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # vt-0274: vmalert evaluates baseline.yml rules every 30s and POSTs
+  # firing alerts to VAULT_RAG_ALERT_WEBHOOK_URL. No alertmanager: for
+  # personal/team scale routing + dedup is overkill; the operator
+  # configures a single webhook (telegram bot, slack, pagerduty, etc.).
+  vault-rag-vmalert:
+    profiles: ["monitoring"]
+    image: victoriametrics/vmalert:v1.108.1
+    container_name: vault-rag-vmalert
+    logging: *default-logging
+    restart: unless-stopped
+    mem_limit: 80m
+    memswap_limit: 160m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      vault-rag-vmsingle:
+        condition: service_healthy
+    command:
+      - "-datasource.url=http://vault-rag-vmsingle:8428"
+      - "-remoteWrite.url=http://vault-rag-vmsingle:8428"
+      - "-rule=/etc/alerts/*.yml"
+      - "-notifier.url=${VAULT_RAG_ALERT_WEBHOOK_URL:-http://vault-rag-api:5679/fleet/_alert-sink}"
+      - "-evaluationInterval=30s"
+      - "-httpListenAddr=:8880"
+    volumes:
+      - ./agent-fleet/alerts:/etc/alerts:ro
+    networks:
+      - vault-rag-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8880/health"]
       interval: 30s
       timeout: 5s
       retries: 3

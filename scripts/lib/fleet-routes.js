@@ -1580,6 +1580,30 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'GET' && path === '/fleet/healthz') {
     return send(res, 200, { ok: true });
   }
+  // vt-0274: vmalert sink. No-auth because vmalert lives inside
+  // vault-rag-net and the endpoint only writes a log line — it can't
+  // mutate any state or read protected data. Same trust model as
+  // secrets-server /metrics. Caddy never exposes /fleet/_alert-sink
+  // externally (proxy lets it pass, but caller must reach the docker
+  // bridge to abuse). For paranoid setups bind vmalert directly to
+  // host loopback instead.
+  if (method === 'POST' && path === '/fleet/_alert-sink') {
+    return readBody(req, { maxBytes: 256 * 1024 }).then(b => {
+      const alerts = Array.isArray(b?.alerts) ? b.alerts : [];
+      for (const a of alerts) {
+        log.warn('alert_fired', {
+          name: a.labels?.alertname || 'unknown',
+          severity: a.labels?.severity || 'unknown',
+          service: a.labels?.service || null,
+          state: a.status || null,
+          summary: a.annotations?.summary || null,
+          value: a.value || null,
+          starts_at: a.startsAt || null,
+        });
+      }
+      send(res, 204, {});
+    }).catch(e => send(res, 400, { error: e.message }));
+  }
   if (!checkAuth(req, ctx.token) && !(ctx.adminToken && checkAdminAuth(req, ctx))) {
     return send(res, 401, { error: 'unauthorized' });
   }
