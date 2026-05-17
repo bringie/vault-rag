@@ -63,15 +63,14 @@ echo "Pending commits:"
 git log --oneline "$LOCAL..$REMOTE" | head -20
 echo
 
-# vt-0263: detect new migrations by diffing on-disk sql/*.sql against the
-# .migrations-applied sidecar. The earlier `git diff $LOCAL..$REMOTE`
-# approach silently skipped migrations on re-runs where $LOCAL was already
-# at $REMOTE (we hit this with sql/025-agent-roles.sql — the new file was
-# in the working tree but git diff found nothing, so the apply block was
-# never entered).
+# vt-0263: migrations are detected by diffing the on-disk sql/*.sql
+# directory against the .migrations-applied sidecar. We seed the
+# sidecar HERE (pre-pull) — that handles the "fresh install with DB
+# already provisioned" case — but the actual NEW_MIGRATIONS list is
+# collected AFTER git pull (vt-0271 fix), since the new files only
+# land on disk once we've pulled the remote.
 MIGRATIONS_APPLIED_FILE=".migrations-applied"
 NEW_MIGRATIONS=()
-declare -A _applied=()
 # Seed the sidecar from the DB if it doesn't exist. On a brand-new host
 # the rag-api boot run already ran every sql/*.sql, so they're effectively
 # applied — record them as such, so the first upgrade after install does
@@ -85,25 +84,13 @@ if [[ ! -f "$MIGRATIONS_APPLIED_FILE" ]]; then
       for f in sql/*.sql; do basename "$f"; done | sort; } > "$MIGRATIONS_APPLIED_FILE"
   fi
 fi
-if [[ -f "$MIGRATIONS_APPLIED_FILE" ]]; then
-  while IFS= read -r line; do
-    [[ -z "$line" || "$line" =~ ^# ]] && continue
-    _applied["$line"]=1
-  done < "$MIGRATIONS_APPLIED_FILE"
-fi
-shopt -s nullglob
-for f in sql/*.sql; do
-  base=$(basename "$f")
-  if [[ -z "${_applied[$base]:-}" ]]; then
-    NEW_MIGRATIONS+=("$f")
-  fi
-done
-shopt -u nullglob
-# Sort by filename (lexicographic == numeric prefix on our scheme: 001-, 002-, …)
-if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
-  IFS=$'\n' NEW_MIGRATIONS=($(sort <<<"${NEW_MIGRATIONS[*]}")); unset IFS
-  echo "New migrations to apply (vs $MIGRATIONS_APPLIED_FILE):"
-  printf '  %s\n' "${NEW_MIGRATIONS[@]}"
+# Pre-pull pending list — informational only, the real detection
+# happens post-pull below (after git pull --ff-only).
+if git diff --quiet "$LOCAL..$REMOTE" -- 'sql/*.sql' 2>/dev/null; then
+  : # no migration files changed between $LOCAL and $REMOTE
+else
+  echo "Pending migration files in the incoming commits:"
+  git diff --name-only "$LOCAL..$REMOTE" -- 'sql/*.sql' 2>/dev/null | sed 's/^/  /'
   echo
 fi
 
@@ -132,6 +119,30 @@ fi
 # 3. git pull
 log "git pull --ff-only…"
 git pull --ff-only
+
+# vt-0271: NEW_MIGRATIONS detection AFTER pull, when the new sql/*.sql
+# files actually exist on disk. Previously detection ran pre-pull and
+# silently missed any migration introduced by the incoming commits
+# (regression hit sql/026 in commit 6eb6661).
+declare -A _applied=()
+if [[ -f "$MIGRATIONS_APPLIED_FILE" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+    _applied["$line"]=1
+  done < "$MIGRATIONS_APPLIED_FILE"
+fi
+shopt -s nullglob
+for f in sql/*.sql; do
+  base=$(basename "$f")
+  [[ -z "${_applied[$base]:-}" ]] && NEW_MIGRATIONS+=("$f")
+done
+shopt -u nullglob
+if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
+  IFS=$'\n' NEW_MIGRATIONS=($(sort <<<"${NEW_MIGRATIONS[*]}")); unset IFS
+  echo "Migrations to apply (vs $MIGRATIONS_APPLIED_FILE):"
+  printf '  %s\n' "${NEW_MIGRATIONS[@]}"
+  echo
+fi
 ok "now at $(git log -1 --format='%h %s')"
 
 # 4. docker compose pull (best-effort — local images may not be in a registry)
