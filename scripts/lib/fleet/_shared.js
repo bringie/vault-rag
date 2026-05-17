@@ -30,7 +30,11 @@ function readBody(req, { maxBytes = 1024 * 1024 } = {}) {
       }
       buf += c;
     });
-    req.on('end', () => { if (aborted) return; try { resolve(buf ? JSON.parse(buf) : {}); } catch (e) { reject(new Error('bad json: ' + e.message)); } });
+    // Empty body → null (parent-helper parity at fleet-routes.js:48). Sub-module
+    // handlers rely on `if (!body) return 422` guards — returning `{}` here
+    // would make every such guard silently unreachable. Architect review of
+    // vt-0287 caught the divergence; this restores the original contract.
+    req.on('end', () => { if (aborted) return; if (!buf) return resolve(null); try { resolve(JSON.parse(buf)); } catch (e) { reject(new Error('bad json: ' + e.message)); } });
     req.on('error', (e) => { if (!aborted) reject(e); });
   });
 }
