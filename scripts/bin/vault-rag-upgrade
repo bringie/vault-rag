@@ -252,9 +252,14 @@ else
 fi
 
 # 6. restart hub containers (preserve dependencies — postgres stays up).
-# When the compose-wide re-apply above ran, this is a no-op for api+secrets.
-log "restarting vault-rag-api + vault-rag-secrets…"
-docker compose up -d --no-deps vault-rag-api vault-rag-secrets 2>&1 | tail -5
+# Force-recreate so Node's `require` module-cache is purged. Bind-mounted
+# JS source changes are visible to fs.readFileSync immediately, but
+# require() caches modules per process — without recreate, the rag-api
+# process keeps serving the OLD code even though the file on disk is
+# new. Symptom we hit on vt-0300 deploy: /healthz/detail was missing
+# the git_sync subsystem until manual --force-recreate.
+log "force-recreating vault-rag-api + vault-rag-secrets to pick up new code…"
+docker compose up -d --no-deps --force-recreate vault-rag-api vault-rag-secrets 2>&1 | tail -5
 
 # 7. readyz poll
 log "waiting for /readyz…"
