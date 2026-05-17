@@ -410,11 +410,57 @@ body::after {
   display: grid; grid-template-rows: auto auto 1fr auto;
   overflow: auto;
 }
-#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview, #vaultview, #healthview {
+#groupsview, #workflowsview, #workfloweditor, #workflowrunviewer, #pricesview, #vaultview, #healthview, #auditview {
   position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
   left: 0; right: 0; z-index: 80; background: var(--bg);
   display: flex; flex-direction: column; overflow: auto;
 }
+
+/* vt-0222: command palette */
+.palette-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.5);
+  z-index: 400; display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 12vh;
+}
+.palette-frame {
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 6px;
+  width: min(640px, 90vw); max-height: 70vh; display: flex; flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0,0,0,.5);
+}
+.palette-input {
+  background: transparent; border: none; border-bottom: 1px solid var(--line);
+  padding: 14px 16px; color: var(--text); font: 13px/1.4 monospace;
+  outline: none;
+}
+.palette-list {
+  list-style: none; margin: 0; padding: 4px 0;
+  overflow-y: auto; flex: 1; min-height: 0;
+}
+.palette-item {
+  display: grid; grid-template-columns: 24px 1fr auto;
+  gap: 8px; padding: 6px 14px; cursor: pointer;
+  font: 12px/1.4 monospace; color: var(--text);
+}
+.palette-item.active { background: var(--bg-hover); color: var(--accent); }
+.palette-icon { text-align: center; }
+.palette-sub  { color: var(--text-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-foot {
+  border-top: 1px solid var(--line); padding: 6px 14px;
+  font: 10px/1.4 monospace; color: var(--text-faint);
+}
+
+/* vt-0221: audit log table */
+.audit-row .ts, .audit-row .caller code { font-size: 11px; color: var(--text-dim); }
+.audit-row .subject { word-break: break-all; max-width: 32em; }
+.audit-row.audit-error { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.audit-row.audit-denied { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.audit-outcome { font-size: 10px; padding: 2px 6px; border-radius: 3px; }
+.audit-outcome-ok     { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.audit-outcome-denied { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.audit-outcome-error  { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.chip-source-secret   { color: var(--accent); }
+.chip-source-vault    { color: var(--ok); }
+.chip-source-workflow { color: var(--magenta); }
 
 /* vt-0190: in-app toast + dialog */
 #toast-stack {

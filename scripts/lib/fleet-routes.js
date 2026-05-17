@@ -1525,6 +1525,27 @@ function dispatchHttp(req, res, ctx) {
   }
   if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
 
+  // vt-0225: recycle bin endpoints. GET lists soft-deleted; POST restores.
+  if (method === 'GET' && path === '/fleet/recycle-bin') {
+    return Promise.all([
+      fleetDb.listDeletedGroups(ctx.db),
+      require('./fleet-workflow-db').listDeletedWorkflows(ctx.db),
+    ]).then(([groups, workflows]) => send(res, 200, { groups, workflows }))
+      .catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'POST' && new RegExp(`^/fleet/groups/${SID_RE}/restore$`, 'i').test(path)) {
+    const id = path.split('/')[3];
+    return fleetDb.restoreGroup(ctx.db, id).then(g =>
+      g ? send(res, 200, g) : send(res, 404, { error: 'not found in trash' })
+    ).catch(e => send(res, 500, { error: e.message }));
+  }
+  if (method === 'POST' && new RegExp(`^/fleet/workflows/${SID_RE}/restore$`, 'i').test(path)) {
+    const id = path.split('/')[3];
+    return require('./fleet-workflow-db').restoreWorkflow(ctx.db, id).then(w =>
+      w ? send(res, 200, w) : send(res, 404, { error: 'not found in trash' })
+    ).catch(e => send(res, 500, { error: e.message }));
+  }
+
   // Groups
   if (method === 'GET'    && path === '/fleet/groups') return handleListGroups({ req, res, ctx });
   if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleGetGroup({ req, res, ctx });

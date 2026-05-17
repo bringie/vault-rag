@@ -254,5 +254,8 @@
   "wf_inspect.target_cap": "cap: {name}",
   "nav.health": "🩺 здоровье",
   "page.health": "СОСТОЯНИЕ СИСТЕМЫ",
-  "health.title": "СОСТОЯНИЕ СИСТЕМЫ"
+  "health.title": "СОСТОЯНИЕ СИСТЕМЫ",
+  "nav.audit": "📋 аудит",
+  "page.audit": "АУДИТ-ЛОГ",
+  "audit.title": "АУДИТ-ЛОГ"
 }

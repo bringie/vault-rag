@@ -552,6 +552,109 @@ Counter: obsidian-vault/.vt/seq (atomic O_EXCL lock)
   process.stdout.write(help);
 }
 
+// vt-0218: doctor — diagnostics for a fresh install. Each check returns
+// {name, status: 'ok'|'warn'|'error', detail}. Prints a traffic-light
+// summary, exits non-zero if any are 'error' (CI-friendly).
+async function cmdDoctor(_cfg, args) {
+  const checks = [];
+  function check(name, status, detail) { checks.push({ name, status, detail }); }
+  const fs = require('fs');
+  const path = require('path');
+  const https = require('https');
+
+  // .env presence + key set
+  const envPath = path.join(process.cwd(), '.env');
+  if (!fs.existsSync(envPath)) {
+    check('.env', 'warn', 'no .env in cwd (using shell env only)');
+  } else {
+    const env = fs.readFileSync(envPath, 'utf8');
+    const has = (k) => new RegExp(`^${k}=.+`, 'm').test(env);
+    const need = ['VAULT_RAG_API_URL', 'VAULT_RAG_API_TOKEN'];
+    const missing = need.filter(k => !has(k) && !process.env[k]);
+    if (missing.length) check('.env vars', 'error', `missing: ${missing.join(', ')}`);
+    else check('.env vars', 'ok', `${need.join(', ')} all present`);
+  }
+
+  // API reachable
+  const apiUrl = process.env.VAULT_RAG_API_URL || process.env.VT_API_BASE;
+  const apiTok = process.env.VAULT_RAG_API_TOKEN || process.env.VT_API_TOKEN;
+  if (!apiUrl || !apiTok) {
+    check('hub /readyz', 'error', 'VAULT_RAG_API_URL/_TOKEN not set');
+  } else {
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = https.request(`${apiUrl}/api/readyz`, { method: 'GET' }, (r) => {
+          const chunks = []; r.on('data', c => chunks.push(c));
+          r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        });
+        req.on('error', reject);
+        req.setTimeout(5000, () => req.destroy(new Error('timeout')));
+        req.end();
+      });
+      if (res.status === 200) check('hub /readyz', 'ok', '200 — all subsystems ready');
+      else check('hub /readyz', 'error', `${res.status}: ${res.body.slice(0, 200)}`);
+    } catch (e) {
+      check('hub /readyz', 'error', e.message);
+    }
+  }
+
+  // secrets reachable
+  if (apiUrl && apiTok) {
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = https.request(`${apiUrl}/api/secrets/list`, {
+          method: 'POST',
+          headers: { 'authorization': `Bearer ${apiTok}`, 'content-type': 'application/json' },
+        }, (r) => {
+          const chunks = []; r.on('data', c => chunks.push(c));
+          r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        });
+        req.on('error', reject);
+        req.setTimeout(5000, () => req.destroy(new Error('timeout')));
+        req.write('{}'); req.end();
+      });
+      if (res.status === 200) {
+        const n = (JSON.parse(res.body).names || []).length;
+        check('secrets backend', 'ok', `${n} secrets visible`);
+      } else if (res.status === 401) {
+        check('secrets backend', 'error', '401 — token rejected');
+      } else {
+        check('secrets backend', 'warn', `${res.status}: ${res.body.slice(0, 100)}`);
+      }
+    } catch (e) { check('secrets backend', 'error', e.message); }
+  }
+
+  // vault dir (for vt task ops)
+  try {
+    const { resolveConfig } = { resolveConfig: () => null };  // best-effort
+    const vaultDir = process.env.VT_VAULT_DIR || process.env.VAULT_DIR;
+    if (vaultDir && fs.existsSync(vaultDir)) {
+      check('vault dir', 'ok', vaultDir);
+    } else {
+      check('vault dir', 'warn', `not found (set VT_VAULT_DIR)`);
+    }
+  } catch (e) { check('vault dir', 'warn', e.message); }
+
+  // node version
+  const major = parseInt(process.version.replace('v', '').split('.')[0], 10);
+  if (major >= 20) check('node version', 'ok', process.version);
+  else check('node version', 'warn', `${process.version} (recommend ≥20)`);
+
+  // Print
+  const W = Math.max(...checks.map(c => c.name.length)) + 2;
+  const glyph = { ok: '\x1b[32m●\x1b[0m', warn: '\x1b[33m◐\x1b[0m', error: '\x1b[31m✕\x1b[0m' };
+  console.log('vt doctor:');
+  for (const c of checks) {
+    console.log(`  ${glyph[c.status] || '?'} ${c.name.padEnd(W)} ${c.detail || ''}`);
+  }
+  const errors = checks.filter(c => c.status === 'error').length;
+  if (errors) {
+    console.log(`\n${errors} error(s) — fix above and re-run.`);
+    process.exit(1);
+  }
+  console.log('\nAll critical checks passed.');
+}
+
 const COMMANDS = {
   create: cmdCreate,
   list: cmdList,
@@ -566,6 +669,7 @@ const COMMANDS = {
   remember: cmdRemember,
   secrets: cmdSecrets,
   remote: cmdRemote,
+  doctor: cmdDoctor,           // vt-0218
   prime: cmdPrime,
   help: cmdPrime,
   '--help': cmdPrime,

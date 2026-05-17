@@ -55,6 +55,40 @@
       if (e.key === 'Enter') $('token-save').click();
     });
     setTimeout(() => $('token-input').focus(), 50);
+    // vt-0220: setup help link → instructions modal (no full wizard needed
+    // for self-host; explain where the token comes from + paste it).
+    const help = $('setup-help');
+    if (help) help.onclick = (ev) => {
+      ev.preventDefault();
+      const overlay = document.createElement('div');
+      overlay.className = 'app-dialog-overlay';
+      overlay.innerHTML = `
+        <div class="app-dialog-frame" style="max-width:560px">
+          <div class="app-dialog-title">vault-rag setup</div>
+          <div class="app-dialog-body" style="font:12px/1.6 monospace">
+            <p><strong>1. Generate a token</strong> on the hub host:</p>
+            <pre style="background:var(--bg-hover);padding:8px;border-radius:3px;overflow-x:auto">openssl rand -hex 32 | tee -a /opt/vault-rag/.env
+# then edit the line to: VAULT_RAG_API_TOKEN=&lt;the-hex&gt;</pre>
+            <p><strong>2. Restart vault-rag-api:</strong></p>
+            <pre style="background:var(--bg-hover);padding:8px;border-radius:3px;overflow-x:auto">docker compose up -d vault-rag-api</pre>
+            <p><strong>3. Paste the token</strong> into the field above and hit ENGAGE.</p>
+            <p style="margin-top:1em;color:var(--text-dim)">
+              The token is stored only in this browser's localStorage. To rotate,
+              repeat the steps and refresh.
+              <br>For admin operations (workflow run, host PATCH, secret writes), set
+              <code>VAULT_RAG_FLEET_ADMIN_TOKEN</code> separately — see
+              <code>docs/secret-rotation.md</code>.
+            </p>
+          </div>
+          <div class="app-dialog-buttons">
+            <button class="btn-primary" data-close>got it</button>
+          </div>
+        </div>
+      `;
+      overlay.querySelector('[data-close]').onclick = () => overlay.remove();
+      overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+      document.body.appendChild(overlay);
+    };
   }
   function showApp() {
     $('auth').hidden = true; $('app').hidden = false;
@@ -1082,9 +1116,10 @@
     prices:          { panels: ['pricesview'],        nav: 'prices',    title: 'page.prices',          open: () => window.openPricesView?.() },
     vault:           { panels: ['vaultview'],         nav: 'vault',     title: 'page.vault',           open: () => window.openVaultView?.() },
     health:          { panels: ['healthview'],        nav: 'health',    title: 'page.health',          open: () => openHealthView() },
+    audit:           { panels: ['auditview'],         nav: 'audit',     title: 'page.audit',           open: () => openAuditView() },
   };
-  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview'];
-  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health'];
+  const ALL_PANELS = ['archive','sdetail','costview','groupsview','workflowsview','workfloweditor','workflowrunviewer','pricesview','vaultview','healthview','auditview'];
+  const ALL_NAVS = ['dashboard','archive','cost','groups','workflows','prices','vault','health','audit'];
 
   function setPage(name, arg) {
     const p = PAGES[name] || PAGES.dashboard;
@@ -1439,6 +1474,55 @@
     }
   }
 
+  // ============ Audit log (vt-0221) ============
+  function auditQueryString() {
+    const t = $('audit-table')?.value || 'all';
+    const op = $('audit-op')?.value?.trim() || '';
+    const cid = $('audit-caller')?.value?.trim() || '';
+    const u = new URLSearchParams({ table: t, limit: '500' });
+    if (op) u.set('op', op);
+    if (cid) u.set('caller_id', cid);
+    return u.toString();
+  }
+  async function openAuditView() {
+    const tbody = $('audit-rows');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="7"><em>loading…</em></td></tr>';
+    try {
+      const r = await api('GET', '/audit?' + auditQueryString());
+      const rows = r.rows || [];
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-faint);padding:2em">no rows</td></tr>'; return; }
+      tbody.innerHTML = rows.map(r => `
+        <tr class="audit-row audit-${esc(r.outcome || 'ok')}">
+          <td class="ts">${esc(new Date(r.ts).toLocaleString())}</td>
+          <td><span class="chip chip-source-${esc(r.source)}">${esc(r.source)}</span></td>
+          <td><code>${esc(r.op)}</code></td>
+          <td class="subject">${esc(r.subject || '')}</td>
+          <td class="caller"><code>${esc(r.caller_id || '—')}</code></td>
+          <td>${esc(r.via || '')}</td>
+          <td><span class="audit-outcome audit-outcome-${esc(r.outcome || 'ok')}">${esc(r.outcome || 'ok')}</span></td>
+        </tr>
+      `).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger)">error: ${esc(e.message)}</td></tr>`;
+    }
+  }
+  function downloadAuditCsv() {
+    const url = '/api/audit?format=csv&' + auditQueryString();
+    // browser auto-downloads via content-disposition; pass Authorization
+    // through a fetch then build a blob URL for the <a download>.
+    fetch(url, { headers: { authorization: 'Bearer ' + state.token } })
+      .then(r => r.blob())
+      .then(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `audit-${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(e => window.toast?.error('CSV download failed: ' + e.message));
+  }
+
   // ============ Health dashboard (vt-0193) ============
   async function openHealthView() {
     const grid = $('health-grid');
@@ -1750,6 +1834,15 @@
     const hNav = $('nav-health'); if (hNav) hNav.onclick = () => navigate('/health');
     const hBack = $('healthview-close'); if (hBack) hBack.onclick = () => navigate('/dashboard');
     const hReload = $('health-reload'); if (hReload) hReload.onclick = () => openHealthView();
+    // vt-0221: audit
+    const aNav = $('nav-audit'); if (aNav) aNav.onclick = () => navigate('/audit');
+    const aBack = $('auditview-close'); if (aBack) aBack.onclick = () => navigate('/dashboard');
+    const aReload = $('audit-reload'); if (aReload) aReload.onclick = () => openAuditView();
+    const aExport = $('audit-export'); if (aExport) aExport.onclick = () => downloadAuditCsv();
+    ['audit-table','audit-op','audit-caller'].forEach(id => {
+      const el = $(id); if (el) el.onchange = () => openAuditView();
+      if (el) el.onkeydown = (e) => { if (e.key === 'Enter') openAuditView(); };
+    });
     const wfNew = $('wf-new'); if (wfNew) wfNew.onclick = () => navigate('/workflows/new');
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');

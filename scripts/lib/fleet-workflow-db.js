@@ -2,7 +2,7 @@
 // fleet-workflow-db: CRUD for fleet_workflows + fleet_workflow_runs.
 // Callers pass an active pg Client/Pool.
 
-async function listWorkflows(c) {
+async function listWorkflows(c, { includeDeleted = false } = {}) {
   // LATERAL JOIN pulls the most-recent run per workflow (or NULL columns
   // if the workflow has never been run). Powers the "last run / status /
   // failed at" columns in the workflows list UI.
@@ -20,8 +20,21 @@ async function listWorkflows(c) {
       WHERE workflow_id = w.id
       ORDER BY created_at DESC LIMIT 1
     ) lr ON true
+    ${includeDeleted ? '' : 'WHERE w.deleted_at IS NULL'}
     ORDER BY w.updated_at DESC`);
   return rows;
+}
+// vt-0225: trash bin helpers.
+async function listDeletedWorkflows(c) {
+  const { rows } = await c.query(
+    `SELECT id, name, description, deleted_at FROM fleet_workflows
+      WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`);
+  return rows;
+}
+async function restoreWorkflow(c, id) {
+  const { rows } = await c.query(
+    `UPDATE fleet_workflows SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL RETURNING *`, [id]);
+  return rows[0] || null;
 }
 
 async function getWorkflow(c, id) {
@@ -68,7 +81,11 @@ async function updateWorkflow(c, id, patch, expectedVersion) {
   return rows[0];
 }
 
+// vt-0225: soft-delete; purgeWorkflow() for the eventual 30-day reaper.
 async function deleteWorkflow(c, id) {
+  await c.query('UPDATE fleet_workflows SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+}
+async function purgeWorkflow(c, id) {
   await c.query('DELETE FROM fleet_workflows WHERE id = $1', [id]);
 }
 
@@ -244,7 +261,8 @@ async function fireEvent(c, eventName, payload) {
 }
 
 module.exports = {
-  listWorkflows, getWorkflow, createWorkflow, updateWorkflow, deleteWorkflow,
+  listWorkflows, getWorkflow, createWorkflow, updateWorkflow, deleteWorkflow, purgeWorkflow,
+  listDeletedWorkflows, restoreWorkflow,
   listRuns, getRun, createRun, updateRunStatus, updateRunState, orphanRunningRuns, reapStuckRuns,
   // vt-0110
   listTriggeredWorkflows, setWorkflowTrigger,

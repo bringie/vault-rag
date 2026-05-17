@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# vt-0219: one-shot upgrade pipeline for a vault-rag deployment.
+#
+# Sequence:
+#   1. git fetch + show what's new
+#   2. (optional) backup current pg + secrets via vault-rag-backup
+#   3. git pull
+#   4. docker compose pull  (images)
+#   5. apply any new sql/*.sql migrations
+#   6. docker compose up -d --no-deps vault-rag-api vault-rag-secrets
+#   7. /readyz poll until 200 (or fail after timeout)
+#
+# Idempotent + safe: any step that can break leaves the system in the
+# previous good state. Operator can re-run.
+#
+# Usage:
+#   vault-rag-upgrade                          # backup, pull, migrate, restart
+#   vault-rag-upgrade --skip-backup            # for staging / when DR'd recently
+#   vault-rag-upgrade --check                  # dry-run: show plan only
+#   vault-rag-upgrade --backup-to /mnt/bk.age  # custom backup destination
+
+set -euo pipefail
+
+REPO_DIR="${VAULT_RAG_DIR:-/opt/vault-rag}"
+CHECK=""
+SKIP_BACKUP=""
+BACKUP_TO=""
+BACKUP_RECIPIENT="${VAULT_RAG_BACKUP_RECIPIENT:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check) CHECK=1; shift;;
+    --skip-backup) SKIP_BACKUP=1; shift;;
+    --backup-to) BACKUP_TO="$2"; shift 2;;
+    --recipient) BACKUP_RECIPIENT="$2"; shift 2;;
+    --repo-dir) REPO_DIR="$2"; shift 2;;
+    -h|--help)
+      sed -n '3,18p' "$0" | sed 's/^# \?//'
+      exit 0;;
+    *) echo "unknown flag: $1" >&2; exit 2;;
+  esac
+done
+
+[[ -d "$REPO_DIR" ]] || { echo "repo dir not found: $REPO_DIR" >&2; exit 1; }
+cd "$REPO_DIR"
+
+log() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '\033[33m!\033[0m %s\n' "$*" >&2; }
+
+# 1. fetch + show
+log "fetching from origin…"
+git fetch --quiet
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse '@{u}')
+if [[ "$LOCAL" == "$REMOTE" ]]; then
+  ok "already up-to-date at $(git log -1 --format='%h %s')"
+  [[ -z "$CHECK" ]] || exit 0
+fi
+
+echo
+echo "Pending commits:"
+git log --oneline "$LOCAL..$REMOTE" | head -20
+echo
+
+# What migrations are new?
+NEW_MIGRATIONS=()
+for f in $(git diff --name-only "$LOCAL..$REMOTE" -- 'sql/*.sql' 2>/dev/null); do
+  [[ -f "$f" ]] || continue
+  NEW_MIGRATIONS+=("$f")
+done
+if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
+  echo "New migrations to apply:"
+  printf '  %s\n' "${NEW_MIGRATIONS[@]}"
+  echo
+fi
+
+if [[ -n "$CHECK" ]]; then
+  ok "dry-run complete (use without --check to apply)"
+  exit 0
+fi
+
+# 2. backup
+if [[ -z "$SKIP_BACKUP" ]]; then
+  log "creating pre-upgrade backup…"
+  BACKUP_TO="${BACKUP_TO:-/tmp/vault-rag-pre-upgrade-$(date +%F-%H%M).tar.age}"
+  if [[ -z "$BACKUP_RECIPIENT" ]]; then
+    warn "no --recipient/VAULT_RAG_BACKUP_RECIPIENT; backup will prompt for passphrase"
+  fi
+  BK_ARGS=(--to "$BACKUP_TO" --pg-dump)
+  [[ -n "$BACKUP_RECIPIENT" ]] && BK_ARGS+=(--recipient "$BACKUP_RECIPIENT")
+  if "$(dirname "$0")/vault-rag-backup" "${BK_ARGS[@]}"; then
+    ok "backup → $BACKUP_TO"
+  else
+    warn "backup failed — aborting upgrade. Run with --skip-backup if intentional."
+    exit 1
+  fi
+fi
+
+# 3. git pull
+log "git pull --ff-only…"
+git pull --ff-only
+ok "now at $(git log -1 --format='%h %s')"
+
+# 4. docker compose pull (best-effort — local images may not be in a registry)
+log "docker compose pull…"
+docker compose pull 2>&1 | tail -10 || warn "docker compose pull had issues (local-build images expected)"
+
+# 5. apply migrations
+if [[ ${#NEW_MIGRATIONS[@]} -gt 0 ]]; then
+  log "applying ${#NEW_MIGRATIONS[@]} migration(s)…"
+  for sql in "${NEW_MIGRATIONS[@]}"; do
+    echo "  -> $sql"
+    if ! cat "$sql" | docker exec -i vault-rag-postgres psql -U postgres -d vault_rag -v ON_ERROR_STOP=1 > /dev/null; then
+      warn "migration $sql failed — aborting before container restart."
+      exit 1
+    fi
+  done
+  ok "migrations applied"
+fi
+
+# 6. restart hub containers (preserve dependencies — postgres stays up)
+log "restarting vault-rag-api + vault-rag-secrets…"
+docker compose up -d --no-deps vault-rag-api vault-rag-secrets 2>&1 | tail -5
+
+# 7. readyz poll
+log "waiting for /readyz…"
+for i in $(seq 1 30); do
+  if curl -fsS -o /dev/null -m 2 "http://localhost:5679/readyz" 2>/dev/null; then
+    ok "ready after ${i}s"
+    log "upgrade complete: $(git log -1 --format='%h %s')"
+    exit 0
+  fi
+  sleep 1
+done
+warn "/readyz did not return 200 within 30s — check 'docker compose logs vault-rag-api'"
+exit 1

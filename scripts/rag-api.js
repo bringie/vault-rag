@@ -352,6 +352,76 @@ async function handleReadyz(req, res) {
   send(res, ok ? 200 : 503, { ready: ok, checks });
 }
 
+// vt-0221: read-only audit feed. Returns rows from secret_audit /
+// vault_audit / workflow_audit unified into one shape so the UI renders
+// from one endpoint. Filters: ?table=secret|vault|workflow|all (default
+// all), ?op=, ?caller_id=, ?since=ISO, ?limit=N (cap 1000).
+// Returns CSV when ?format=csv.
+async function handleAuditFeed(req, res) {
+  if (!checkAuth(req) && !(FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx))) {
+    return send(res, 401, { error: 'unauthorized' });
+  }
+  const u = new URL(req.url, 'http://x');
+  const tableArg = (u.searchParams.get('table') || 'all').toLowerCase();
+  const op = u.searchParams.get('op');
+  const callerId = u.searchParams.get('caller_id');
+  const since = u.searchParams.get('since');
+  const limit = Math.min(Math.max(parseInt(u.searchParams.get('limit') || '200', 10), 1), 1000);
+  const format = (u.searchParams.get('format') || 'json').toLowerCase();
+
+  const want = tableArg === 'all'
+    ? ['secret', 'vault', 'workflow']
+    : tableArg.split(',').map(s => s.trim()).filter(s => ['secret','vault','workflow'].includes(s));
+
+  const parts = [];
+  if (want.includes('secret')) {
+    parts.push(`SELECT 'secret' AS source, ts, op, name AS subject, caller_id, via, outcome, null::text AS extra FROM secret_audit`);
+  }
+  if (want.includes('vault')) {
+    parts.push(`SELECT 'vault'  AS source, ts, op, path AS subject, agent_id AS caller_id, null::text AS via, 'ok' AS outcome, sha_after::text AS extra FROM vault_audit`);
+  }
+  if (want.includes('workflow')) {
+    parts.push(`SELECT 'workflow' AS source, ts, op, workflow_id::text AS subject, caller_id, via, outcome, definition_sha AS extra FROM workflow_audit`);
+  }
+  if (!parts.length) return send(res, 422, { error: 'no valid table' });
+
+  const filters = [];
+  const args = [];
+  if (op)       { args.push(op);       filters.push(`op = $${args.length}`); }
+  if (callerId) { args.push(callerId); filters.push(`caller_id = $${args.length}`); }
+  if (since)    { args.push(since);    filters.push(`ts >= $${args.length}::timestamptz`); }
+  args.push(limit);
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const sql = `
+    WITH unified AS (
+      ${parts.join(' UNION ALL ')}
+    )
+    SELECT * FROM unified
+    ${where}
+    ORDER BY ts DESC
+    LIMIT $${args.length}
+  `;
+  let rows;
+  try { rows = (await pg.query(sql, args)).rows; }
+  catch (e) {
+    if (/relation .* does not exist/.test(e.message)) {
+      return send(res, 503, { error: 'audit table missing — apply sql migrations', detail: e.message });
+    }
+    throw e;
+  }
+  if (format === 'csv') {
+    const header = 'ts,source,op,subject,caller_id,via,outcome,extra';
+    const body = rows.map(r => [
+      r.ts.toISOString(), r.source, r.op, r.subject || '', r.caller_id || '',
+      r.via || '', r.outcome || '', r.extra || '',
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="audit.csv"' });
+    res.end(header + '\n' + body);
+    return;
+  }
+  send(res, 200, { rows });
+}
+
 // vt-0193: aggregated health snapshot for the Health dashboard.
 // Returns per-subsystem traffic-light status without forcing the UI to
 // query each endpoint separately. All checks are best-effort with short
@@ -966,6 +1036,26 @@ const server = http.createServer(async (req, res) => {
       send(res, 503, { ok: false, error: scrubError(e.message) });
     });
   }
+  // vt-0224: serve workflow-templates/index.json. Static — read on every
+  // request; the file lives in the repo, ships with the image.
+  if (req.method === 'GET' && req.url === '/workflows/templates') {
+    if (!checkAuth(req) && !(FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx))) {
+      return send(res, 401, { error: 'unauthorized' });
+    }
+    try {
+      const data = fs.readFileSync(path.join(__dirname, '..', 'workflow-templates', 'index.json'), 'utf8');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(data);
+    } catch (e) { send(res, 500, { error: scrubError(e.message) }); }
+    return;
+  }
+  // vt-0221: unified audit feed for the Audit UI.
+  if (req.method === 'GET' && req.url.startsWith('/audit')) {
+    return handleAuditFeed(req, res).catch(e => {
+      console.error('[rag-api] /audit', e.stack || e.message);
+      send(res, 500, { error: scrubError(e.message) });
+    });
+  }
   // vt-0193: detailed health endpoint for the Health dashboard UI.
   // Reports per-subsystem status without requiring secret-store reveals;
   // viewer bearer suffices.
@@ -1135,6 +1225,7 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
     // vt-0206: heartbeat reaper for sessions + workflow_runs. Runs every
     // 5 minutes. Catches daemon crashes that don't trigger hub restart.
     const REAPER_INTERVAL_MS = 5 * 60 * 1000;
+    const webhooks = require('./lib/webhooks');
     const reaperTimer = setInterval(async () => {
       try {
         const sn = await fleetDb.reapStuckSessions(pg);
@@ -1148,6 +1239,21 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         if (rn) console.log(`[rag-api] reaper: failed ${rn} stuck workflow_runs`);
       } catch (e) {
         console.error(`[rag-api] run reaper failed: ${e.message}`);
+      }
+      // vt-0223: emit host.offline webhook for hosts whose last_seen drifted
+      // past the staleness threshold since the previous tick.
+      try {
+        const stale = (await pg.query(
+          `SELECT name FROM fleet_hosts
+            WHERE status = 'online'
+              AND last_seen < now() - interval '3 minutes'`
+        )).rows;
+        if (stale.length) {
+          await pg.query(`UPDATE fleet_hosts SET status='offline' WHERE name = ANY($1)`, [stale.map(r => r.name)]);
+          for (const h of stale) webhooks.emit(pg, 'host.offline', { host_name: h.name }).catch(() => {});
+        }
+      } catch (e) {
+        console.error(`[rag-api] host offline detector failed: ${e.message}`);
       }
     }, REAPER_INTERVAL_MS);
     reaperTimer.unref?.();

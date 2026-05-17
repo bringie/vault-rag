@@ -45,14 +45,29 @@ async function upsertHost(c, h) {
 
 // ============ Groups ============
 
-async function listGroups(c) {
+async function listGroups(c, { includeDeleted = false } = {}) {
   const { rows } = await c.query(`
     SELECT g.*,
       COALESCE((SELECT array_agg(hg.host_id) FROM fleet_host_groups hg WHERE hg.group_id = g.id), '{}') AS host_ids
     FROM fleet_groups g
+    ${includeDeleted ? '' : 'WHERE g.deleted_at IS NULL'}
     ORDER BY g.name
   `);
   return rows;
+}
+// vt-0225: soft-delete instead of hard. listDeletedGroups + restoreGroup.
+async function listDeletedGroups(c) {
+  const { rows } = await c.query(
+    `SELECT id, name, description, color, deleted_at
+       FROM fleet_groups
+      WHERE deleted_at IS NOT NULL
+      ORDER BY deleted_at DESC`);
+  return rows;
+}
+async function restoreGroup(c, id) {
+  const { rows } = await c.query(
+    `UPDATE fleet_groups SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL RETURNING *`, [id]);
+  return rows[0] || null;
 }
 
 async function getGroup(c, id) {
@@ -140,7 +155,12 @@ async function listHostsByEffectiveTag(c, tag) {
   return rows;
 }
 
+// vt-0225: soft-delete now. Use purgeGroup() for hard delete (the 30-day
+// reaper or operator-driven).
 async function deleteGroup(c, id) {
+  await c.query('UPDATE fleet_groups SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+}
+async function purgeGroup(c, id) {
   await c.query('DELETE FROM fleet_groups WHERE id = $1', [id]);
 }
 
@@ -475,7 +495,8 @@ module.exports = {
   createSession, getSession, listSessions, countSessions, updateSession,
   markSessionRunning, markSessionExited, orphanRunningSessions, reapStuckSessions, deleteClosedSessions,
   appendEvents, maxSeq, readTranscript, purgeOldEvents,
-  listGroups, getGroup, getGroupByName, createGroup, updateGroup, deleteGroup,
+  listGroups, getGroup, getGroupByName, createGroup, updateGroup, deleteGroup, purgeGroup,
+  listDeletedGroups, restoreGroup,
   addHostToGroup, removeHostFromGroup, listGroupsForHost, listHostsInGroup,
   getEffectiveCapabilities, listHostsByEffectiveTag,
   insertHostMetric, setHostLatestMetrics, setHostInventory, readMetricsSince, readMetricsRollupSince,

@@ -254,5 +254,8 @@
   "wf_inspect.target_cap": "cap: {name}",
   "nav.health": "🩺 salud",
   "page.health": "ESTADO DEL SISTEMA",
-  "health.title": "ESTADO DEL SISTEMA"
+  "health.title": "ESTADO DEL SISTEMA",
+  "nav.audit": "📋 auditoría",
+  "page.audit": "AUDITORÍA",
+  "audit.title": "AUDITORÍA"
 }

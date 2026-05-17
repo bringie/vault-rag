@@ -32,6 +32,10 @@
       </label>
       <button id="token-save" class="btn-primary" data-i18n="auth.engage">ENGAGE →</button>
       <p class="auth-hint" data-i18n="auth.hint">// token stored locally · clear via "ABORT" in app header</p>
+      <!-- vt-0220: first-visit setup wizard link -->
+      <p class="auth-hint" style="margin-top:1em">
+        <a href="#" id="setup-help" style="color:var(--accent); text-decoration:none">setup help · where do I get a token?</a>
+      </p>
     </div>
   </div>
 
@@ -57,6 +61,7 @@
         <button id="nav-prices"    class="btn-ghost" data-i18n="nav.prices">$ prices</button>
         <button id="nav-vault"     class="btn-ghost" data-i18n="nav.vault">📓 vault</button>
         <button id="nav-health"    class="btn-ghost" data-i18n="nav.health">🩺 health</button>
+        <button id="nav-audit"     class="btn-ghost" data-i18n="nav.audit">📋 audit</button>
         <!-- vt-0152: flag glyphs in lang, glyph icons in theme -->
         <select id="lang-select" class="switcher" title="language">
           <option value="en">🇬🇧 EN</option>
@@ -520,6 +525,33 @@
     </div>
   </div>
 
+  <!-- vt-0221: audit feed -->
+  <div id="auditview" hidden>
+    <header class="archive-head overlay-header">
+      <h2 data-i18n="audit.title">AUDIT LOG</h2>
+      <select id="audit-table" class="switcher" title="table">
+        <option value="all">all</option>
+        <option value="secret">secret</option>
+        <option value="vault">vault notes</option>
+        <option value="workflow">workflow</option>
+      </select>
+      <input id="audit-op" type="search" placeholder="op (get/list/set/...)" style="width:180px"/>
+      <input id="audit-caller" type="search" placeholder="caller_id" style="width:120px"/>
+      <span style="flex:1"></span>
+      <button id="audit-export" class="btn-ghost" title="download CSV">⬇ CSV</button>
+      <button id="audit-reload" class="btn-ghost" title="reload">↻</button>
+      <button id="auditview-close" class="btn-ghost" data-i18n="common.back">× back</button>
+    </header>
+    <div class="archive-table-wrap">
+      <table class="archive-table">
+        <thead><tr>
+          <th>ts</th><th>source</th><th>op</th><th>subject</th><th>caller</th><th>via</th><th>outcome</th>
+        </tr></thead>
+        <tbody id="audit-rows"><tr><td colspan="7"><em>loading…</em></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- vt-0193: health dashboard -->
   <div id="healthview" hidden>
     <header class="archive-head overlay-header">
@@ -612,6 +644,7 @@
   <script src="/fleet/static/vendor/marked.min.js"></script>
   <script src="/fleet/static/vendor/dompurify.min.js"></script>
   <script src="/fleet/static/toast.js"></script>
+  <script src="/fleet/static/palette.js"></script>
   <script src="/fleet/static/vault.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
