@@ -106,7 +106,9 @@ test.describe('Agent roles tab @roles', () => {
     // Wait for the API call to settle — the route fires GET /agent-roles
     // immediately on open; we don't assert on row count because the
     // table can legitimately be empty.
-    await page.waitForResponse(r => r.url().includes('/api/fleet/agent-roles') && r.ok(), { timeout: 10_000 });
+    // vt-0367: roles SPA module now uses /fleet/ prefix (matching prices.js),
+    // not /api/fleet/ (the old app.js api() helper convention). Match either.
+    await page.waitForResponse(r => /\/(api\/)?fleet\/agent-roles/.test(r.url()) && r.ok(), { timeout: 10_000 });
   });
 });
 
