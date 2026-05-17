@@ -1269,6 +1269,12 @@
   let _featuresAuthLost = false;
   async function loadFeatures() {
     if (_featuresAuthLost) return;
+    // Skip when token not yet read from localStorage. Without this
+    // the top-level loadFeatures() at module load fires `Bearer null`
+    // before boot()→readToken() runs, gets 401, sets _featuresAuthLost
+    // forever and the 60s polling never resumes for the rest of the
+    // session.
+    if (!state.token) return;
     try {
       const r = await fetch('/api/fleet/features', {
         headers: { authorization: 'Bearer ' + state.token },
@@ -1307,9 +1313,13 @@
       navigate('/dashboard');
     }
   }
-  // Initial load + periodic refresh
+  // Initial load + periodic refresh. The bootstrap call here is a
+  // no-op until boot()→readToken() populates state.token (see guard
+  // in loadFeatures); boot() re-invokes it explicitly after auth.
   loadFeatures();
   setInterval(loadFeatures, 60_000);
+  // Expose for boot() so it can fire the real first load post-auth.
+  window.__fleetLoadFeatures = loadFeatures;
 
   // ============ Archive ============
   let archiveState = { offset: 0, limit: 50, filter: {}, total: 0 };
@@ -2204,6 +2214,8 @@
     if (!state.token) { showAuth(); return; }
     showApp();
     wireSpawn();
+    // Now that state.token is populated, do the real first feature load.
+    try { window.__fleetLoadFeatures?.(); } catch {}
     $('reload').onclick = () => {
       const btn = $('reload');
       btn.classList.remove('spin');

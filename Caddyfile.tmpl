@@ -173,6 +173,13 @@ ${VAULT_RAG_DOMAIN} {
 		redir /git/ permanent
 	}
 
+	# No favicon yet — return 204 instead of letting the request fall
+	# through to the rag-api catch-all which returns 405 (POST-only).
+	# Spam in DevTools network panel was masking real errors.
+	handle /favicon.ico {
+		respond 204
+	}
+
 	# vt-0235: /api/metrics + /metrics IP-allowlisted to LAN + loopback.
 	# MUST be declared BEFORE `handle_path /api/*` — Caddy's handle dispatch
 	# is first-match-wins. Without this ordering the /api/* catch-all
