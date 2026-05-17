@@ -26,7 +26,59 @@ function hasStructuredFields(f) {
 // ptyMgr — backend modules build {argv, env, stdin} but until vt-0122 the
 // daemon was dropping `stdin`, so hermes/opencode/codex/openclaw wrappers
 // hung on `RAW=$(cat)` waiting for a prompt that never arrived.
+// vt-0200: defensive validation of spawn frames before they reach pty.
+// Authentication of the WS upgrade is enforced by the hub; this is a
+// belt-and-suspenders layer for hub-bug / hub-compromise scenarios.
+//
+// Rules:
+//  • cwd must be a string under HOME or under /tmp; '..'-escape rejected.
+//    Absolute paths outside those roots are refused; '~' relative left to
+//    the shell to expand.
+//  • args must be an array of strings; reject argv entries that look like
+//    the explicit dangerous flag, since the hub already coerces structured
+//    `dangerous: bool` (vt-0169). Author-supplied raw `args` should not
+//    smuggle it back in.
+//  • env keys are constrained to [A-Z_][A-Z0-9_]* and a small denylist
+//    rejects names that hijack wrapper resolution (OPENCLAW_BIN, etc.).
+function validateSpawnFrame(f) {
+  const home = process.env.HOME || os.homedir() || '/root';
+  if (f.cwd !== undefined && f.cwd !== null) {
+    if (typeof f.cwd !== 'string') throw new Error('cwd must be string');
+    if (f.cwd.includes('..')) throw new Error('cwd: .. not allowed');
+    if (f.cwd.startsWith('/')) {
+      if (!f.cwd.startsWith(home + '/') && f.cwd !== home && !f.cwd.startsWith('/tmp/') && f.cwd !== '/tmp') {
+        throw new Error(`cwd outside $HOME and /tmp: ${f.cwd}`);
+      }
+    }
+  }
+  if (f.args !== undefined && f.args !== null) {
+    if (!Array.isArray(f.args)) throw new Error('args must be array');
+    for (const a of f.args) {
+      if (typeof a !== 'string') throw new Error('args entries must be string');
+      // vt-0169 makes `dangerous` boolean-coerced; raw flag in argv would
+      // bypass that, even from a buggy hub.
+      if (a === '--dangerously-skip-permissions') {
+        throw new Error('--dangerously-skip-permissions must be passed via structured dangerous flag, not args');
+      }
+    }
+  }
+  if (f.env !== undefined && f.env !== null) {
+    if (typeof f.env !== 'object' || Array.isArray(f.env)) throw new Error('env must be object');
+    // vt-0202: refuse env keys that select wrapper binaries — hub-side
+    // bug or compromise must not let the daemon resolve PATH to a shell.
+    const DENY = new Set(['OPENCLAW_BIN', 'NANOCLAW_BIN', 'HERMES_BIN', 'AGENT_FLEET_CLAUDE_BIN',
+                         'AGENT_FLEET_CODEX_BIN', 'AGENT_FLEET_OPENCODE_BIN', 'AGENT_FLEET_HERMES_BIN',
+                         'PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'NODE_OPTIONS']);
+    for (const k of Object.keys(f.env)) {
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) throw new Error(`env key invalid: ${k}`);
+      if (DENY.has(k)) throw new Error(`env key denied: ${k}`);
+    }
+  }
+}
+
 function applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin }) {
+  // vt-0200: validate before touching pty.
+  validateSpawnFrame(f);
   let argv = f.args || [];
   let env = f.env || {};
   let bin = baseBin;
@@ -303,7 +355,18 @@ async function runDaemon(opts) {
               safeSend(ws, { type: 'spawn_err', session_id: f.session_id, error: e.message });
             }
           } else if (f.type === 'input') {
-            ptyMgr.writeInput(f.session_id, f.data);
+            // vt-0201: cap input frame size. A viewer with a WS ticket can
+            // stream into a PTY they're attached to; without a cap they can
+            // pump arbitrary bytes (megabytes/s) and OOM the daemon or
+            // wedge the spawned process. 64 KiB matches the upstream
+            // PTY pipe buffer; legitimate paste/typing fits easily.
+            if (typeof f.data !== 'string') {
+              console.warn(`[daemon] input frame for ${f.session_id}: data must be string, got ${typeof f.data}`);
+            } else if (f.data.length > 65536) {
+              console.warn(`[daemon] input frame for ${f.session_id} dropped: ${f.data.length} bytes > 65536`);
+            } else {
+              ptyMgr.writeInput(f.session_id, f.data);
+            }
           } else if (f.type === 'kill') {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
           } else if (f.type === 'resize') {

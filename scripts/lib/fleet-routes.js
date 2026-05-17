@@ -1081,16 +1081,50 @@ async function handleGetWorkflow({ req, res, ctx }) {
   send(res, 200, w);
 }
 
-async function handleCreateWorkflow({ res, body, ctx }) {
+// vt-0198: workflow_audit helper. Mirrors auditSecret() in rag-api.js —
+// best-effort insert; never blocks the response or surfaces DB errors
+// to the client. callerFingerprint is the same shape (sha256[:12] of
+// bearer) so the upcoming audit UI can join rows across tables.
+function _workflowCallerFp(req) {
+  if (!req) return null;
+  const auth = (req.headers?.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  if (!auth) return null;
+  try { return crypto.createHash('sha256').update(auth).digest('hex').slice(0, 12); }
+  catch { return null; }
+}
+async function auditWorkflow(ctx, req, { op, workflow_id = null, run_id = null, outcome = 'ok', definition_sha = null, detail = {}, via = 'http' }) {
+  if (!ctx.db) return;
+  try {
+    await ctx.db.query(
+      `INSERT INTO workflow_audit (op, workflow_id, run_id, caller_id, via, outcome, definition_sha, detail)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [op, workflow_id, run_id, _workflowCallerFp(req), via, outcome, definition_sha, JSON.stringify(detail)]
+    );
+  } catch (e) {
+    console.error(`[fleet] workflow_audit insert failed (op=${op}): ${e.message}`);
+  }
+}
+function _defSha(def) {
+  if (!def) return null;
+  try { return crypto.createHash('sha256').update(JSON.stringify(def)).digest('hex'); } catch { return null; }
+}
+
+async function handleCreateWorkflow({ res, body, ctx, req }) {
   if (!body || !body.name || !body.definition) {
+    await auditWorkflow(ctx, req, { op: 'create', outcome: 'denied', detail: { reason: 'validation' } });
     return send(res, 422, { error: 'name + definition required' });
   }
   try { validateDefinition(body.definition); }
-  catch (e) { return send(res, 422, { error: e.message }); }
+  catch (e) {
+    await auditWorkflow(ctx, req, { op: 'create', outcome: 'denied', detail: { reason: e.message } });
+    return send(res, 422, { error: e.message });
+  }
   try {
     const w = await wfDb.createWorkflow(ctx.db, body);
+    await auditWorkflow(ctx, req, { op: 'create', workflow_id: w.id, definition_sha: _defSha(body.definition), detail: { name: body.name } });
     send(res, 201, w);
   } catch (e) {
+    await auditWorkflow(ctx, req, { op: 'create', outcome: 'error', detail: { msg: e.message } });
     if (/duplicate key/.test(e.message)) return send(res, 409, { error: 'name exists' });
     throw e;
   }
@@ -1100,16 +1134,30 @@ async function handlePatchWorkflow({ req, res, body, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
   if (body && body.definition) {
     try { validateDefinition(body.definition); }
-    catch (e) { return send(res, 422, { error: e.message }); }
+    catch (e) {
+      await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, outcome: 'denied', detail: { reason: e.message } });
+      return send(res, 422, { error: e.message });
+    }
   }
-  const w = await wfDb.updateWorkflow(ctx.db, id, body || {});
-  if (!w) return send(res, 404, { error: 'not found' });
+  // vt-0205: optimistic concurrency
+  const expectedVersion = body && Number.isFinite(body.expected_version) ? body.expected_version : undefined;
+  const w = await wfDb.updateWorkflow(ctx.db, id, body || {}, expectedVersion);
+  if (!w) {
+    await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, outcome: 'denied', detail: { reason: 'not_found' } });
+    return send(res, 404, { error: 'not found' });
+  }
+  if (w.__conflict) {
+    await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, outcome: 'denied', detail: { reason: 'version_conflict' } });
+    return send(res, 409, { error: 'version conflict', current: w.current });
+  }
+  await auditWorkflow(ctx, req, { op: 'patch', workflow_id: id, definition_sha: _defSha(w.definition) });
   send(res, 200, w);
 }
 
 async function handleDeleteWorkflow({ req, res, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
   await wfDb.deleteWorkflow(ctx.db, id);
+  await auditWorkflow(ctx, req, { op: 'delete', workflow_id: id });
   res.writeHead(204); res.end();
 }
 
@@ -1137,13 +1185,17 @@ async function ensureWorkflowRunner(ctx) {
 async function handleRunWorkflow({ req, res, body, ctx }) {
   const id = req.url.split('?')[0].split('/')[3];
   const w = await wfDb.getWorkflow(ctx.db, id);
-  if (!w) return send(res, 404, { error: 'workflow not found' });
+  if (!w) {
+    await auditWorkflow(ctx, req, { op: 'run', workflow_id: id, outcome: 'denied', detail: { reason: 'not_found' } });
+    return send(res, 404, { error: 'workflow not found' });
+  }
   const runner = await ensureWorkflowRunner(ctx);
   const run = await wfDb.createRun(ctx.db, {
     workflowId: w.id,
     snapshot: w.definition,
     state: { inputs: (body && body.inputs) || {} },
   });
+  await auditWorkflow(ctx, req, { op: 'run', workflow_id: w.id, run_id: run.id, definition_sha: _defSha(w.definition) });
   if (runner) runner.start(run.id);
   send(res, 201, { run_id: run.id });
 }
@@ -1522,7 +1574,7 @@ function dispatchHttp(req, res, ctx) {
   // Workflows
   if (method === 'GET'    && path === '/fleet/workflows') return handleListWorkflows({ res, ctx });
   if (method === 'POST'   && path === '/fleet/workflows') {
-    return readBody(req).then(b => handleCreateWorkflow({ res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
+    return readBody(req).then(b => handleCreateWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && new RegExp(`^/fleet/workflows/${SID_RE}/run$`, 'i').test(path)) {
     return readBody(req).then(b => handleRunWorkflow({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));

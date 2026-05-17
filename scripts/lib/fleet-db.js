@@ -364,7 +364,25 @@ async function purgeOldEvents(c, intervalStr, limit = 10000) {
   return { deleted: rowCount, limited: rowCount >= limit };
 }
 
+// vt-0203: filter jsonb shapes from daemon-supplied metric frames. Without
+// this, a compromised daemon could stuff arbitrary keys/sizes into
+// fleet_host_metrics.{disk,net} and the UI may render them unescaped.
+const DISK_KEYS = new Set(['mount', 'used_bytes', 'total_bytes', 'used_pct', 'fs', 'device']);
+const NET_KEYS  = new Set(['iface', 'rx_bytes', 'tx_bytes', 'rx_packets', 'tx_packets', 'rx_errors', 'tx_errors']);
+function _filterMetricArray(arr, keySet) {
+  if (!Array.isArray(arr)) return null;
+  // Cap entries — a malicious daemon could otherwise emit 10k mounts.
+  return arr.slice(0, 64).map(entry => {
+    if (!entry || typeof entry !== 'object') return null;
+    const out = {};
+    for (const k of Object.keys(entry)) if (keySet.has(k)) out[k] = entry[k];
+    return out;
+  }).filter(Boolean);
+}
+
 async function insertHostMetric(c, hostId, m) {
+  const disk = _filterMetricArray(m.disk, DISK_KEYS);
+  const net  = _filterMetricArray(m.net, NET_KEYS);
   await c.query(
     `INSERT INTO fleet_host_metrics (host_id, ts, cpu_pct, ram_used_bytes, ram_total_bytes, disk, net, error)
      VALUES ($1, COALESCE($2::timestamptz, now()), $3, $4, $5, $6::jsonb, $7::jsonb, $8)`,
@@ -374,8 +392,8 @@ async function insertHostMetric(c, hostId, m) {
       m.cpu_pct == null ? null : Number(m.cpu_pct),
       m.ram_used_bytes == null ? null : Number(m.ram_used_bytes),
       m.ram_total_bytes == null ? null : Number(m.ram_total_bytes),
-      m.disk ? JSON.stringify(m.disk) : null,
-      m.net ? JSON.stringify(m.net) : null,
+      disk && disk.length ? JSON.stringify(disk) : null,
+      net  && net.length  ? JSON.stringify(net)  : null,
       m.error || null,
     ]);
 }
@@ -390,12 +408,22 @@ async function setHostLatestMetrics(c, hostId, m) {
     })]);
 }
 
+// vt-0203: filter inventory frame to known keys. Anything else gets dropped.
+const INVENTORY_KEYS = new Set([
+  'skills', 'mcp_servers', 'settings_present', 'claude_md_present',
+  'codex_config_present', 'opencode_config_present', 'gemini_md_present',
+  'agents_dir', 'home_disk_used_pct', 'snapshot_ts',
+]);
 async function setHostInventory(c, hostId, inv) {
+  const safe = {};
+  if (inv && typeof inv === 'object') {
+    for (const k of Object.keys(inv)) if (INVENTORY_KEYS.has(k)) safe[k] = inv[k];
+  }
   await c.query(
     `UPDATE fleet_hosts
      SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('inventory', $2::jsonb)
      WHERE id = $1`,
-    [hostId, JSON.stringify(inv)]);
+    [hostId, JSON.stringify(safe)]);
 }
 
 async function readMetricsSince(c, hostId, interval) {

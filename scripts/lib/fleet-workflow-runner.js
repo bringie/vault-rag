@@ -19,11 +19,44 @@ function substituteTemplates(str, ctx) {
   });
 }
 
+// vt-0199: size caps. Workflows are RCE-capable (vm.runInContext per expr);
+// a definition with 500 nodes × 10KB exprs at 200ms timeout = 100s wall-lock
+// per run. CPU-DoS vector even without escape from the sandbox.
+const WF_MAX_NODES = 200;
+const WF_MAX_EDGES = 400;
+const WF_MAX_EXPR_LEN = 4096;
+const WF_MAX_TOTAL_BYTES = 256 * 1024;
 function validateDefinition(def) {
   if (!def || typeof def !== 'object') throw new Error('definition required');
+  // Total size guard FIRST — cheap.
+  try {
+    const totalBytes = Buffer.byteLength(JSON.stringify(def), 'utf8');
+    if (totalBytes > WF_MAX_TOTAL_BYTES) {
+      throw new Error(`definition too large: ${totalBytes} bytes > ${WF_MAX_TOTAL_BYTES}`);
+    }
+  } catch (e) {
+    if (e.message.startsWith('definition too large')) throw e;
+    // JSON.stringify failed (circular) — reject.
+    throw new Error('definition not JSON-serializable');
+  }
   const { start, nodes, edges } = def;
   if (!start) throw new Error('start node required');
   if (!Array.isArray(nodes) || !nodes.length) throw new Error('nodes required');
+  if (nodes.length > WF_MAX_NODES) throw new Error(`too many nodes: ${nodes.length} > ${WF_MAX_NODES}`);
+  if (Array.isArray(edges) && edges.length > WF_MAX_EDGES) {
+    throw new Error(`too many edges: ${edges.length} > ${WF_MAX_EDGES}`);
+  }
+  // Per-node expression-field length caps. Reject early so the runner
+  // doesn't burn vm.runInContext time on monstrous strings.
+  const EXPR_FIELDS = ['expr', 'condition', 'value_expr', 'prompt', 'transform', 'assert'];
+  for (const n of nodes) {
+    if (!n || typeof n !== 'object') continue;
+    for (const f of EXPR_FIELDS) {
+      if (typeof n[f] === 'string' && n[f].length > WF_MAX_EXPR_LEN) {
+        throw new Error(`node ${n.id} field ${f} too long: ${n[f].length} > ${WF_MAX_EXPR_LEN}`);
+      }
+    }
+  }
   const byId = new Map(nodes.map(n => [n.id, n]));
   if (!byId.has(start)) throw new Error(`unknown start node: ${start}`);
   for (const e of edges || []) {

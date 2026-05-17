@@ -37,17 +37,35 @@ async function createWorkflow(c, { name, description, definition }) {
   return rows[0];
 }
 
-async function updateWorkflow(c, id, patch) {
+// vt-0205: optimistic concurrency. expectedVersion (optional, finite int)
+// enables cross-tab safety: UPDATE only fires if current version still
+// matches; bumps version on success. Returns {__conflict: true, current}
+// to let the caller surface 409. Same shape as updateGroup (vt-0081).
+async function updateWorkflow(c, id, patch, expectedVersion) {
   const updates = []; const args = [];
   if ('name' in patch)        { args.push(patch.name);        updates.push(`name = $${args.length}`); }
   if ('description' in patch) { args.push(patch.description); updates.push(`description = $${args.length}`); }
   if ('definition' in patch)  { args.push(JSON.stringify(patch.definition)); updates.push(`definition = $${args.length}::jsonb`); }
   if (!updates.length) return await getWorkflow(c, id);
+  updates.push('version = version + 1');
   updates.push('updated_at = now()');
   args.push(id);
-  const { rows } = await c.query(
-    `UPDATE fleet_workflows SET ${updates.join(', ')} WHERE id = $${args.length} RETURNING *`, args);
-  return rows[0] || null;
+  let sql = `UPDATE fleet_workflows SET ${updates.join(', ')} WHERE id = $${args.length}`;
+  if (Number.isFinite(expectedVersion)) {
+    args.push(expectedVersion);
+    sql += ` AND version = $${args.length}`;
+  }
+  sql += ' RETURNING *';
+  const { rows } = await c.query(sql, args);
+  if (!rows.length) {
+    if (Number.isFinite(expectedVersion)) {
+      const cur = await getWorkflow(c, id);
+      if (!cur) return null;
+      return { __conflict: true, current: cur };
+    }
+    return null;
+  }
+  return rows[0];
 }
 
 async function deleteWorkflow(c, id) {
