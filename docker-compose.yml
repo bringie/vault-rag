@@ -81,7 +81,7 @@ services:
       # cleanup loop in the same command.
       ofelia.enabled: "true"
       ofelia.job-exec.pg-backup.schedule: "0 30 3 * * *"
-      ofelia.job-exec.pg-backup.command: "/bin/sh -c 'set -e; D=$(date -u +%F); F=/backups/vault_rag-$D.dump; pg_dump -U $POSTGRES_USER -d vault_rag -Fc -Z 6 -f $F.tmp && mv $F.tmp $F && chmod 0640 $F && find /backups -name vault_rag-*.dump -mtime +30 -delete; echo backup_ok $F $(stat -c%s $F) bytes'"
+      ofelia.job-exec.pg-backup.command: "/bin/sh -c 'set -e; D=$$(date -u +%F); F=/backups/vault_rag-$$D.dump; pg_dump -U $$POSTGRES_USER -d vault_rag -Fc -Z 6 -f $$F.tmp && mv $$F.tmp $$F && chmod 0640 $$F && find /backups -name vault_rag-*.dump -mtime +30 -delete; echo backup_ok $$F $$(stat -c%s $$F) bytes'"
       ofelia.job-exec.pg-backup.no-overlap: "true"
       # vt-0273: weekly DR smoke. Verify the latest dump is *readable*
       # by pg_restore --list — catches corrupt dump files (truncated by
@@ -89,7 +89,7 @@ services:
       # requires a disposable pg + age decrypt); operator runs
       # tests/dr-restore.sh manually before major releases.
       ofelia.job-exec.pg-backup-verify.schedule: "0 0 4 * * 0"
-      ofelia.job-exec.pg-backup-verify.command: "/bin/sh -c 'set -e; LATEST=$(ls -1t /backups/vault_rag-*.dump 2>/dev/null | head -1); if [ -z \"$LATEST\" ]; then echo NO_BACKUPS; exit 1; fi; pg_restore --list \"$LATEST\" > /dev/null && echo dr_smoke_ok $LATEST'"
+      ofelia.job-exec.pg-backup-verify.command: "/bin/sh -c 'set -e; LATEST=$$(ls -1t /backups/vault_rag-*.dump 2>/dev/null | head -1); if [ -z \"$$LATEST\" ]; then echo NO_BACKUPS; exit 1; fi; pg_restore --list \"$$LATEST\" > /dev/null && echo dr_smoke_ok $$LATEST'"
       ofelia.job-exec.pg-backup-verify.no-overlap: "true"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${VAULT_RAG_PG_USER} -d vault_rag"]
