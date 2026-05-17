@@ -81,7 +81,7 @@ groups:
     labels: { severity: warning, service: db }
     annotations:
       summary: "{{ $labels.table }} exceeds 1 GB"
-      runbook: "Audit retention is operator-driven for personal/team scope. Either accept the size (audit history) or add a retention policy in cleanup-vault-audit.js for this table."
+      runbook: "Run `docker exec vault-rag-tools node /scripts/cleanup-vault-audit.js --table={{ $labels.table }} --dry-run` to preview, then re-run with `--older-than=30` (or tighter) without --dry-run. Add a longer-term retention to the env (e.g. AUTH_AUDIT_RETAIN_DAYS=14) so the weekly cron handles it next time."
 
   - alert: VaultGitSyncSilent
     expr: (vault_git_sync_last_ok_seconds == 0) or (time() - vault_git_sync_last_ok_seconds > 6 * 60 * 60)

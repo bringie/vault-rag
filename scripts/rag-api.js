@@ -498,27 +498,42 @@ async function handleHealthDetail(req, res) {
   // vt-0300: git-sync push status from lib/git-sync (vt-0289 plumbing).
   // Surfaces "haven't pushed in 6h" to the operator at 03:00 without
   // forcing them to grep logs.
+  // vt-0301: only ERROR flips out.ok — pg / secrets do the same.
+  //          A "warn" (push lagging, never configured) must NOT flip
+  //          the overall health to non-ok or external monitors will
+  //          page on every host that doesn't use VAULT_GIT_REMOTE.
+  //          The dedicated VaultGitSyncSilent vmalert rule still fires.
   try {
     const gitSyncStatus = gitSync.status?.() || {};
     const now = Math.floor(Date.now() / 1000);
-    const okAge = gitSyncStatus.last_ok_epoch
-      ? now - gitSyncStatus.last_ok_epoch : null;
-    const failAge = gitSyncStatus.last_fail_epoch
-      ? now - gitSyncStatus.last_fail_epoch : null;
-    let status = 'ok';
-    let detail = okAge != null ? `last push ${okAge}s ago` : 'no successful push yet';
-    if (okAge == null || okAge > 6 * 3600) {
-      status = 'warn'; out.ok = false;
-      detail = okAge == null
-        ? 'no successful push since boot (operator may not have set VAULT_GIT_REMOTE)'
-        : `no successful push in ${Math.round(okAge / 60)} min`;
+    const okEpoch = gitSyncStatus.last_ok_epoch || 0;
+    const failEpoch = gitSyncStatus.last_fail_epoch || 0;
+    const okAge = okEpoch ? now - okEpoch : null;
+    const failAge = failEpoch ? now - failEpoch : null;
+    let status, detail;
+    if (okEpoch === 0 && failEpoch === 0) {
+      // Feature not exercised yet — no /api/put writes happened OR
+      // VAULT_GIT_REMOTE is unset and gitSync.trigger is a no-op.
+      // Either way: not an actionable problem.
+      status = 'unknown';
+      detail = 'no push attempts since boot (VAULT_GIT_REMOTE may be unset, or no /api/put writes yet)';
+    } else if (okAge != null && okAge < 6 * 3600) {
+      status = 'ok';
+      detail = `last push ${okAge}s ago`;
+    } else {
+      status = 'warn';
+      detail = okAge != null
+        ? `no successful push in ${Math.round(okAge / 60)} min`
+        : 'no successful push yet but failures have occurred — check push_failed log';
     }
     if (failAge != null && (okAge == null || failAge < okAge)) {
-      status = 'warn';
+      // Note the recent failure regardless of status — adds diagnostic
+      // text without changing the status verdict.
       detail += ` · last failure ${failAge}s ago`;
     }
-    out.subsystems.git_sync = { status, detail, last_ok_epoch: gitSyncStatus.last_ok_epoch || null, last_fail_epoch: gitSyncStatus.last_fail_epoch || null };
+    out.subsystems.git_sync = { status, detail, last_ok_epoch: okEpoch || null, last_fail_epoch: failEpoch || null };
   } catch (e) {
+    out.ok = false;
     out.subsystems.git_sync = { status: 'error', detail: scrubError(e.message) };
   }
   // age.key backup recency (file mtime). Looks for .bak.* in same dir as

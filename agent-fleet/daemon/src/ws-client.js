@@ -212,13 +212,22 @@ const _droppedBySession = new Map();
 function _recordDrop(sessionId, bytes) {
   _droppedBySession.set(sessionId, (_droppedBySession.get(sessionId) || 0) + bytes);
 }
-function _takeDrops() {
+// vt-0302: split take→peek + per-session consume so the daemon can
+// retry the gap-emit later if the WS dies mid-handshake. The previous
+// _takeDrops() cleared the map BEFORE any send was attempted — a
+// reconnect that died right after the reconciliation frame lost the
+// drop counters forever.
+function _peekDrops() {
   const out = [];
   for (const [sid, bytes] of _droppedBySession) {
     if (bytes > 0) out.push({ session_id: sid, dropped_bytes: bytes });
   }
-  _droppedBySession.clear();
   return out;
+}
+function _consumeDrop(sessionId, bytes) {
+  const cur = _droppedBySession.get(sessionId) || 0;
+  if (cur <= bytes) _droppedBySession.delete(sessionId);
+  else _droppedBySession.set(sessionId, cur - bytes);
 }
 
 function safeSend(ws, obj) {
@@ -228,9 +237,13 @@ function safeSend(ws, obj) {
     // inventory) are periodic and re-sent next tick; losing one of
     // those is invisible to the user.
     if (obj && obj.type === 'pty_data' && obj.session_id && typeof obj.data === 'string') {
-      // data is base64 — decoded length is ~3/4 of the encoded length.
-      const approxBytes = Math.floor(obj.data.length * 3 / 4);
-      _recordDrop(obj.session_id, approxBytes);
+      // vt-0302: precise decoded length. Standard base64: every 4 chars
+      // = 3 bytes, minus 1 per '=' padding character. The earlier
+      // length*3/4 over-counted by up to 2 bytes per frame.
+      const len = obj.data.length;
+      const padCount = obj.data.endsWith('==') ? 2 : (obj.data.endsWith('=') ? 1 : 0);
+      const exactBytes = Math.max(0, Math.floor(len * 3 / 4) - padCount);
+      _recordDrop(obj.session_id, exactBytes);
     }
     return;
   }
@@ -425,9 +438,18 @@ async function runDaemon(opts) {
       // daemon had to drop while the WS was down. Hub broadcasts these
       // to viewers so the transcript shows an explicit gap marker
       // instead of silently splicing post-reconnect output.
-      const drops = _takeDrops();
+      // vt-0302: don't clear the drop counters until each send succeeds.
+      // If the ws dies mid-handshake we'd lose the gap count forever
+      // with the previous _takeDrops() implementation.
+      const drops = _peekDrops();
       for (const d of drops) {
-        ws.send(JSON.stringify({ type: 'pty_gap', session_id: d.session_id, dropped_bytes: d.dropped_bytes }));
+        try {
+          ws.send(JSON.stringify({ type: 'pty_gap', session_id: d.session_id, dropped_bytes: d.dropped_bytes }));
+          _consumeDrop(d.session_id, d.dropped_bytes);
+        } catch (e) {
+          console.error(`[daemon] pty_gap send failed for ${d.session_id}: ${e.message}`);
+          break;  // stop trying — preserve remaining counts for next reconnect
+        }
       }
       for (const [id] of local) if (!ptyMgr.sessions.has(id)) store.delete(id);
 
