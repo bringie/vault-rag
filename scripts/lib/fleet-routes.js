@@ -176,16 +176,33 @@ async function handleWsTicket({ req, res, body, ctx }) {
   // call this (they use Authorization header on the WS upgrade); we still
   // refuse to mint daemon tickets via this endpoint to avoid future bypass.
   const requested = (body && body.role) ? String(body.role) : 'viewer';
+  const callerId = _workflowCallerFp(req);
+  const callerIp = req.socket?.remoteAddress || null;
+  const userAgent = (req.headers['user-agent'] || '').slice(0, 200);
+  async function audit(outcome, detail) {
+    if (!ctx.db) return;
+    try {
+      await ctx.db.query(
+        `INSERT INTO auth_audit (op, role, caller_id, caller_ip, user_agent, outcome, detail)
+         VALUES ('ws_ticket_grant', $1, $2, $3, $4, $5, $6)`,
+        [requested, callerId, callerIp, userAgent, outcome, detail ? JSON.stringify(detail) : null]);
+    } catch (e) {
+      log.error('auth_audit_insert_failed', { msg: e.message });
+    }
+  }
   if (requested === 'daemon') {
+    await audit('denied', { reason: 'daemon_role_disallowed' });
     return send(res, 403, { error: 'daemon role uses Authorization header, not tickets' });
   }
   if (!['viewer', 'workflow_viewer', 'metrics_viewer'].includes(requested)) {
+    await audit('denied', { reason: 'unknown_role' });
     return send(res, 422, { error: `unknown role: ${requested}` });
   }
   // Admin-bearer holders may request any viewer role; viewer-bearer holders
   // may only request the same. Auth check is uniform — we already passed
   // checkAuth in dispatchHttp.
   const ticket = signWsTicket(ctx, requested);
+  await audit('ok');
   send(res, 200, { ticket, role: requested, expires_in_ms: WS_TICKET_TTL_MS });
 }
 

@@ -13,7 +13,8 @@ x-logging: &default-logging
 
 services:
   vault-rag-ollama:
-    image: ollama/ollama:latest
+    # vt-0281: pinned by digest. Update via `docker pull ollama/ollama:latest && docker inspect --format='{{index .RepoDigests 0}}'` then commit.
+    image: ollama/ollama:latest@sha256:6077dbbd6508dce8973f8b91c30d8026b1279ab0483e15f0dfad469dba676c2f
     container_name: vault-rag-ollama
     logging: *default-logging
     restart: unless-stopped
@@ -40,7 +41,8 @@ services:
       retries: 3
 
   vault-rag-postgres:
-    image: pgvector/pgvector:pg16
+    # vt-0281: pinned by digest.
+    image: pgvector/pgvector:pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
     container_name: vault-rag-postgres
     logging: *default-logging
     restart: unless-stopped
@@ -206,7 +208,8 @@ services:
       retries: 3
 
   vault-rag-ofelia:
-    image: mcuadros/ofelia:latest
+    # vt-0281: pinned by digest. Replaces the moving :latest tag.
+    image: mcuadros/ofelia:latest@sha256:efcbe2c5cf658a25de6443c1462d653f9cc03791d642e01fc6c638a00f97e492
     container_name: vault-rag-ofelia
     logging: *default-logging
     restart: unless-stopped
@@ -233,7 +236,8 @@ services:
       retries: 3
 
   vault-rag-forgejo:
-    image: codeberg.org/forgejo/forgejo:9
+    # vt-0281: pinned by digest.
+    image: codeberg.org/forgejo/forgejo:9@sha256:3c34f11fe8b9983096eef3f8f25c2d2c21c4ae7504960cb203f0b075d1d8ed73
     container_name: vault-rag-forgejo
     logging: *default-logging
     restart: unless-stopped
@@ -437,7 +441,8 @@ services:
 
   vault-rag-grafana:
     profiles: ["monitoring"]   # vt-0112: agent-fleet UI covers cost+host metrics; bring back with --profile monitoring
-    image: grafana/grafana:11.3.0
+    # vt-0281: pinned by digest.
+    image: grafana/grafana:11.3.0@sha256:a0f881232a6fb71a0554a47d0fe2203b6888fe77f4cefb7ea62bed7eb54e13c3
     container_name: vault-rag-grafana
     logging: *default-logging
     ports:
@@ -482,7 +487,8 @@ services:
 
   vault-rag-vmsingle:
     profiles: ["monitoring"]
-    image: victoriametrics/victoria-metrics:v1.108.1
+    # vt-0281: pinned by digest.
+    image: victoriametrics/victoria-metrics:v1.108.1@sha256:f6e5322b315795ae2fec494c1d1c94b2e0325b789fead60ef3a13fccdefcd81e
     container_name: vault-rag-vmsingle
     logging: *default-logging
     restart: unless-stopped
@@ -513,7 +519,8 @@ services:
 
   vault-rag-node-exporter:
     profiles: ["monitoring"]
-    image: prom/node-exporter:v1.8.2
+    # vt-0281: pinned by digest.
+    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
     container_name: vault-rag-node-exporter
     logging: *default-logging
     restart: unless-stopped
@@ -548,7 +555,8 @@ services:
 
   vault-rag-cadvisor:
     profiles: ["monitoring"]
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    # vt-0281: pinned by digest.
+    image: gcr.io/cadvisor/cadvisor:v0.49.1@sha256:3cde6faf0791ebf7b41d6f8ae7145466fed712ea6f252c935294d2608b1af388
     container_name: vault-rag-cadvisor
     logging: *default-logging
     restart: unless-stopped
@@ -568,7 +576,8 @@ services:
 
   vault-rag-postgres-exporter:
     profiles: ["monitoring"]
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    # vt-0281: pinned by digest.
+    image: prometheuscommunity/postgres-exporter:v0.15.0@sha256:386b12d19eab2a37d7cd8ca8b4c7491cc7a830d9581f49af6c98a393da9605e6
     container_name: vault-rag-postgres-exporter
     logging: *default-logging
     restart: unless-stopped

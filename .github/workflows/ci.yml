@@ -71,6 +71,9 @@ jobs:
             bash -n "$f" 2>/dev/null || node -c "$f" 2>/dev/null || true
           done
 
+      - name: i18n parity (vt-0282)
+        run: node scripts/bin/check-i18n-parity.js
+
   shellcheck:
     name: shellcheck bin scripts
     runs-on: ubuntu-latest

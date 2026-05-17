@@ -194,6 +194,23 @@ function createRunner(deps) {
   async function execHttpRequest(node, ctx, runId) {
     const url = substituteTemplates(node.url, ctx);
     if (!url) throw new Error('http_request: url required');
+    // vt-0279: SSRF guard. Workflow http-node is admin-only (admin bearer
+    // gates workflow CRUD/run), but the architect review flagged that
+    // admin compromise should not give attacker access to internal
+    // services. Mirrors webhooks.js — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1
+    // to override for legitimate internal callouts. Note: env var is
+    // shared with webhooks since "private network access" is one
+    // operational decision, not per-feature.
+    const { isPrivateHost } = require('./webhooks');
+    let urlObj;
+    try { urlObj = new URL(url); }
+    catch (e) { throw new Error(`http_request: bad url: ${e.message}`); }
+    if (!/^https?:$/.test(urlObj.protocol)) {
+      throw new Error(`http_request: only http/https allowed (got ${urlObj.protocol})`);
+    }
+    if (isPrivateHost(urlObj.hostname)) {
+      throw new Error(`http_request: private host blocked (SSRF guard) — set VAULT_RAG_WEBHOOK_ALLOW_PRIVATE=1 to override`);
+    }
     const method = (node.method || 'GET').toUpperCase();
     const headers = {};
     for (const [k, v] of Object.entries(node.headers || {})) {
@@ -233,6 +250,14 @@ function createRunner(deps) {
   async function execNotify(node, ctx, runId) {
     const url = substituteTemplates(node.webhook_url, ctx);
     if (!url) throw new Error('notify: webhook_url required');
+    // vt-0279: SSRF guard — same rationale as execHttpRequest.
+    const { isPrivateHost } = require('./webhooks');
+    let urlObj;
+    try { urlObj = new URL(url); }
+    catch (e) { throw new Error(`notify: bad webhook_url: ${e.message}`); }
+    if (!/^https?:$/.test(urlObj.protocol) || isPrivateHost(urlObj.hostname)) {
+      throw new Error('notify: private host blocked (SSRF guard)');
+    }
     const message = substituteTemplates(node.message_template || '', ctx);
     const controller = new AbortController();
     activeControllers.set(runId, controller);

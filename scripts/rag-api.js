@@ -79,6 +79,17 @@ async function pgConnect() {
     // see the error via their own catch. Idle clients are auto-recycled.
     log.error('pg_pool_error', { msg: e.message });
   });
+  // vt-0278: statement_timeout on every new connection. Without this a
+  // single slow query (HNSW search on poorly tuned shared_buffers, a
+  // forgotten lock) can block its connection until network reset and
+  // starve the pool. 30s is generous for vector search; long-running
+  // batch jobs should use their own connection with a per-statement
+  // SET LOCAL statement_timeout override.
+  const STATEMENT_TIMEOUT_MS = parseInt(process.env.VAULT_RAG_PG_STATEMENT_TIMEOUT_MS || '30000', 10);
+  pg.on('connect', (client) => {
+    client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`).catch(e =>
+      log.warn('pg_statement_timeout_set_failed', { msg: e.message }));
+  });
   // Smoke-test once at boot so we fail loudly instead of lazily on first
   // query. Caller (boot block) handles failure.
   await pg.query('SELECT 1');
@@ -1248,6 +1259,12 @@ fleetRoutes.attachUpgrade(server, () => fleetCtx);
         ...PG, database: process.env.VAULT_RAG_TOKMON_DB || 'tokmon',
         max: parseInt(process.env.VAULT_RAG_TOKMON_POOL_MAX || '4', 10),
         idleTimeoutMillis: 30_000,
+      });
+      // vt-0278: tokmon ingest can write big batches — 60s is the cap.
+      const TOKMON_STMT_TIMEOUT_MS = parseInt(process.env.VAULT_RAG_TOKMON_STATEMENT_TIMEOUT_MS || '60000', 10);
+      tokmonPg.on('connect', (client) => {
+        client.query(`SET statement_timeout = ${TOKMON_STMT_TIMEOUT_MS}`).catch(e =>
+          log.warn('tokmon_statement_timeout_set_failed', { msg: e.message }));
       });
       await tokmonPg.query('SELECT 1');
       tokmonPg.on('error', (e) => { log.error('tokmon_pool_error', { msg: e.message }); });

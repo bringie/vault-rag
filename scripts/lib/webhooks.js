@@ -139,4 +139,4 @@ async function emit(pg, event, data) {
   }
 }
 
-module.exports = { emit };
+module.exports = { emit, isPrivateHost: _isPrivateHost };
