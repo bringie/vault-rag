@@ -403,270 +403,8 @@ function makeBus() {
 // vt-0287 slice 5: host CRUD + inventory/metrics/file ops moved to
 // scripts/lib/fleet/hosts.js.
 
-// Synchronous "ask claude on host X" — spawns claude --print, waits for exit,
-// returns transcript text + cost. Convenient for API consumers that just want
-// a prompt → answer roundtrip without managing websockets.
-async function handleExec({ req, res, body, ctx }) {
-  if (!body) return send(res, 422, { error: 'body required' });
-  const { tag, host_name, host_id, prompt, model, timeout_ms, cwd } = body;
-  if (!prompt || typeof prompt !== 'string') return send(res, 422, { error: 'prompt (string) required' });
-  if (!tag && !host_name && !host_id) {
-    return send(res, 422, { error: 'one of tag|host_name|host_id required' });
-  }
-  // Reuse dispatch routing logic
-  const all = await fleetDb.listHosts(ctx.db);
-  let candidates = all.filter(h => h.status === 'online');
-  if (host_id)   candidates = candidates.filter(h => h.id === host_id);
-  if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
-  if (tag) {
-    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
-    const taggedIds = new Set(taggedHosts.map(h => h.id));
-    candidates = candidates.filter(h => taggedIds.has(h.id));
-  }
-  if (!candidates.length) return send(res, 404, { error: 'no online host matches' });
-  const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
-  const busyByHost = {};
-  for (const s of sessions) busyByHost[s.host_id] = (busyByHost[s.host_id] || 0) + 1;
-  candidates.sort((a, b) => (busyByHost[a.id] || 0) - (busyByHost[b.id] || 0));
-  const host = candidates[0];
-  // vt-0133: cap concurrent exec sessions per host. Without this, 100 parallel
-  // /fleet/exec POSTs pin every host to its slowest task, each holding a
-  // session row + viewer hook + 600s default timeout = OOM + fd exhaustion.
-  const MAX_EXEC_PER_HOST = Math.max(1, parseInt(
-    process.env.VAULT_RAG_FLEET_EXEC_MAX_PER_HOST || '5', 10));
-  if ((busyByHost[host.id] || 0) >= MAX_EXEC_PER_HOST) {
-    res.setHeader('retry-after', '5');
-    return send(res, 429, {
-      error: `host ${host.name} at capacity (${busyByHost[host.id]} running, cap ${MAX_EXEC_PER_HOST})`,
-      retry_after_seconds: 5,
-    });
-  }
+// vt-0287 slice 9: handleExec + handleDispatch moved to scripts/lib/fleet/dispatch.js.
 
-  const args = ['--print'];
-  if (model) args.push('--model', String(model));
-  args.push(prompt);
-  const s = await fleetDb.createSession(ctx.db, {
-    hostId: host.id, cwd: cwd || '~',
-    args, env: {},
-    createdBy: 'exec',
-    label: prompt.slice(0, 80),
-    metadata: { exec: true },
-  });
-  if (!ctx.bus.requestSpawn(host.id, { session_id: s.id, cwd: s.cwd, args: s.args, env: {} })) {
-    return send(res, 502, { error: 'daemon vanished mid-dispatch' });
-  }
-  // Subscribe to session_exit. Use a plain Promise executor (no async) and a
-  // single unsubscribe() closure so the hook is guaranteed freed on every
-  // resolution path — including orphan reconciliation and spawn_err (which
-  // both now also emit session_exit to viewers, see handleDaemonWs).
-  // N7 (audit): coerce timeout_ms safely — `parseInt("abc")` → NaN propagates
-  // through Math.min/max as NaN → setTimeout(NaN) ≈ 0ms → instant timeout.
-  const rawTimeout = Number.parseInt(timeout_ms, 10);
-  const TIMEOUT = Math.min(Math.max(Number.isFinite(rawTimeout) ? rawTimeout : 120000, 5000), 600000);
-  let unsubscribed = false;
-  let timeoutHandle = null;
-  let handler = null;
-  const result = await new Promise((resolve) => {
-    const cleanup = () => {
-      if (unsubscribed) return;
-      unsubscribed = true;
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (handler) ctx.bus.unsubscribeViewerHook(s.id, handler);
-    };
-    handler = (frame) => {
-      if (frame.type === 'session_exit') {
-        cleanup();
-        resolve({ exitCode: frame.exit_code });
-      }
-    };
-    ctx.bus.subscribeViewerHook(s.id, handler);
-    timeoutHandle = setTimeout(() => {
-      cleanup();
-      ctx.bus.sendKill(s.id, host.id, 'SIGTERM');
-      resolve({ exitCode: -1, timeout: true });
-    }, TIMEOUT);
-    timeoutHandle.unref?.();
-  });
-  // Read transcript (batcher flush already triggered by session_exit)
-  const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out' });
-  const raw = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0))).toString('utf8');
-  const text = stripAnsi(raw);
-  let cost = null;
-  if (ctx.tokmonDb) {
-    try { cost = await fleetCost.sessionCost(ctx.tokmonDb, ctx.db, host.name, s.started_at, new Date(), s.id); }
-    catch {}
-  }
-  send(res, 200, {
-    session_id: s.id,
-    host_id: host.id, host_name: host.name, display_name: host.display_name,
-    exit_code: result.exitCode,
-    timeout: !!result.timeout,
-    output: text,
-    cost,
-  });
-}
-
-async function handleDispatch({ req, res, body, ctx }) {
-  if (!body) return send(res, 422, { error: 'body required' });
-  const { tag, group, host_name, host_id, cwd, args, env, label, metadata } = body;
-  if (!tag && !group && !host_name && !host_id) {
-    return send(res, 422, { error: 'one of tag|group|host_name|host_id required' });
-  }
-  // Resolve candidate hosts
-  const all = await fleetDb.listHosts(ctx.db);
-  let candidates = all.filter(h => h.status === 'online');
-  if (host_id)   candidates = candidates.filter(h => h.id === host_id);
-  if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
-  if (tag) {
-    // Effective tag: direct host.capabilities OR any of its groups' labels.
-    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
-    const taggedIds = new Set(taggedHosts.map(h => h.id));
-    candidates = candidates.filter(h => taggedIds.has(h.id));
-  }
-  // vt-0151: hold the group record so we can inject its brain_prompt below.
-  let resolvedGroup = null;
-  if (group) {
-    resolvedGroup = await fleetDb.getGroupByName(ctx.db, group);
-    if (!resolvedGroup) return send(res, 404, { error: `group not found: ${group}` });
-    const members = await fleetDb.listHostsInGroup(ctx.db, resolvedGroup.id);
-    const memberIds = new Set(members.map(h => h.id));
-    candidates = candidates.filter(h => memberIds.has(h.id));
-  }
-  if (!candidates.length) return send(res, 404, { error: 'no online host matches the criteria' });
-  // Pick least-busy (running sessions ascending) as a small UX win.
-  const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
-  const busyByHost = {};
-  for (const s of sessions) busyByHost[s.host_id] = (busyByHost[s.host_id] || 0) + 1;
-  candidates.sort((a, b) => (busyByHost[a.id] || 0) - (busyByHost[b.id] || 0));
-  const host = candidates[0];
-
-  // vt-0151: structured spawn fields (model/prompt/system_prompt/etc) are
-  // forwarded to the daemon so backends like claude can apply --model,
-  // --append-system-prompt, etc. When the dispatch targets a group with a
-  // brain_prompt, prepend it to body.system_prompt — both are concatenated
-  // server-side into a single string ("<brain>\n\n<per-call>"), which is
-  // then handed to whichever backend handles system_prompt (claude:
-  // --append-system-prompt, codex: --instructions, hermes wrapper: prepends
-  // as <<SYSTEM>> block, etc.). Precedence is by string order, NOT by flag
-  // order — per-call lands later in the combined text, so it acts as a
-  // refinement on top of the group's shared context. An empty per-call
-  // system_prompt just inherits the group's verbatim.
-  // vt-0169: coerce structured spawn fields to safe types before forwarding
-  // to the daemon. `dangerous` is boolean (claude --dangerously-skip-perms),
-  // any truthy non-boolean (object/array) reaching the daemon would be a
-  // surprise; string-typed prompt/model fields stay strings.
-  const structured = {};
-  for (const k of STRUCTURED_SPAWN_FIELDS) {
-    if (body[k] == null) continue;
-    if (k === 'dangerous') structured[k] = Boolean(body[k]);
-    else if (k === 'allowed_tools') {
-      // vt-0266: array of short strings — coerce + sanitize per element.
-      // vt-0271: an explicit empty array IS a valid intent (= "deny all
-      // tools for this dispatch"). Forward it; the role-union block
-      // below will respect it and INTERSECT to [] regardless of role
-      // grants.
-      if (Array.isArray(body[k])) {
-        structured[k] = body[k].filter(t => typeof t === 'string' && t.length <= 64);
-      }
-    }
-    else if (typeof body[k] === 'string' || typeof body[k] === 'number') structured[k] = body[k];
-    // silently drop objects/arrays for string-typed fields
-  }
-  if (resolvedGroup && resolvedGroup.brain_prompt) {
-    structured.system_prompt = structured.system_prompt
-      ? `${resolvedGroup.brain_prompt}\n\n${structured.system_prompt}`
-      : resolvedGroup.brain_prompt;
-  }
-  // vt-0259: prepend assigned role prompts (ordered by position) to the
-  // system_prompt. Roles compose with brain_prompt, not replace it; the
-  // final stack is: <brain>\n\n<role1>\n\n<role2>\n\n<per-call>.
-  // vt-0264: belt-and-suspenders cap on dispatch — the assignment-time
-  // cap (≤8 roles, ≤64 KiB combined) prevents most bloat, but a role
-  // edited AFTER assignment, or a per-call system_prompt added on top,
-  // can still push the combined string over ARG_MAX. If we exceed
-  // MAX_DISPATCH_SYSTEM_PROMPT_BYTES, drop the per-call addition (it's
-  // the least essential — the operator can re-specify) and warn loud.
-  let appliedRoleNames = [];
-  if (resolvedGroup) {
-    try {
-      const roles = await fleetDb.listGroupRoles(ctx.db, resolvedGroup.id);
-      if (roles.length) {
-        const roleBlob = roles.map(r => r.prompt).filter(Boolean).join('\n\n');
-        if (roleBlob) {
-          structured.system_prompt = structured.system_prompt
-            ? `${roleBlob}\n\n${structured.system_prompt}`
-            : roleBlob;
-        }
-        appliedRoleNames = roles.map(r => r.name);
-        // First role with a default_model wins if the caller didn't specify one.
-        if (!structured.model) {
-          const firstWithModel = roles.find(r => r.default_model);
-          if (firstWithModel) structured.model = firstWithModel.default_model;
-        }
-        // vt-0266: forward the role-defined allowed_tools to the daemon.
-        // Roles compose by UNION — if any role grants Bash, Bash is allowed.
-        // If the caller already specified allowed_tools, INTERSECT with the
-        // union so caller is always at-most-as-permissive as the roles
-        // (defence-in-depth: caller can narrow but not widen).
-        const roleTools = new Set();
-        for (const r of roles) {
-          const t = Array.isArray(r.allowed_tools) ? r.allowed_tools : [];
-          for (const x of t) if (typeof x === 'string') roleTools.add(x);
-        }
-        if (roleTools.size > 0) {
-          if (Array.isArray(structured.allowed_tools)) {
-            structured.allowed_tools = structured.allowed_tools.filter(t => roleTools.has(t));
-          } else {
-            structured.allowed_tools = Array.from(roleTools);
-          }
-        }
-      }
-    } catch (e) {
-      log.error('group_roles_lookup_failed', { group: resolvedGroup.name, msg: e.message });
-    }
-  }
-  // ARG_MAX on Linux is ~128 KiB; daemon spawn argv carries system_prompt
-  // as a single argument (--append-system-prompt). Cap at 96 KiB so other
-  // argv (--model, --allowed-tools …) still fits.
-  const MAX_DISPATCH_SYSTEM_PROMPT_BYTES = 96 * 1024;
-  if (structured.system_prompt
-      && Buffer.byteLength(structured.system_prompt, 'utf8') > MAX_DISPATCH_SYSTEM_PROMPT_BYTES) {
-    log.warn('dispatch_system_prompt_truncated', {
-      group: resolvedGroup ? resolvedGroup.name : null,
-      original_bytes: Buffer.byteLength(structured.system_prompt, 'utf8'),
-      cap: MAX_DISPATCH_SYSTEM_PROMPT_BYTES,
-    });
-    // Truncate at a UTF-8-safe boundary. Buffer.slice may cut mid-codepoint;
-    // Buffer.toString('utf8') replaces the dangling bytes with U+FFFD rather
-    // than dropping silently — downstream LLM sees one '�' which is
-    // harmless. The trailing marker line is the operator-visible signal.
-    const buf = Buffer.from(structured.system_prompt, 'utf8').slice(0, MAX_DISPATCH_SYSTEM_PROMPT_BYTES - 64);
-    structured.system_prompt = buf.toString('utf8') + '\n\n[truncated by dispatcher: combined prompt exceeded cap]';
-  }
-
-  const sessionMetadata = { ...(metadata || {}), ...structured };
-  if (resolvedGroup) sessionMetadata.dispatched_group = resolvedGroup.name;
-  if (appliedRoleNames.length) sessionMetadata.applied_roles = appliedRoleNames;
-
-  const s = await fleetDb.createSession(ctx.db, {
-    hostId: host.id, cwd: cwd || '~',
-    args: args || [], env: env || {},
-    createdBy: 'dispatch',
-    label: label || null, metadata: sessionMetadata,
-  });
-  if (ctx.bus) {
-    const payload = { session_id: s.id, cwd: s.cwd, args: s.args, env: s.env, ...structured };
-    ctx.bus.requestSpawn(host.id, payload);
-  }
-  send(res, 201, {
-    session_id: s.id,
-    host_id: host.id,
-    host_name: host.name,
-    display_name: host.display_name,
-    group_brain_prompt_applied: !!(resolvedGroup && resolvedGroup.brain_prompt),
-    applied_roles: appliedRoleNames,
-  });
-}
 
 // vt-0287 slice 6: cost + timeline handlers moved to scripts/lib/fleet/cost.js.
 // vt-0287 slice 8: session CRUD + broadcast + cleanup moved to
@@ -674,12 +412,11 @@ async function handleDispatch({ req, res, body, ctx }) {
 
 // vt-0287 slice 5: host file ops moved to scripts/lib/fleet/hosts.js.
 
-// vt-0287 slice 7: transcript handlers moved to scripts/lib/fleet/transcripts.js.
-// stripAnsi() is re-exported by that module for dispatch handler reuse.
-const { stripAnsi } = require('./fleet/transcripts');
-// vt-0287 slice 8: session handlers moved to scripts/lib/fleet/sessions.js.
-// STRUCTURED_SPAWN_FIELDS re-exported for handleDispatch (still inline).
-const { STRUCTURED_SPAWN_FIELDS } = require('./fleet/sessions');
+// vt-0287 slice 7: transcripts → scripts/lib/fleet/transcripts.js.
+// vt-0287 slice 8: sessions   → scripts/lib/fleet/sessions.js.
+// vt-0287 slice 9: dispatch+exec → scripts/lib/fleet/dispatch.js
+// (which itself re-uses stripAnsi + STRUCTURED_SPAWN_FIELDS from the
+//  transcripts/sessions sub-modules — no shared module-level state).
 
 // vt-0287 slice 2: pricing handlers moved to scripts/lib/fleet/prices.js
 // — routed via the sub-module dispatcher in dispatchHttp.
@@ -872,6 +609,7 @@ function _getSubRoutes() {
     require('./fleet/cost'),
     require('./fleet/transcripts'),
     require('./fleet/sessions'),
+    require('./fleet/dispatch'),
   ];
   const extDeps = {
     ...deps,
@@ -1009,15 +747,8 @@ function dispatchHttp(req, res, ctx) {
     return send(res, 200, { role });
   }
 
-  // vt-0287 slice 5: host CRUD + metrics + inventory + file ops moved
-  // to scripts/lib/fleet/hosts.js (sub-module dispatch). dispatch/exec
-  // stay inline — they're stateful (host_command_audit + retry loops).
-  if (method === 'POST'   && path === '/fleet/dispatch') {
-    return readBody(req).then(b => handleDispatch({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'POST'   && path === '/fleet/exec') {
-    return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
+  // vt-0287 slice 5: hosts → scripts/lib/fleet/hosts.js (sub-module).
+  // vt-0287 slice 9: /fleet/dispatch + /fleet/exec → scripts/lib/fleet/dispatch.js.
 
   // vt-0287 slice 8: /fleet/sessions CRUD + cleanup + /fleet/broadcast +
   // session :id GET/PATCH/input/kill dispatched via sub-module router
