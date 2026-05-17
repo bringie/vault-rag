@@ -416,6 +416,77 @@ body::after {
   display: flex; flex-direction: column; overflow: auto;
 }
 
+/* vt-0190: in-app toast + dialog */
+#toast-stack {
+  position: fixed; bottom: 40px; right: 16px; z-index: 300;
+  display: flex; flex-direction: column; gap: 8px;
+  max-width: 90vw; pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 4px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-left-width: 3px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.3);
+  font: 12px/1.4 monospace; color: var(--text);
+  max-width: 480px; word-wrap: break-word;
+  animation: toast-in .15s ease-out;
+}
+@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.toast-leave { opacity: 0; transition: opacity .2s; }
+.toast-info    { border-left-color: var(--accent); }
+.toast-success { border-left-color: var(--ok); }
+.toast-warn    { border-left-color: var(--warn); }
+.toast-error   { border-left-color: var(--danger); }
+.toast-msg { flex: 1; }
+.toast-action, .toast-close {
+  background: transparent; border: 1px solid var(--line);
+  color: var(--text-dim); padding: 2px 8px; border-radius: 3px;
+  font: 11px/1.2 monospace; cursor: pointer;
+}
+.toast-action { color: var(--accent); border-color: var(--accent); }
+.toast-action:hover { background: var(--bg-hover); }
+.toast-close { border: none; font-size: 16px; padding: 0 4px; }
+
+.app-dialog-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  z-index: 300; display: flex; align-items: center; justify-content: center;
+}
+.app-dialog-frame {
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 4px;
+  min-width: 360px; max-width: 90vw;
+  padding: 18px 20px;
+  box-shadow: 0 0 30px rgba(0,0,0,.5);
+}
+.app-dialog-title {
+  font: 12px/1.4 monospace; color: var(--accent);
+  text-transform: uppercase; margin-bottom: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.app-dialog-body { margin-bottom: 14px; color: var(--text); font: 12px/1.5 monospace; }
+.app-dialog-msg { margin-bottom: 8px; color: var(--text-dim); }
+.app-dialog-input {
+  width: 100%; box-sizing: border-box;
+  padding: 8px 10px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px;
+  font: 12px/1.4 monospace;
+}
+.app-dialog-input:focus { border-color: var(--accent); outline: none; }
+.app-dialog-buttons {
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+.app-dialog-buttons .btn-ghost, .app-dialog-buttons .btn-primary, .app-dialog-buttons .btn-danger {
+  width: auto; padding: .5em 1em;
+}
+.btn-danger {
+  background: transparent; color: var(--danger);
+  border: 1px solid var(--danger); border-radius: 3px;
+  font: 11px/1.2 monospace; cursor: pointer;
+  text-transform: uppercase;
+}
+.btn-danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
 /* vt-0193: health dashboard */
 .health-grid {
   display: grid; gap: 12px; padding: 16px;

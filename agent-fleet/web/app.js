@@ -74,7 +74,28 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 401) {
-      localStorage.removeItem('fleetToken'); location.reload(); throw new Error('auth');
+      // vt-0191: don't `location.reload()` — that destroys any in-progress
+      // edit (5K-line note in the vault editor was being lost when autosave
+      // hit an expired bearer). Open a re-auth dialog instead so the user
+      // can paste a new token and continue from where they were.
+      const newTok = await window.inputDialog({
+        title: 'Session expired',
+        message: 'Bearer token rejected. Paste a fresh token to resume — your in-progress edits stay in memory.',
+        masked: true,
+        confirmLabel: 'reconnect',
+        cancelLabel: 'log out',
+      });
+      if (newTok) {
+        localStorage.fleetToken = newTok;
+        state.token = newTok;
+        window.toast.success('reconnected — retry your action');
+      } else {
+        localStorage.removeItem('fleetToken');
+        location.reload();
+      }
+      const err = new Error('auth');
+      err.status = 401;
+      throw err;
     }
     if (!r.ok) {
       const e = new Error(`${method} ${path}: ${r.status}`);

@@ -564,13 +564,18 @@
       renderNote();
     } catch (e) {
       if (e.status === 412) {
-        if (confirm(`Conflict: someone else edited "${state.currentPath}" since you loaded it.\n\n` +
-                    `[OK] Force overwrite (loses their changes)\n` +
-                    `[Cancel] Discard your edit and reload from server`)) {
-          await saveNote(text, true);
-        } else {
-          await openNote(state.currentPath);
-        }
+        // vt-0190: native confirm() had OK = "force overwrite" as Enter
+        // default — hostile asymmetric destruction. Now a styled dialog
+        // with the non-destructive choice as primary (Enter = reload).
+        const force = await window.confirmDialog({
+          title: 'Conflict',
+          message: `Someone else edited "${state.currentPath}" since you loaded it.\n\nForce overwrite will lose their changes.`,
+          confirmLabel: 'force overwrite',
+          cancelLabel: 'reload from server',
+          danger: true,
+        });
+        if (force) await saveNote(text, true);
+        else await openNote(state.currentPath);
       } else {
         if (status) status.textContent = 'error: ' + e.message;
       }
@@ -703,37 +708,65 @@
       dlg.addEventListener('close', closeReveal, { once: true });
       dlg.showModal();
     } catch (e) {
-      alert('reveal failed: ' + e.message);
+      window.toast.error('reveal failed: ' + e.message);
     }
   }
 
+  // vt-0190: secret prompts use the in-app dialog. Critically, the
+  // VALUE input is masked={true} → type=password — native prompt()
+  // showed secret values in plaintext to anyone shoulder-surfing.
   async function secretSetPrompt(presetName) {
-    const name = presetName || prompt('secret name:');
+    const name = presetName || await window.inputDialog({
+      title: 'New secret', message: 'Secret name (UPPER_SNAKE convention):',
+      placeholder: 'GH_TOKEN', confirmLabel: 'next',
+    });
     if (!name) return;
-    const value = prompt(`value for "${name}":`);
+    const value = await window.inputDialog({
+      title: `Value for ${name}`, message: 'Will be sent over HTTPS and stored age-encrypted.',
+      masked: true, confirmLabel: 'save',
+    });
     if (value == null) return;
     try {
       await api('POST', '/secrets/set', { name, value });
+      window.toast.success(`secret "${name}" saved`);
       await openSecretsMode();
-    } catch (e) { alert('set failed: ' + e.message); }
+    } catch (e) { window.toast.error('set failed: ' + e.message); }
   }
   async function secretRotatePrompt() {
-    const name = prompt('rotate which secret?');
+    const name = await window.inputDialog({
+      title: 'Rotate secret', message: 'Which secret?',
+      placeholder: 'GH_TOKEN', confirmLabel: 'next',
+    });
     if (!name) return;
-    const value = prompt(`new value for "${name}" (leave empty to keep existing):`);
+    const value = await window.inputDialog({
+      title: `New value for ${name}`,
+      message: 'Empty = server-generated 32-byte hex.',
+      masked: true, confirmLabel: 'rotate',
+    });
     try {
       await api('POST', '/secrets/rotate', { name, value: value || null });
+      window.toast.success(`secret "${name}" rotated`);
       await openSecretsMode();
-    } catch (e) { alert('rotate failed: ' + e.message); }
+    } catch (e) { window.toast.error('rotate failed: ' + e.message); }
   }
   async function secretDeletePrompt() {
-    const name = prompt('delete which secret?');
+    const name = await window.inputDialog({
+      title: 'Delete secret', message: 'Which secret? (irreversible)',
+      placeholder: 'GH_TOKEN', confirmLabel: 'next',
+    });
     if (!name) return;
-    if (!confirm(`Delete secret "${name}"? This is irreversible.`)) return;
+    const ok = await window.confirmDialog({
+      title: 'Confirm delete',
+      message: `Permanently delete secret "${name}"? This cannot be undone.`,
+      confirmLabel: 'delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api('POST', '/secrets/delete', { name });
+      window.toast.success(`secret "${name}" deleted`);
       await openSecretsMode();
-    } catch (e) { alert('delete failed: ' + e.message); }
+    } catch (e) { window.toast.error('delete failed: ' + e.message); }
   }
 
   // -------- search (vt-0160) --------
