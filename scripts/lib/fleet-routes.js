@@ -260,7 +260,6 @@ function pathMatch(url, prefix) {
 }
 
 const SID_RE = '[0-9a-f-]{36}';
-const SID_RE_BARE = /^[0-9a-f-]{36}$/i;
 
 // vt-0284: known Claude/Codex tool names. Validated at role
 // create/update time so typos ("Reaad") fail loud instead of being
@@ -750,45 +749,8 @@ async function handleBroadcast({ req, res, body, ctx }) {
   send(res, 201, { count: results.length, results });
 }
 
-// Allowlist for days — fleet-cost interpolates it into "($N || ' days')::interval".
-// parseInt protects against SQL injection (returns NaN/integer), but malformed
-// values leak raw Postgres errors out of the 500 handler. Allowlist is cleaner.
-const COST_VALID_DAYS = new Set([1, 7, 14, 30, 90]);
-async function handleCostTimeline({ req, res, ctx }) {
-  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
-  const url = new URL(req.url, 'http://x');
-  const days = parseInt(url.searchParams.get('days') || '7', 10);
-  if (!COST_VALID_DAYS.has(days)) return send(res, 422, { error: 'invalid days', allowed: [...COST_VALID_DAYS] });
-  const groupBy = url.searchParams.get('group_by') || 'model';
-  const hosts = await fleetDb.listHosts(ctx.db);
-  const rows = await fleetCost.timeline(ctx.tokmonDb, ctx.db, hosts.map(h => h.name), days, groupBy);
-  send(res, 200, { days, group_by: groupBy, points: rows });
-}
-
-async function handleSessionTimeline({ req, res, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/sessions/(${SID_RE})/timeline$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  const sid = m[1];
-  const s = await fleetDb.getSession(ctx.db, sid);
-  if (!s) return send(res, 404, { error: 'session not found' });
-  // Build a lifecycle timeline from the session row + lifecycle events.
-  const { rows: lc } = await ctx.db.query(
-    `SELECT ts, payload FROM fleet_events
-     WHERE session_id = $1 AND kind = 'lifecycle'
-     ORDER BY ts`, [sid]);
-  const events = [
-    { ts: s.started_at, kind: 'created', detail: { cwd: s.cwd, args: s.args, created_by: s.created_by } },
-  ];
-  if (s.pid != null) events.push({ ts: s.started_at, kind: 'spawned', detail: { pid: s.pid } });
-  for (const r of lc) {
-    let detail = null;
-    try { detail = JSON.parse((r.payload || Buffer.alloc(0)).toString('utf8')); } catch {}
-    events.push({ ts: r.ts, kind: 'lifecycle', detail });
-  }
-  if (s.ended_at) events.push({ ts: s.ended_at, kind: s.status, detail: { exit_code: s.exit_code } });
-  send(res, 200, { session_id: sid, status: s.status, events });
-}
+// vt-0287 slice 6: cost + timeline handlers moved to
+// scripts/lib/fleet/cost.js — dispatched via sub-module router.
 
 // Spawn schema (vt-0102). Two shapes accepted:
 //   Legacy:  { host_id, cwd, args:[...], env? }
@@ -901,67 +863,6 @@ async function handleCleanupSessions({ req, res, body, ctx }) {
 }
 
 // vt-0287 slice 5: host file ops moved to scripts/lib/fleet/hosts.js.
-
-async function handleSessionCost({ req, res, ctx }) {
-  // vt-0288: strip query before regex — `$` anchor against raw req.url
-  // 404'd whenever a client added `?_=ts` etc.
-  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/sessions/(${SID_RE})/cost$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
-  const s = await fleetDb.getSession(ctx.db, m[1]);
-  if (!s) return send(res, 404, { error: 'session not found' });
-  const host = await fleetDb.getHost(ctx.db, s.host_id);
-  if (!host) return send(res, 404, { error: 'host not found' });
-  const cost = await fleetCost.sessionCost(ctx.tokmonDb, ctx.db, host.name, s.started_at, s.ended_at, s.id);
-  send(res, 200, { session_id: s.id, host: host.name, ...cost });
-}
-
-// Batch cost lookup — replaces N concurrent /sessions/:id/cost calls from the
-// archive page (one tokmon query instead of 50). Body: { ids: ['uuid', ...] }.
-async function handleSessionCostBatch({ req, res, body, ctx }) {
-  if (!body || !Array.isArray(body.ids)) return send(res, 422, { error: 'ids[] required' });
-  if (body.ids.length > 200) return send(res, 422, { error: 'max 200 ids per request' });
-  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable' });
-  // N9 (audit): dedupe before passing to pg ANY($1) — duplicates are silently
-  // collapsed by Postgres anyway, but trimming saves cycles and makes the
-  // 200-cap apply to unique IDs rather than raw input.
-  const ids = [...new Set(body.ids.filter(x => typeof x === 'string' && SID_RE_BARE.test(x)))];
-  const costs = await fleetCost.sessionCostBatch(ctx.tokmonDb, ctx.db, ids);
-  send(res, 200, costs);
-}
-
-// vt-0114: long-term cost timeline backed by fleet_cost_daily_rollup. The
-// existing /fleet/cost/timeline only sees rows within tokmon retention
-// (90 days default). This endpoint reads the rollup table so the UI can
-// render 12-month windows even after events are purged.
-async function handleCostRollupTimeline({ req, res, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const days = Math.min(Math.max(parseInt(url.searchParams.get('days') || '90', 10), 1), 730);
-  const dim = url.searchParams.get('dim') || 'model';
-  if (!['model', 'host'].includes(dim)) return send(res, 422, { error: 'dim must be model|host' });
-  try {
-    const rows = await fleetCost.timelineFromRollup(ctx.db, days, dim);
-    send(res, 200, { days, dim, points: rows });
-  } catch (e) {
-    send(res, 500, { error: e.message });
-  }
-}
-
-async function handleCostSummary({ req, res, ctx }) {
-  if (!ctx.tokmonDb) return send(res, 503, { error: 'cost data unavailable (tokmon db not configured)' });
-  const url = new URL(req.url, 'http://x');
-  const days = parseInt(url.searchParams.get('days') || '7', 10);
-  if (!COST_VALID_DAYS.has(days)) return send(res, 422, { error: 'invalid days', allowed: [...COST_VALID_DAYS] });
-  const hosts = await fleetDb.listHosts(ctx.db);
-  const r = await fleetCost.hostSummary(ctx.tokmonDb, ctx.db, hosts.map(h => h.name), days);
-  const result = hosts.map(h => ({
-    host_id: h.id, host: h.name, status: h.status,
-    usd: r[h.name]?.usd || 0,
-    msgs: r[h.name]?.msgs || 0,
-    by_model: r[h.name]?.by_model || {},
-  }));
-  send(res, 200, { days, hosts: result });
-}
 
 // Strip both CSI sequences (\x1b[...) — including private-prefix variants like
 // \x1b[?2004h — and 2-byte ESC sequences (\x1b7, \x1b8, \x1b], etc.), and OSC
@@ -1078,86 +979,6 @@ async function _checkWorkflowConcurrency(ctx) {
 // vt-0115: docker stack self-status. The host writes a JSON file every 30s
 // via systemd timer (scripts/bin/stack-status-writer.sh); we just serve it.
 // Auth-gated — operator-only data, no need to expose container names publicly.
-// vt-0113: drill-down — list sessions whose start_at falls on the requested
-// day, optionally narrowed by host. The /fleet/cost chart calls this on
-// click of a bar segment so the operator can pivot from "$X spent on
-// host=Y on day Z" → the actual sessions behind that number.
-async function handleSessionsByBucket({ req, res, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const day = url.searchParams.get('day');
-  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-    return send(res, 422, { error: 'day=YYYY-MM-DD required' });
-  }
-  const dim = url.searchParams.get('dim') || '';
-  const value = url.searchParams.get('value') || '';
-  const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10), 500);
-
-  // vt-0125: drill-down used to silently return ALL sessions for the day when
-  // dim was model/group/label (set dim_unfiltered:true). The UI rendered these
-  // as "sessions behind the bar" → operator confusion + cross-bucket leaks.
-  // Now: each dim narrows correctly, or 422 on invalid dim.
-  const args = [day, limit];
-  let where = `date_trunc('day', s.started_at) = $1::date`;
-
-  if (dim === 'host') {
-    if (!/^[0-9a-f-]{36}$/i.test(value)) {
-      return send(res, 422, { error: 'dim=host requires value=<host-uuid>' });
-    }
-    args.push(value);
-    where += ` AND s.host_id = $${args.length}`;
-  } else if (dim === 'label') {
-    // Cost chart labels sessions by `fleet_sessions.label`, falling back to
-    // sentinels "(unlabeled)" / "(external/unlabeled)" for null / non-fleet
-    // sessions. Map sentinels back to IS NULL; external rows aren't in
-    // fleet_sessions so the bucket is naturally empty.
-    if (value === '(unlabeled)' || value === '(external/unlabeled)') {
-      where += ` AND s.label IS NULL`;
-    } else {
-      args.push(value);
-      where += ` AND s.label = $${args.length}`;
-    }
-  } else if (dim === 'group') {
-    if (value === '(ungrouped)') {
-      where += ` AND NOT EXISTS (SELECT 1 FROM fleet_host_groups hg WHERE hg.host_id = s.host_id)`;
-    } else {
-      args.push(value);
-      where += ` AND EXISTS (
-        SELECT 1 FROM fleet_host_groups hg JOIN fleet_groups g ON g.id = hg.group_id
-        WHERE hg.host_id = s.host_id AND g.name = $${args.length}
-      )`;
-    }
-  } else if (dim === 'model') {
-    if (!ctx.tokmonDb) {
-      return send(res, 503, { error: 'dim=model requires tokmon db' });
-    }
-    // Find session_ids on `day` with at least one event for the model.
-    const { rows: matchingIds } = await ctx.tokmonDb.query(
-      `SELECT DISTINCT session_id
-       FROM events
-       WHERE date_trunc('day', ts) = $1::date AND model = $2
-         AND session_id ~ '^[0-9a-f-]{36}$'`,
-      [day, value]);
-    const ids = matchingIds.map(r => r.session_id);
-    if (!ids.length) {
-      return send(res, 200, { day, dim, value, dim_unfiltered: false, sessions: [] });
-    }
-    args.push(ids);
-    where += ` AND s.id::text = ANY($${args.length})`;
-  } else if (dim) {
-    return send(res, 422, { error: `unsupported dim: ${dim} (expected host|label|group|model)` });
-  }
-
-  const { rows } = await ctx.db.query(
-    `SELECT s.id, s.label, s.started_at, s.ended_at, s.status, s.exit_code,
-            s.host_id, h.name AS host_name, h.display_name AS host_display
-     FROM fleet_sessions s
-     LEFT JOIN fleet_hosts h ON h.id = s.host_id
-     WHERE ${where}
-     ORDER BY s.started_at DESC
-     LIMIT $2`, args);
-  send(res, 200, { day, dim, value, dim_unfiltered: false, sessions: rows });
-}
-
 async function handleStackStatus({ res, ctx }) {
   const fs = require('node:fs');
   const path = require('node:path');
@@ -1272,10 +1093,12 @@ function _getSubRoutes() {
     require('./fleet/config-export'),
     require('./fleet/groups'),
     require('./fleet/hosts'),
+    require('./fleet/cost'),
   ];
   const extDeps = {
     ...deps,
     fleetPrices,
+    fleetCost,
     validateDefinition,
     ensureWorkflowRunner,
     checkWorkflowConcurrency: _checkWorkflowConcurrency,
@@ -1426,19 +1249,15 @@ function dispatchHttp(req, res, ctx) {
   if (method === 'POST' && path === '/fleet/sessions/cleanup') {
     return readBody(req).then(b => handleCleanupSessions({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
-  if (method === 'POST' && path === '/fleet/sessions/cost-batch') {
-    return readBody(req).then(b => handleSessionCostBatch({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
   if (method === 'PATCH' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) {
     return readBody(req).then(b => handlePatchSession({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/timeline$`, 'i').test(path)) {
-    return handleSessionTimeline({ req, res, ctx });
   }
   if (method === 'POST' && path === '/fleet/broadcast') {
     return readBody(req).then(b => handleBroadcast({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
-  if (method === 'GET' && path === '/fleet/cost/timeline') return handleCostTimeline({ req, res, ctx });
+  // vt-0287 slice 6: /fleet/cost/* + /fleet/sessions/:id/{cost,timeline} +
+  // /fleet/sessions/{cost-batch,by-bucket} dispatched via sub-module router
+  // (scripts/lib/fleet/cost.js).
 
   // vt-0287: recycle-bin (vt-0225), feature flags (vt-0311), agent-roles
   // (vt-0259/0264/0267/0271/0284), and group→role assignment have all
@@ -1463,12 +1282,6 @@ function dispatchHttp(req, res, ctx) {
     return handleTranscriptBin(req, res, ctx);
   }
 
-  // Cost
-  if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}/cost$`, 'i').test(path)) {
-    return handleSessionCost({ req, res, ctx });
-  }
-  if (method === 'GET' && path === '/fleet/cost/summary') return handleCostSummary({ req, res, ctx });
-
   // Pricing
   // vt-0287 slice 2: /fleet/prices/* moved to scripts/lib/fleet/prices.js
   // (dispatched via sub-module table above).
@@ -1478,10 +1291,6 @@ function dispatchHttp(req, res, ctx) {
 
   // Stack status (docker compose health for the operator)
   if (method === 'GET' && path === '/fleet/stack-status') return handleStackStatus({ res, ctx });
-  // Cost-chart drill-down: sessions in a bucket
-  if (method === 'GET' && path === '/fleet/sessions/by-bucket') return handleSessionsByBucket({ req, res, ctx });
-  // Long-term cost timeline (post-retention) from rollup table
-  if (method === 'GET' && path === '/fleet/cost/rollup-timeline') return handleCostRollupTimeline({ req, res, ctx });
 
   // vt-0136: short-lived WS ticket for browsers. Lets us drop bearer.<token>
   // out of Sec-WebSocket-Protocol (where it leaks into DevTools + proxy logs).
