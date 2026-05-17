@@ -919,103 +919,8 @@ async function handlePostKill({ req, res, body, ctx }) {
 
 // ============ Groups ============
 
-async function handleListGroups({ res, ctx }) {
-  const rows = await fleetDb.listGroups(ctx.db);
-  send(res, 200, rows);
-}
-
-const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
-function validColor(c) {
-  return c == null || c === '' || HEX_COLOR_RE.test(c);
-}
-
-async function handleCreateGroup({ res, body, ctx }) {
-  if (!body || !body.name) return send(res, 422, { error: 'name required' });
-  if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
-  // vt-0170: size cap on brain_prompt (see handlePatchGroup).
-  if (typeof body.brain_prompt === 'string' && body.brain_prompt.length > 32768) {
-    return send(res, 422, { error: 'brain_prompt too long (max 32768 chars)' });
-  }
-  try {
-    const g = await fleetDb.createGroup(ctx.db, {
-      name: body.name, description: body.description, color: body.color || null,
-      labels: Array.isArray(body.labels) ? body.labels : [],
-      brain_prompt: typeof body.brain_prompt === 'string' ? body.brain_prompt : null,
-    });
-    send(res, 201, g);
-  } catch (e) {
-    if (e.code === '23505') return send(res, 409, { error: 'name already exists' });
-    send(res, 500, { error: e.message });
-  }
-}
-
-async function handlePatchGroup({ req, res, body, ctx }) {
-  const id = pathMatch(req.url, '/fleet/groups');
-  if (!body) return send(res, 422, { error: 'body required' });
-  const patch = {};
-  if ('name' in body)        patch.name = body.name;
-  if ('description' in body) patch.description = body.description;
-  if ('color' in body) {
-    if (!validColor(body.color)) return send(res, 422, { error: 'color must be #rrggbb hex or null' });
-    patch.color = body.color || null;
-  }
-  if ('labels' in body) {
-    if (!Array.isArray(body.labels)) return send(res, 422, { error: 'labels must be array of strings' });
-    patch.labels = body.labels;
-  }
-  if ('brain_prompt' in body) {
-    if (body.brain_prompt !== null && typeof body.brain_prompt !== 'string') {
-      return send(res, 422, { error: 'brain_prompt must be string or null' });
-    }
-    // vt-0170: cap to keep the merged spawn payload bounded. 32 KiB is
-    // ~8000 words — generous for a brain prompt; anything larger is
-    // misuse (manifesto, full doc) and would blow up every spawn.
-    if (body.brain_prompt && body.brain_prompt.length > 32768) {
-      return send(res, 422, { error: 'brain_prompt too long (max 32768 chars)' });
-    }
-    patch.brain_prompt = body.brain_prompt;
-  }
-  const expectedVersion = Number.isFinite(body.expected_version) ? body.expected_version : undefined;
-  try {
-    const g = await fleetDb.updateGroup(ctx.db, id, patch, expectedVersion);
-    if (!g) return send(res, 404, { error: 'not found' });
-    if (g.__conflict) return send(res, 409, { error: 'version conflict', current: g.current });
-    send(res, 200, g);
-  } catch (e) {
-    if (e.code === '23505') return send(res, 409, { error: 'name already exists' });
-    send(res, 400, { error: e.message });
-  }
-}
-
-async function handleGetGroup({ req, res, ctx }) {
-  const id = pathMatch(req.url, '/fleet/groups');
-  const g = await fleetDb.getGroup(ctx.db, id);
-  if (!g) return send(res, 404, { error: 'not found' });
-  g.hosts = await fleetDb.listHostsInGroup(ctx.db, id);
-  send(res, 200, g);
-}
-
-async function handleDeleteGroup({ req, res, ctx }) {
-  const id = pathMatch(req.url, '/fleet/groups');
-  await fleetDb.deleteGroup(ctx.db, id);
-  res.writeHead(204); res.end();
-}
-
-async function handleGroupAddHost({ req, res, body, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/groups/(${SID_RE})/hosts$`, 'i'));
-  if (!m || !body || !body.host_id) return send(res, 422, { error: 'host_id required' });
-  await fleetDb.addHostToGroup(ctx.db, body.host_id, m[1]);
-  res.writeHead(204); res.end();
-}
-
-async function handleGroupRemoveHost({ req, res, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/groups/(${SID_RE})/hosts/(${SID_RE})$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  await fleetDb.removeHostFromGroup(ctx.db, m[2], m[1]);
-  res.writeHead(204); res.end();
-}
+// vt-0287 slice 4: group CRUD + host membership moved to
+// scripts/lib/fleet/groups.js (sub-module dispatch).
 
 // Allowlist for older_than: avoids users bypassing intent (e.g. '0 seconds'
 // would delete every closed session). Also blocks confusing Postgres errors
@@ -1446,6 +1351,7 @@ function _getSubRoutes() {
     require('./fleet/mux'),
     require('./fleet/webhooks'),
     require('./fleet/config-export'),
+    require('./fleet/groups'),
   ];
   const extDeps = {
     ...deps,
@@ -1633,22 +1539,8 @@ function dispatchHttp(req, res, ctx) {
   // point, so reaching here means an unhandled method/path that should
   // fall through to the next group of inline handlers below.
 
-  // Groups
-  if (method === 'GET'    && path === '/fleet/groups') return handleListGroups({ req, res, ctx });
-  if (method === 'GET'    && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleGetGroup({ req, res, ctx });
-  if (method === 'POST'   && path === '/fleet/groups') {
-    return readBody(req).then(b => handleCreateGroup({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'PATCH'  && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchGroup({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}$`, 'i').test(path)) return handleDeleteGroup({ req, res, ctx });
-  if (method === 'POST'   && new RegExp(`^/fleet/groups/${SID_RE}/hosts$`, 'i').test(path)) {
-    return readBody(req).then(b => handleGroupAddHost({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'DELETE' && new RegExp(`^/fleet/groups/${SID_RE}/hosts/${SID_RE}$`, 'i').test(path)) {
-    return handleGroupRemoveHost({ req, res, ctx });
-  }
+  // vt-0287 slice 4: groups CRUD + host membership dispatched via the
+  // sub-module table above (scripts/lib/fleet/groups.js).
   if (method === 'GET' && new RegExp(`^/fleet/sessions/${SID_RE}$`, 'i').test(path)) return handleGetSession({ req, res, ctx });
   if (method === 'POST' && new RegExp(`^/fleet/sessions/${SID_RE}/input$`, 'i').test(path)) {
     return readBody(req).then(b => handlePostInput({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
