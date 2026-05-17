@@ -47,8 +47,13 @@
   let _ctx = null;          // CanvasRenderingContext2D
   let _running = false;
   let _pollTimer = null;
+  let _rafId = null;
   let _hosts = [];          // [{ id, name, display_name, status, ... }]
   let _runningById = {};    // host_id → count of running sessions
+  // vt-0375: per-avatar animation state — drives idle bob, typing wiggle,
+  // and the "transition emoji" (e.g. ✅ when a session just exited).
+  let _animState = {};      // host_id → { startedAt, lastRunning, emoji?, emojiUntil? }
+  const NOW = () => performance.now();
 
   // -------------------------------------------------------------------------
 
@@ -92,18 +97,26 @@
 
     updateStatus('— loading —');
     await refreshState();
-    render();
 
     if (_pollTimer) clearInterval(_pollTimer);
     _pollTimer = setInterval(async () => {
-      try { await refreshState(); render(); } catch (e) { /* swallow */ }
+      try { await refreshState(); } catch (e) { /* swallow */ }
     }, 5000);
     _running = true;
+    // vt-0375: animation loop runs at rAF — independent of the 5 s data
+    // poll so idle bob + typing wiggle stay smooth between polls.
+    const tick = () => {
+      if (!_running) return;
+      render();
+      _rafId = requestAnimationFrame(tick);
+    };
+    _rafId = requestAnimationFrame(tick);
   }
 
   function closePixelOfficeView() {
     _running = false;
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
     location.hash = '#/dashboard';
   }
 
@@ -120,10 +133,24 @@
     // Stable order — keeps each host on the same desk between polls. Sort by
     // name so a fresh-up host slots in alphabetically rather than jumping.
     _hosts = hosts.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    _runningById = {};
+    const newRunning = {};
     for (const s of sessions) {
-      _runningById[s.host_id] = (_runningById[s.host_id] || 0) + 1;
+      newRunning[s.host_id] = (newRunning[s.host_id] || 0) + 1;
     }
+    // vt-0375: transition emojis — fire when running-count crosses 0 in
+    // either direction. Stays visible for 4 s above the avatar.
+    const now = NOW();
+    for (const h of _hosts) {
+      const prev = _runningById[h.id] || 0;
+      const cur  = newRunning[h.id] || 0;
+      const st = _animState[h.id] || (_animState[h.id] = { startedAt: now });
+      if (prev === 0 && cur > 0) {
+        st.emoji = '💭'; st.emojiUntil = now + 4000;
+      } else if (prev > 0 && cur === 0) {
+        st.emoji = '✅'; st.emojiUntil = now + 4000;
+      }
+    }
+    _runningById = newRunning;
     const online = _hosts.filter(h => h.status === 'online').length;
     const working = _hosts.filter(h => (_runningById[h.id] || 0) > 0).length;
     updateStatus(`${_hosts.length} hosts · ${online} online · ${working} working`);
@@ -259,19 +286,46 @@
   function render() {
     if (!_ctx) return;
     const ctx = _ctx;
+    const now = NOW();
     drawRoom(ctx);
     _hosts.forEach((h, i) => {
       const pos = deskPos(i);
       const running = _runningById[h.id] || 0;
       const isOnline = h.status === 'online';
       const isWorking = isOnline && running > 0;
-      drawDesk(ctx, pos.x + 0, pos.y, isWorking);
+      // vt-0375: idle bob + typing wiggle — tiny per-frame y-offset so
+      // avatars feel alive without proper animation frames. Phase offset
+      // is per-host so they don't all bob in sync (looks creepy).
+      const phase = (hash32(h.id) % 1000) / 1000;
+      let dy = 0;
+      if (isOnline) {
+        if (isWorking) {
+          // Typing wiggle: fast small jitter ~ ±1 px.
+          dy = Math.round(Math.sin(now / 90 + phase * 6.28) * 1.2);
+        } else {
+          // Idle bob: slow ±1 px.
+          dy = Math.round(Math.sin(now / 700 + phase * 6.28));
+        }
+      }
+      drawDesk(ctx, pos.x, pos.y, isWorking);
       const palette = paletteFor(h.id);
-      drawAvatar(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y, palette,
+      drawAvatar(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y + dy, palette,
         isOnline ? 1.0 : 0.35);
       const badge = isWorking ? `${running} session${running > 1 ? 's' : ''}` : '';
       drawNameTag(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y,
         h.display_name || h.name, badge);
+
+      // Status emoji bubble (transient transitions + heavy-load indicator).
+      const st = _animState[h.id];
+      let emoji = null;
+      if (st && st.emoji && st.emojiUntil > now) emoji = st.emoji;
+      else if (isWorking && running >= 3) emoji = '🔥';  // 3+ concurrent sessions
+      if (emoji) {
+        ctx.font = '14px serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(emoji, pos.x + DESK_W / 2, pos.y - 6);
+        ctx.textAlign = 'left';
+      }
     });
   }
 
