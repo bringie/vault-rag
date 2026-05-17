@@ -407,49 +407,8 @@ function makeBus() {
 
 // --- HTTP handlers ---
 
-async function handleGetHosts({ res, ctx }) {
-  const rows = await fleetDb.listHosts(ctx.db);
-  send(res, 200, rows);
-}
-
-async function handleGetHost({ req, res, ctx }) {
-  const id = pathMatch(req.url, '/fleet/hosts');
-  const h = await fleetDb.getHost(ctx.db, id);
-  if (!h) return send(res, 404, { error: 'host not found' });
-  h.groups = await fleetDb.listGroupsForHost(ctx.db, id);
-  const eff = await fleetDb.getEffectiveCapabilities(ctx.db, id);
-  if (eff) {
-    h.effective_capabilities = eff.effective;
-    h.inherited_labels = eff.inherited;
-  }
-  send(res, 200, h);
-}
-
-async function handleDeleteHost({ req, res, ctx }) {
-  const id = pathMatch(req.url, '/fleet/hosts');
-  // vt-0183: require ?confirm=1 — DELETE cascades to sessions+events+
-  // metrics+groups, so a typo'd UUID wipes a host's full history.
-  const u = new URL(req.url, 'http://x');
-  if (u.searchParams.get('confirm') !== '1') {
-    return send(res, 400, { error: 'add ?confirm=1 to delete (cascades to sessions+events+metrics)' });
-  }
-  await fleetDb.deleteHost(ctx.db, id);
-  res.writeHead(204); res.end();
-}
-
-async function handlePatchHost({ req, res, body, ctx }) {
-  const id = pathMatch(req.url, '/fleet/hosts');
-  if (!body) return send(res, 422, { error: 'body required' });
-  const patch = {};
-  if ('display_name' in body) patch.display_name = body.display_name;
-  if ('capabilities' in body) {
-    if (!Array.isArray(body.capabilities)) return send(res, 422, { error: 'capabilities must be array of strings' });
-    patch.capabilities = body.capabilities.map(String).filter(Boolean);
-  }
-  const updated = await fleetDb.updateHost(ctx.db, id, patch);
-  if (!updated) return send(res, 404, { error: 'host not found' });
-  send(res, 200, updated);
-}
+// vt-0287 slice 5: host CRUD + inventory/metrics/file ops moved to
+// scripts/lib/fleet/hosts.js.
 
 // Synchronous "ask claude on host X" — spawns claude --print, waits for exit,
 // returns transcript text + cost. Convenient for API consumers that just want
@@ -941,47 +900,7 @@ async function handleCleanupSessions({ req, res, body, ctx }) {
   send(res, 200, { deleted: r.deleted, limited: r.limited, older_than: olderThan });
 }
 
-async function handleHostFileGet({ req, res, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  const pathName = url.searchParams.get('path');
-  if (!pathName) return send(res, 422, { error: 'path query required' });
-  const host = await fleetDb.getHost(ctx.db, m[1]);
-  if (!host) return send(res, 404, { error: 'host not found' });
-  if (host.status !== 'online') return send(res, 410, { error: 'host offline' });
-  try {
-    const r = await ctx.bus.fileOp(host.id, 'read_file', pathName);
-    send(res, 200, { path: r.path, exists: r.exists, content: r.content });
-  } catch (e) {
-    send(res, 502, { error: e.message });
-  }
-}
-
-async function handleHostFilePut({ req, res, body, ctx }) {
-  const url = new URL(req.url, 'http://x');
-  const m = url.pathname.match(new RegExp(`^/fleet/hosts/(${SID_RE})/file$`, 'i'));
-  if (!m) return send(res, 404, { error: 'not found' });
-  if (!body || !body.path || typeof body.content !== 'string') {
-    return send(res, 422, { error: 'path and content required' });
-  }
-  // vt-0126: content is forwarded as a single WS frame to the daemon — cap
-  // at 128 KiB. The daemon's allowlist (CLAUDE.md, settings.json) is far
-  // smaller in practice; an unbounded body would OOM both sides.
-  const MAX_FILE_BYTES = 128 * 1024;
-  if (Buffer.byteLength(body.content, 'utf8') > MAX_FILE_BYTES) {
-    return send(res, 413, { error: `file content exceeds ${MAX_FILE_BYTES} bytes` });
-  }
-  const host = await fleetDb.getHost(ctx.db, m[1]);
-  if (!host) return send(res, 404, { error: 'host not found' });
-  if (host.status !== 'online') return send(res, 410, { error: 'host offline' });
-  try {
-    const r = await ctx.bus.fileOp(host.id, 'write_file', body.path, body.content);
-    send(res, 200, { path: r.path, bytes: r.bytes });
-  } catch (e) {
-    send(res, 502, { error: e.message });
-  }
-}
+// vt-0287 slice 5: host file ops moved to scripts/lib/fleet/hosts.js.
 
 async function handleSessionCost({ req, res, ctx }) {
   // vt-0288: strip query before regex — `$` anchor against raw req.url
@@ -1352,6 +1271,7 @@ function _getSubRoutes() {
     require('./fleet/webhooks'),
     require('./fleet/config-export'),
     require('./fleet/groups'),
+    require('./fleet/hosts'),
   ];
   const extDeps = {
     ...deps,
@@ -1488,26 +1408,14 @@ function dispatchHttp(req, res, ctx) {
     return send(res, 200, { role });
   }
 
-  // hosts
-  if (method === 'GET'    && path === '/fleet/hosts')   return handleGetHosts({ req, res, ctx });
-  if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleGetHost({ req, res, ctx });
-  if (method === 'DELETE' && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) return handleDeleteHost({ req, res, ctx });
-  if (method === 'PATCH'  && new RegExp(`^/fleet/hosts/${SID_RE}$`, 'i').test(path)) {
-    return readBody(req).then(b => handlePatchHost({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
+  // vt-0287 slice 5: host CRUD + metrics + inventory + file ops moved
+  // to scripts/lib/fleet/hosts.js (sub-module dispatch). dispatch/exec
+  // stay inline — they're stateful (host_command_audit + retry loops).
   if (method === 'POST'   && path === '/fleet/dispatch') {
     return readBody(req).then(b => handleDispatch({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
   if (method === 'POST'   && path === '/fleet/exec') {
     return readBody(req).then(b => handleExec({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
-  }
-  if (method === 'GET' && new RegExp(`^/fleet/hosts/${SID_RE}/metrics$`, 'i').test(path))    return handleHostMetrics({ req, res, ctx });
-  if (method === 'GET' && new RegExp(`^/fleet/hosts/${SID_RE}/inventory$`, 'i').test(path))  return handleHostInventory({ req, res, ctx });
-  if (method === 'GET'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) return handleHostFileGet({ req, res, ctx });
-  if (method === 'PUT'    && new RegExp(`^/fleet/hosts/${SID_RE}/file$`, 'i').test(path)) {
-    // vt-0126: 256 KiB cap at the wire — handler also rejects content > 128 KiB
-    // explicitly so partial reads still produce a clean 413.
-    return readBody(req, { maxBytes: 256 * 1024 }).then(b => handleHostFilePut({ req, res, body: b, ctx })).catch(e => send(res, e.statusCode || 400, { error: e.message }));
   }
 
   // sessions
@@ -1950,29 +1858,7 @@ async function handleMetricsViewerWs(ws, params, ctx) {
   ctx.bus.addMetricsViewer(hostId, ws);
 }
 
-async function handleHostMetrics({ req, res, ctx }) {
-  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/hosts/(${SID_RE})/metrics$`, 'i'));
-  if (!m) return send(res, 404, { error: 'bad path' });
-  const hostId = m[1];
-  const u = new URL(req.url, 'http://x');
-  const since = u.searchParams.get('since') || '1h';
-  const allowedIntervals = { '15m': '15 minutes', '1h': '1 hour', '6h': '6 hours', '24h': '24 hours', '7d': '7 days' };
-  const interval = allowedIntervals[since];
-  if (!interval) return send(res, 422, { error: `invalid since (allowed: ${Object.keys(allowedIntervals).join(',')})` });
-  const downsampled = u.searchParams.get('downsampled') === '1';
-  const rows = downsampled
-    ? await fleetDb.readMetricsRollupSince(ctx.db, hostId, interval)
-    : await fleetDb.readMetricsSince(ctx.db, hostId, interval);
-  send(res, 200, rows);
-}
-
-async function handleHostInventory({ req, res, ctx }) {
-  const m = req.url.split('?')[0].match(new RegExp(`^/fleet/hosts/(${SID_RE})/inventory$`, 'i'));
-  if (!m) return send(res, 404, { error: 'bad path' });
-  const h = await fleetDb.getHost(ctx.db, m[1]);
-  if (!h) return send(res, 404, { error: 'host not found' });
-  send(res, 200, (h.metadata && h.metadata.inventory) || {});
-}
+// vt-0287 slice 5: host metrics + inventory moved to scripts/lib/fleet/hosts.js.
 
 // --- Mount ---
 
