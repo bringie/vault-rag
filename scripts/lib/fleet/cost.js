@@ -89,6 +89,8 @@ function register({ fleetDb, fleetCost }) {
     {
       method: 'POST',
       pattern: /^\/fleet\/sessions\/cost-batch$/,
+      // vt-0363: viewer-readable despite POST (body carries up to 200 ids).
+      admin: false,
       handler(req, res, ctx) {
         return readBody(req).then(async (body) => {
           if (!body || !Array.isArray(body.ids)) return send(res, 422, { error: 'ids[] required' });

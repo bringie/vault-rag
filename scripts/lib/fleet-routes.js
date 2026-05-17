@@ -696,22 +696,31 @@ function dispatchHttp(req, res, ctx) {
   if (!checkAuth(req, ctx.token) && !(ctx.adminToken && checkAdminAuth(req, ctx))) {
     return send(res, 401, { error: 'unauthorized' });
   }
-  // vt-0124: gate mutating + execution endpoints behind the admin token (when
-  // configured). Viewer bearer alone gets reads only.
-  if (isAdminPath(method, path) && !checkAdminAuth(req, ctx)) {
-    return send(res, 403, { error: 'admin token required for this operation' });
-  }
-
   // vt-0287: route-table dispatch for extracted sub-modules. Each
-  // submodule exports `register({deps}) → [{method, pattern, handler}]`.
-  // Built once and memoised. Admin gating ran above (isAdminPath), so
-  // handlers do not re-check auth. Order doesn't matter inside the
-  // table — patterns are mutually exclusive by path+method.
+  // submodule exports `register({deps}) → [{method, pattern, handler, admin?}]`.
+  // Built once and memoised. vt-0363: admin gating moved into the loop —
+  // per-route `admin` metadata replaces the negative-allowlist isAdminPath
+  // (where a typo in the exception list silently downgrades a route).
+  // Default is method-based (non-GET ⇒ admin); routes declare `admin: false`
+  // to explicitly opt out (e.g. cost-batch is POST due to body size but is
+  // viewer-readable). Order inside the table doesn't matter — patterns are
+  // mutually exclusive by path+method.
   const subRoutes = _getSubRoutes();
   for (const r of subRoutes) {
     if (r.method !== method) continue;
     const m = path.match(r.pattern);
-    if (m) return r.handler(req, res, ctx, m);
+    if (!m) continue;
+    const adminRequired = r.admin === undefined ? (r.method !== 'GET') : Boolean(r.admin);
+    if (adminRequired && !checkAdminAuth(req, ctx)) {
+      return send(res, 403, { error: 'admin token required for this operation' });
+    }
+    return r.handler(req, res, ctx, m);
+  }
+  // vt-0124/vt-0363: inline routes still use the old gate. The cost-batch
+  // and ws-ticket carve-outs ride the sub-route table; only routes added
+  // BELOW this point would re-enter the legacy default-deny path.
+  if (isAdminPath(method, path) && !checkAdminAuth(req, ctx)) {
+    return send(res, 403, { error: 'admin token required for this operation' });
   }
 
   // vt-0150: shared backend → config-files map (web UI consults this to
