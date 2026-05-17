@@ -14,7 +14,8 @@
 //   POST   /fleet/sessions/:id/kill        — handles orphan/pending degrade
 
 // vt-0353: STRUCTURED_SPAWN_FIELDS moved to _shared.js (shared with dispatch.js).
-const { SID_RE, send, readBody, STRUCTURED_SPAWN_FIELDS } = require('./_shared');
+// vt-0354: resolveCandidates() shared with dispatch + workflow runner.
+const { SID_RE, send, readBody, STRUCTURED_SPAWN_FIELDS, resolveCandidates } = require('./_shared');
 
 // Allowlist for older_than: avoids users bypassing intent (e.g. '0 seconds'
 // would delete every closed session). Also blocks confusing Postgres errors
@@ -118,22 +119,14 @@ function register({ fleetDb }) {
           if (!body) return send(res, 422, { error: 'body required' });
           const { tag, group, cwd, args, env, label, metadata } = body;
           if (!tag && !group && !body.all) return send(res, 422, { error: 'tag|group|all required' });
+          let candidates;
           try {
-            const all = await fleetDb.listHosts(ctx.db);
-            let candidates = all.filter(h => h.status === 'online');
-            if (tag) {
-              // Effective tag: direct h.capabilities ∪ group labels (vt-0078).
-              const tagged = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
-              const ids = new Set(tagged.map(h => h.id));
-              candidates = candidates.filter(h => ids.has(h.id));
-            }
-            if (group) {
-              const g = await fleetDb.getGroupByName(ctx.db, group);
-              if (!g) return send(res, 404, { error: `group not found: ${group}` });
-              const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
-              const ids = new Set(members.map(h => h.id));
-              candidates = candidates.filter(h => ids.has(h.id));
-            }
+            ({ candidates } = await resolveCandidates(fleetDb, ctx, { tag, group }));
+          } catch (e) {
+            if (e.notFound === 'group') return send(res, 404, { error: e.message });
+            return send(res, 500, { error: e.message });
+          }
+          try {
             if (!candidates.length) return send(res, 404, { error: 'no matching online hosts' });
             const results = [];
             for (const host of candidates) {

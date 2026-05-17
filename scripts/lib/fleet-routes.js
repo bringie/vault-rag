@@ -12,6 +12,9 @@ const { createRunner, validateDefinition } = require('./fleet-workflow-runner');
 const { RingBuffer } = require('./fleet-ring-buffer');
 const { EventBatcher } = require('./fleet-event-batcher');
 const log = require('./log').for('fleet-routes');
+// vt-0354: shared targeting helper used by spawnClaudeForWorkflow below
+// and re-used inside the sub-modules (dispatch / sessions).
+const { resolveCandidates } = require('./fleet/_shared');
 
 function send(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -414,9 +417,9 @@ function makeBus() {
 
 // vt-0287 slice 7: transcripts → scripts/lib/fleet/transcripts.js.
 // vt-0287 slice 8: sessions   → scripts/lib/fleet/sessions.js.
-// vt-0287 slice 9: dispatch+exec → scripts/lib/fleet/dispatch.js
-// (which itself re-uses stripAnsi + STRUCTURED_SPAWN_FIELDS from the
-//  transcripts/sessions sub-modules — no shared module-level state).
+// vt-0287 slice 9: dispatch+exec → scripts/lib/fleet/dispatch.js.
+// vt-0353: shared spawn/ANSI helpers live in fleet/_shared.js.
+// vt-0354: shared host-targeting + auto-log of 5xx also in _shared.
 
 // vt-0287 slice 2: pricing handlers moved to scripts/lib/fleet/prices.js
 // — routed via the sub-module dispatcher in dispatchHttp.
@@ -518,29 +521,10 @@ async function handleStackStatus({ res, ctx }) {
 // Used by workflow runner as deps.spawnClaude. signal (optional AbortSignal) lets
 // runner.cancel() short-circuit the poll loop instead of waiting full timeout_s.
 async function spawnClaudeForWorkflow(ctx, node, prompt, runId, signal) {
-  const t = node.target || {};
-  const all = await fleetDb.listHosts(ctx.db);
-  let candidates = all.filter(h => h.status === 'online');
-  if (t.host_id)   candidates = candidates.filter(h => h.id === t.host_id);
-  if (t.host_name) candidates = candidates.filter(h => h.name === t.host_name || h.display_name === t.host_name);
-  // Effective tag/capability: direct h.capabilities ∪ group labels — matches handleDispatch (vt-0079)
-  if (t.tag) {
-    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, t.tag);
-    const taggedIds = new Set(taggedHosts.map(h => h.id));
-    candidates = candidates.filter(h => taggedIds.has(h.id));
-  }
-  if (t.capability) {
-    const taggedHosts = await fleetDb.listHostsByEffectiveTag(ctx.db, t.capability);
-    const taggedIds = new Set(taggedHosts.map(h => h.id));
-    candidates = candidates.filter(h => taggedIds.has(h.id));
-  }
-  if (t.group) {
-    const g = await fleetDb.getGroupByName(ctx.db, t.group);
-    if (!g) throw new Error(`group not found: ${t.group}`);
-    const members = await fleetDb.listHostsInGroup(ctx.db, g.id);
-    const memberIds = new Set(members.map(h => h.id));
-    candidates = candidates.filter(h => memberIds.has(h.id));
-  }
+  // vt-0354: shared host-targeting filter — same as dispatch + broadcast.
+  // Throws on group-not-found (`.notFound = 'group'`); the workflow runner
+  // catches and marks the node failed.
+  const { candidates } = await resolveCandidates(fleetDb, ctx, node.target || {});
   if (!candidates.length) throw new Error('no online host matches target');
   const host = candidates[0];
 

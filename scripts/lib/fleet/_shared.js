@@ -4,6 +4,11 @@
 // bundle on register() — that's the only way they reach the parent
 // helpers (no global state, no cross-module require cycles).
 
+// vt-0354: lazy logger require — keeps _shared.js test-friendly when the
+// log module isn't on the path. log.for() is cheap so a single instance
+// shared across all sub-routes is fine.
+const log = require('../log').for('fleet/sub');
+
 // SID_RE: UUID-shape regex used for route patterns.
 const SID_RE = '[0-9a-f-]{36}';
 
@@ -35,8 +40,18 @@ function stripAnsi(s) {
     .replace(/[\x07\x08]/g, '');                          // BEL + BS drop
 }
 
-// HTTP response helper — identical to fleet-routes.send.
+// HTTP response helper. vt-0354: also auto-logs http_handler_error on 5xx —
+// without this, every sub-module catch block that ends in `send(res, 500,
+// {error: e.message})` was a silent failure (operator only saw the
+// response). The original inline handlers relied on dispatchHttp's outer
+// tryDispatch catch for logging; sub-module catches resolved the promise
+// before it could fire, so observability was lost during the split.
 function send(res, status, body) {
+  if (status >= 500) {
+    const url = res.req && res.req.url;
+    const msg = body && body.error;
+    log.error('http_handler_error', { url, status, msg });
+  }
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
 }
@@ -67,4 +82,43 @@ function readBody(req, { maxBytes = 1024 * 1024 } = {}) {
   });
 }
 
-module.exports = { SID_RE, send, readBody, STRUCTURED_SPAWN_FIELDS, stripAnsi };
+// vt-0354: single source for "filter online hosts by host_id/host_name/tag/
+// capability/group" — was duplicated across dispatch / exec / broadcast /
+// spawnClaudeForWorkflow with subtle differences (capability missing in
+// broadcast, group object retained only in dispatch). Returns
+// `{ candidates, resolvedGroup }`. Throws a typed Error (`.notFound='group'`)
+// when a named group does not exist — HTTP callers map that to 404, the
+// workflow runner lets it propagate to the run's exception sink.
+async function resolveCandidates(fleetDb, ctx, target = {}) {
+  const { host_id, host_name, tag, capability, group } = target;
+  const all = await fleetDb.listHosts(ctx.db);
+  let candidates = all.filter(h => h.status === 'online');
+  if (host_id)   candidates = candidates.filter(h => h.id === host_id);
+  if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
+  if (tag) {
+    // Effective tag: direct h.capabilities ∪ group labels (vt-0079).
+    const tagged = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
+    const ids = new Set(tagged.map(h => h.id));
+    candidates = candidates.filter(h => ids.has(h.id));
+  }
+  if (capability) {
+    const tagged = await fleetDb.listHostsByEffectiveTag(ctx.db, capability);
+    const ids = new Set(tagged.map(h => h.id));
+    candidates = candidates.filter(h => ids.has(h.id));
+  }
+  let resolvedGroup = null;
+  if (group) {
+    resolvedGroup = await fleetDb.getGroupByName(ctx.db, group);
+    if (!resolvedGroup) {
+      const err = new Error(`group not found: ${group}`);
+      err.notFound = 'group';
+      throw err;
+    }
+    const members = await fleetDb.listHostsInGroup(ctx.db, resolvedGroup.id);
+    const ids = new Set(members.map(h => h.id));
+    candidates = candidates.filter(h => ids.has(h.id));
+  }
+  return { candidates, resolvedGroup };
+}
+
+module.exports = { SID_RE, send, readBody, STRUCTURED_SPAWN_FIELDS, stripAnsi, resolveCandidates };

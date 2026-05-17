@@ -9,9 +9,10 @@
 //                           group brain_prompt + role composition + ARG_MAX cap
 //   POST /fleet/exec      — synchronous claude --print, returns transcript
 
-// vt-0353: STRUCTURED_SPAWN_FIELDS + stripAnsi moved into _shared.js so
-// dispatch.js no longer has to require sibling sub-modules.
-const { send, readBody, STRUCTURED_SPAWN_FIELDS, stripAnsi } = require('./_shared');
+// vt-0353: STRUCTURED_SPAWN_FIELDS + stripAnsi moved into _shared.js.
+// vt-0354: resolveCandidates() shares host-targeting filter with broadcast +
+// workflow runner.
+const { send, readBody, STRUCTURED_SPAWN_FIELDS, stripAnsi, resolveCandidates } = require('./_shared');
 const log = require('../log').for('fleet/dispatch');
 
 // vt-0133: cap concurrent exec sessions per host. Without this, 100 parallel
@@ -41,15 +42,7 @@ function register({ fleetDb, fleetCost }) {
             return send(res, 422, { error: 'one of tag|host_name|host_id required' });
           }
           try {
-            const all = await fleetDb.listHosts(ctx.db);
-            let candidates = all.filter(h => h.status === 'online');
-            if (host_id)   candidates = candidates.filter(h => h.id === host_id);
-            if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
-            if (tag) {
-              const tagged = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
-              const ids = new Set(tagged.map(h => h.id));
-              candidates = candidates.filter(h => ids.has(h.id));
-            }
+            const { candidates } = await resolveCandidates(fleetDb, ctx, { host_id, host_name, tag });
             if (!candidates.length) return send(res, 404, { error: 'no online host matches' });
             const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
             const busyByHost = {};
@@ -140,26 +133,16 @@ function register({ fleetDb, fleetCost }) {
           if (!tag && !group && !host_name && !host_id) {
             return send(res, 422, { error: 'one of tag|group|host_name|host_id required' });
           }
+          let candidates, resolvedGroup;
           try {
-            const all = await fleetDb.listHosts(ctx.db);
-            let candidates = all.filter(h => h.status === 'online');
-            if (host_id)   candidates = candidates.filter(h => h.id === host_id);
-            if (host_name) candidates = candidates.filter(h => h.name === host_name || h.display_name === host_name);
-            if (tag) {
-              // Effective tag: direct h.capabilities ∪ any group's labels.
-              const tagged = await fleetDb.listHostsByEffectiveTag(ctx.db, tag);
-              const ids = new Set(tagged.map(h => h.id));
-              candidates = candidates.filter(h => ids.has(h.id));
-            }
-            // vt-0151: hold the group record so we can inject its brain_prompt below.
-            let resolvedGroup = null;
-            if (group) {
-              resolvedGroup = await fleetDb.getGroupByName(ctx.db, group);
-              if (!resolvedGroup) return send(res, 404, { error: `group not found: ${group}` });
-              const members = await fleetDb.listHostsInGroup(ctx.db, resolvedGroup.id);
-              const ids = new Set(members.map(h => h.id));
-              candidates = candidates.filter(h => ids.has(h.id));
-            }
+            // vt-0151: dispatch retains `resolvedGroup` so its brain_prompt
+            // can be injected into the structured-fields stack below.
+            ({ candidates, resolvedGroup } = await resolveCandidates(fleetDb, ctx, { host_id, host_name, tag, group }));
+          } catch (e) {
+            if (e.notFound === 'group') return send(res, 404, { error: e.message });
+            return send(res, 500, { error: e.message });
+          }
+          try {
             if (!candidates.length) return send(res, 404, { error: 'no online host matches the criteria' });
             // Pick least-busy (running sessions ascending) — small UX win.
             const sessions = await fleetDb.listSessions(ctx.db, { status: 'running' });
