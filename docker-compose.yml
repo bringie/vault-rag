@@ -133,6 +133,7 @@ services:
       - /root/obsidian-vault:/vault:rw
       - ./scripts:/scripts:ro
       - ./agent-fleet:/agent-fleet:ro
+      - ./workflow-templates:/workflow-templates:ro
       - /opt/vault-rag/.secrets/git_deploy.key:/run/secrets/git_deploy.key:ro
     networks:
       - vault-rag-net

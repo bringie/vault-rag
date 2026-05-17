@@ -1042,8 +1042,17 @@ const server = http.createServer(async (req, res) => {
     if (!checkAuth(req) && !(FLEET_ADMIN_TOKEN && fleetRoutes.checkAdminAuth(req, fleetCtx))) {
       return send(res, 401, { error: 'unauthorized' });
     }
+    // Path search: repo dev (../workflow-templates) → docker mount (/workflow-templates)
     try {
-      const data = fs.readFileSync(path.join(__dirname, '..', 'workflow-templates', 'index.json'), 'utf8');
+      const candidates = [
+        path.join(__dirname, '..', 'workflow-templates', 'index.json'),
+        '/workflow-templates/index.json',
+      ];
+      let data = null;
+      for (const p of candidates) {
+        if (fs.existsSync(p)) { data = fs.readFileSync(p, 'utf8'); break; }
+      }
+      if (!data) return send(res, 503, { error: 'workflow-templates not mounted' });
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(data);
     } catch (e) { send(res, 500, { error: scrubError(e.message) }); }
