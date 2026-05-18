@@ -7,6 +7,8 @@ const { collectMetrics } = require('./metrics-collector');
 const { collectInventory, inventoryChanged, resetInventoryCache } = require('./inventory-collector');
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
+const { JsonlTailer } = require('./jsonl-tailer');
+const { SubagentTailer } = require('./subagent-tailer');
 const backendsLib = require('./backends');
 
 // True when the spawn frame uses the new generic schema rather than legacy
@@ -400,10 +402,50 @@ async function runDaemon(opts) {
   const cfgPath = path.join(opts.stateDir, 'config.json');
   try { hostId = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).host_id; } catch {}
 
+  // vt-chat-1b: jsonl-tailers per spawned session. Keyed by sessionId,
+  // {jsonl, subagent} pair. Started on ptyMgr 'spawn', stopped on 'exit'.
+  const _tailers = new Map();
+  const _daemonHome = process.env.HOME || os.homedir() || '/root';
+
+  function _emitTailerFrame(sessionId, frame) {
+    // frame = { type: 'claude_msg' | 'compact_boundary', payload: {...} }
+    // Flatten payload onto the WS frame and tag with session_id.
+    safeSend(ws, { type: frame.type, session_id: sessionId, ...frame.payload });
+  }
+
+  function _startTailersFor(sessionId, cwd) {
+    if (!cwd) return;
+    if (_tailers.has(sessionId)) return;
+    const jt = new JsonlTailer({
+      sessionId, cwd, home: _daemonHome, store,
+      emit: (frame) => _emitTailerFrame(sessionId, frame),
+    });
+    const st = new SubagentTailer({
+      parentSessionId: sessionId, cwd, home: _daemonHome, store,
+      emit: (frame) => _emitTailerFrame(sessionId, frame),
+    });
+    _tailers.set(sessionId, { jsonl: jt, subagent: st });
+    jt.start().catch(e =>
+      console.error(`[ws] jsonl-tailer ${sessionId} start failed: ${e.message}`));
+    st.start().catch(e =>
+      console.error(`[ws] subagent-tailer ${sessionId} start failed: ${e.message}`));
+  }
+
+  async function _stopTailersFor(sessionId) {
+    const t = _tailers.get(sessionId);
+    if (!t) return;
+    _tailers.delete(sessionId);
+    try { await t.jsonl.stop(); } catch {}
+    try { await t.subagent.stop(); } catch {}
+  }
+
   // PTY → WS bridge
-  ptyMgr.on('spawn', ({ sessionId, pid }) => {
-    store.put(sessionId, { pid, last_seq: 0 });
+  ptyMgr.on('spawn', ({ sessionId, pid, cwd }) => {
+    const cur = store.get(sessionId) || {};
+    store.put(sessionId, { ...cur, pid, last_seq: 0, cwd: cwd || cur.cwd });
     safeSend(ws, { type: 'spawn_ok', session_id: sessionId, pid });
+    safeSend(ws, { type: 'session_lifecycle', session_id: sessionId, state: 'ready' });
+    _startTailersFor(sessionId, cwd || cur.cwd);
   });
   ptyMgr.on('data', ({ sessionId, seq, data }) => {
     const cur = store.get(sessionId);
@@ -417,6 +459,8 @@ async function runDaemon(opts) {
   });
   ptyMgr.on('exit', ({ sessionId, exitCode, signal }) => {
     safeSend(ws, { type: 'session_exit', session_id: sessionId, exit_code: exitCode, signal: signal || undefined });
+    safeSend(ws, { type: 'session_lifecycle', session_id: sessionId, state: 'exit', code: exitCode, signal: signal || undefined });
+    _stopTailersFor(sessionId).catch(()=>{});
     _ringDelete(sessionId);
     store.delete(sessionId);
   });

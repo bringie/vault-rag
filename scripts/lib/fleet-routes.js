@@ -946,6 +946,16 @@ async function handleDaemonWs(ws, params, ctx) {
         log.info('replay_completed', { session_id: f.session_id, since_seq: f.since_seq, count: f.count });
         return;
       }
+      // vt-chat-1b: structured frames from daemon's jsonl-tailer.
+      // Hub does not persist (jsonl on daemon host is authoritative);
+      // we just fan out to attached viewers. SPA chat-view subscribes
+      // to these; raw-terminal tab keeps consuming pty_data.
+      if (f.type === 'claude_msg' || f.type === 'compact_boundary'
+          || f.type === 'session_lifecycle') {
+        if (!f.session_id) return;
+        ctx.bus.broadcastViewers(f.session_id, f);
+        return;
+      }
       if (f.type === 'metrics') {
         // vt-0187: atomic — without a tx, a crash between rows leaves the
         // time-series row but stale latest_metrics (or vice versa).

@@ -91,8 +91,8 @@ class PtyManager extends EventEmitter {
       name: 'xterm-color', cols: 120, rows: 30, cwd: resolvedCwd,
       env: { ...process.env, ...env },
     });
-    this.sessions.set(sessionId, { proc, seq: 0 });
-    this.emit('spawn', { sessionId, pid: proc.pid });
+    this.sessions.set(sessionId, { proc, seq: 0, cwd: resolvedCwd });
+    this.emit('spawn', { sessionId, pid: proc.pid, cwd: resolvedCwd });
     // Kick TUIs (Ink-based claude in particular) that wait for SIGWINCH before
     // first render. Two resize ticks shortly after spawn force the redraw.
     setTimeout(() => { try { proc.resize(121, 30); } catch {} }, 100);
