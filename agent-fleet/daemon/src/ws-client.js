@@ -425,41 +425,11 @@ async function runDaemon(opts) {
     store.delete(sessionId);
   });
 
-  // vt-0140: jsonl watcher starts ONCE per daemon process (survives WS
-  // reconnects, which can happen many times per day). Opt-in: only when
-  // AGENT_FLEET_TOKMON_ENABLED=1 + token is set + the hub URL parses cleanly.
-  // vt-0317: hubUrl + tokmonToken hoisted out of the if-block so the
-  // welcome-frame feature toggle (vt-0313) can re-arm the watcher
-  // without ReferenceError. Previously hub flipping `tokmon` from off
-  // to on hit the `if (!tokmonWatcher && tokmonToken)` branch where
-  // tokmonToken was out of scope → caught + logged → toggle silently
-  // ignored.
-  let tokmonWatcher = null;
+  // vt-0384: tokmon-watcher removed — duplicated tokmon-shipper.timer
+  // which already ingests ~/.claude/projects/*.jsonl into the standalone
+  // tokmon-ingest container (5681). Use the shipper systemd unit for any
+  // host that should report cost telemetry.
   let _hubFeatures = null;  // vt-0313: most recent feature mask from hub
-  let tokmonHubUrl = null;
-  let tokmonToken = null;
-  let TokmonWatcherCls = null;
-  try {
-    TokmonWatcherCls = require('./tokmon-watcher').TokmonWatcher;
-    const hubUrl = new URL(opts.hub);
-    hubUrl.protocol = hubUrl.protocol === 'wss:' ? 'https:' : 'http:';
-    hubUrl.pathname = '';
-    hubUrl.search = '';
-    tokmonHubUrl = hubUrl.toString().replace(/\/$/, '');
-    tokmonToken = process.env.AGENT_FLEET_TOKMON_TOKEN || opts.token;
-  } catch (e) {
-    console.error('[daemon] tokmon-watcher init context failed:', e.message);
-  }
-  if (process.env.AGENT_FLEET_TOKMON_ENABLED === '1' && TokmonWatcherCls && tokmonHubUrl) {
-    try {
-      tokmonWatcher = new TokmonWatcherCls({ hubUrl: tokmonHubUrl, token: tokmonToken });
-      tokmonWatcher.start().catch(e => console.error('[daemon] tokmon-watcher start:', e.message));
-      console.log(`[daemon] tokmon-watcher armed → ${tokmonHubUrl}/api/tokmon/ingest`);
-    } catch (e) {
-      console.error('[daemon] tokmon-watcher init failed:', e.message);
-    }
-  }
-  opts.abortSignal?.addEventListener('abort', () => { try { tokmonWatcher?.stop(); } catch {} });
 
   while (!opts.abortSignal?.aborted) {
     try {
@@ -550,28 +520,11 @@ async function runDaemon(opts) {
           if (f.type === 'welcome' && f.host_id) {
             hostId = f.host_id;
             fs.writeFileSync(cfgPath, JSON.stringify({ host_id: hostId, host_name: opts.hostName }));
-            // vt-0313: react to hub feature mask. Daemon stops tokmon
-            // collector if `tokmon` is disabled, and skips metrics if
-            // `fleet` is off (rare — disabling fleet usually kills the
-            // daemon too, but we don't trust the hub to be consistent).
+            // vt-0313: stash hub feature mask for future spawn-time checks
+            // (workflows flag could refuse fan_out etc. on the daemon).
+            // vt-0384: tokmon toggle dropped along with tokmon-watcher.
             if (f.features && typeof f.features === 'object') {
-              try {
-                if (f.features.tokmon === false && tokmonWatcher) {
-                  tokmonWatcher.stop();
-                  tokmonWatcher = null;
-                  console.log('[daemon] tokmon disabled by hub feature mask');
-                }
-                if (f.features.tokmon === true && !tokmonWatcher && TokmonWatcherCls && tokmonHubUrl) {
-                  tokmonWatcher = new TokmonWatcherCls({ hubUrl: tokmonHubUrl, token: tokmonToken });
-                  tokmonWatcher.start().catch(e => console.error('[daemon] tokmon-watcher restart:', e.message));
-                  console.log('[daemon] tokmon re-enabled by hub feature mask');
-                }
-                // Stash for future spawn-time checks (workflows feature
-                // flag could refuse fan_out etc. on the daemon).
-                _hubFeatures = f.features;
-              } catch (e) {
-                console.error('[daemon] feature toggle apply failed:', e.message);
-              }
+              _hubFeatures = f.features;
             }
           } else if (f.type === 'spawn') {
             // Two payload shapes:
