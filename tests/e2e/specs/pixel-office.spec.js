@@ -189,4 +189,26 @@ test.describe('Pixel-Office SPA @office', () => {
     const inHeader = await btn.evaluate(el => !!el.closest('.controls'));
     expect(inHeader).toBe(true);
   });
+
+  // vt-0378: regression for "doesn't open" symptom. The panel was getting
+  // unhidden but rendered in document flow below the dashboard <main> —
+  // user had to scroll past the dashboard to see it. Every peer view
+  // (#groupsview, #pricesview, etc.) uses `position: fixed` to overlay
+  // the dashboard; #pixelofficeview was missing from that selector.
+  test('office-04: panel uses fixed-overlay layout (covers dashboard)', async ({ page }) => {
+    await page.goto('/fleet/#/pixel-office');
+    const view = page.locator('#pixelofficeview');
+    if (!(await view.count())) test.skip(true, 'pixel-office DOM not present');
+    await expect(view).toBeVisible({ timeout: 10_000 });
+    const layout = await view.evaluate(el => {
+      const s = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return { position: s.position, zIndex: s.zIndex, top: r.top };
+    });
+    expect(layout.position).toBe('fixed');
+    expect(Number(layout.zIndex)).toBeGreaterThanOrEqual(80);
+    // Panel must sit at the top of the viewport (under the fixed topbar);
+    // anything > 200 means it's flowing below the dashboard like the bug.
+    expect(layout.top).toBeLessThan(200);
+  });
 });
