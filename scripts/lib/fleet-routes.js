@@ -916,7 +916,12 @@ async function handleDaemonWs(ws, params, ctx) {
         const accepted = rb.append({ seq, data: buf });
         if (!accepted) return;
         ctx.batcher.push({ sessionId: f.session_id, kind: 'pty_out', seq, payload: buf });
-        ctx.bus.broadcastViewers(f.session_id, { type: 'pty_data', seq, data: f.data, replayed: !!f.replayed });
+        // vt-0392 v6: pty_data NO LONGER broadcast to viewers. The chat
+        // UI ignores raw PTY bytes (renders structured claude_msg
+        // frames), and the raw-transcript tab fetches transcript.bin
+        // via HTTP. Daemon still ships pty_data because it persists to
+        // fleet_events for that HTTP endpoint. WS bandwidth saved:
+        // ~5-30 KB/s base64 per viewer per session.
         return;
       }
       if (f.type === 'session_exit') {
@@ -992,6 +997,12 @@ async function handleDaemonWs(ws, params, ctx) {
           || f.type === 'session_lifecycle' || f.type === 'replay_batch'
           || f.type === 'permission_request' || f.type === 'permission_resolved'
           || f.type === 'session_busy') {
+        // vt-0392 v6: telemetry counter for each new frame from daemon.
+        try {
+          const m = require('./metrics');
+          m.counter('fleet_chat_frames_total', null, ['type', 'dir'])
+            .inc({ type: f.type, dir: 'in' });
+        } catch {}
         if (!f.session_id) return;
         try {
           const serialised = JSON.stringify(f);
@@ -1120,45 +1131,21 @@ async function handleViewerWs(ws, params, ctx) {
   // sessions the content may be mis-positioned (it was captured at the PTY's
   // historical cols/rows), but the client will force claude to redraw at the
   // viewer's actual size via a dual SIGWINCH right after.
-  const rb = ctx.rings.get(s.id);
-  if (rb && rb.size() > 0) {
-    const frames = rb.snapshot();
-    const merged = Buffer.concat(frames.map(f => f.data));
-    ws.send(JSON.stringify({
-      type: 'backfill',
-      from_seq: frames[0].seq,
-      to_seq: frames[frames.length - 1].seq,
-      data: merged.toString('base64'),
-    }));
-  } else {
-    const rows = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out', limit: 1024 });
-    if (rows.length) {
-      const merged = Buffer.concat(rows.map(r => r.payload || Buffer.alloc(0)));
-      ws.send(JSON.stringify({
-        type: 'backfill',
-        from_seq: Number(rows[0].seq),
-        to_seq: Number(rows[rows.length - 1].seq),
-        data: merged.toString('base64'),
-      }));
-    }
-  }
+  // vt-0392 v6: WS backfill suppressed — chat-view doesn't consume
+  // pty_data/backfill (uses structured claude_msg via replay_request).
+  // Raw-transcript tab fetches /fleet/sessions/<id>/transcript.bin
+  // over HTTP. Backfill was only there to feed the now-removed live
+  // xterm. Saves up to ~64 KB on every viewer attach.
   ctx.bus.addViewer(s.id, ws);
 
   // Race recovery: session may have transitioned during our async setup above.
   // Re-fetch status; if terminal, replay any missed transcript + session_exit so the
   // viewer doesn't hang waiting for frames that already broadcasted to no one.
+  // vt-0392 v6: race-recovery backfill also dropped (same reason — chat-
+  // view ignores raw bytes). Still send session_exit so UI tags the
+  // session as exited.
   const fresh = await fleetDb.getSession(ctx.db, s.id);
   if (fresh && (fresh.status === 'exited' || fresh.status === 'killed')) {
-    const rows2 = await fleetDb.readTranscript(ctx.db, s.id, { sinceSeq: 0, kind: 'pty_out', limit: 1024 });
-    if (rows2.length) {
-      const merged = Buffer.concat(rows2.map(r => r.payload || Buffer.alloc(0)));
-      ws.send(JSON.stringify({
-        type: 'backfill',
-        from_seq: Number(rows2[0].seq),
-        to_seq: Number(rows2[rows2.length - 1].seq),
-        data: merged.toString('base64'),
-      }));
-    }
     ws.send(JSON.stringify({ type: 'session_exit', exit_code: fresh.exit_code }));
   }
 
