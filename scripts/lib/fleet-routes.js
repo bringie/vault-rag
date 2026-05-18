@@ -292,7 +292,12 @@ function makeBus() {
       const prev = daemonsByHost.get(hostId);
       if (prev && prev !== ws) try { prev.close(4004, 'replaced'); } catch {}
       daemonsByHost.set(hostId, ws);
-      ws.on('close', () => { if (daemonsByHost.get(hostId) === ws) daemonsByHost.delete(hostId); });
+      ws.on('close', () => {
+        if (daemonsByHost.get(hostId) === ws) daemonsByHost.delete(hostId);
+        // vt-0398 CRIT fix: drop the cached slash_inventory so the entry
+        // doesn't pin memory across daemon churn / host rotation.
+        this._slashByHost.delete(hostId);
+      });
     },
     getDaemon(hostId) { return daemonsByHost.get(hostId); },
     // vt-0398: per-host cache of latest slash_inventory frame. Daemon

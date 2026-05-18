@@ -655,7 +655,11 @@
     stopBtn.addEventListener('click', () => sendControl('interrupt'));
     escBtn.addEventListener('click', () => sendControl('cancel'));
     ta.addEventListener('input', () => { autosizeComposer(); updateSlashDropdown(); });
-    ta.addEventListener('blur', () => setTimeout(closeSlashDropdown, 120));
+    // vt-0398 MED fix: close on blur immediately — pointerdown handlers on
+    // dropdown items call preventDefault, so blur won't fire when clicking
+    // a suggestion. The old 120ms setTimeout was a fragile bandage that
+    // raced touch input on mobile.
+    ta.addEventListener('blur', () => closeSlashDropdown());
     ta.addEventListener('keydown', (e) => {
       // Slash autocomplete navigation
       if (STATE._slashDropdown) {
@@ -710,7 +714,19 @@
     renderSlashDropdown();
   }
 
+  // vt-0398 MED fix: RAF-throttle. Held arrow keys + rapid 'input' events
+  // would otherwise rebuild dropdown DOM O(n_items) times per frame.
   function renderSlashDropdown() {
+    if (STATE._slashRafPending) return;
+    STATE._slashRafPending = true;
+    requestAnimationFrame(() => {
+      STATE._slashRafPending = false;
+      _renderSlashDropdownNow();
+    });
+  }
+
+  function _renderSlashDropdownNow() {
+    if (!STATE._slashFiltered.length) { closeSlashDropdown(); return; }
     closeSlashDropdown(true);
     const drop = el('div', 'cv-slash-dropdown');
     STATE._slashFiltered.forEach((c, i) => {
@@ -718,7 +734,9 @@
       if (i === STATE._slashIndex) item.classList.add('cv-slash-active');
       item.appendChild(el('span', 'cv-slash-name', c.name));
       if (c.description) item.appendChild(el('span', 'cv-slash-desc', c.description));
-      item.addEventListener('mousedown', (e) => {
+      // vt-0398 MED fix: pointerdown covers mouse + touch + pen; preventDefault
+      // stops the textarea from blurring → no race with blur-close.
+      item.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         STATE._slashIndex = i;
         acceptSlashCompletion();
@@ -747,7 +765,10 @@
     const caret = (before + cmd.name + ' ').length;
     ta.setSelectionRange(caret, caret);
     closeSlashDropdown();
-    autosizeComposer();
+    // vt-0398 MED fix: dispatch input event so the autosize +
+    // dropdown re-eval listener runs (programmatic .value=...
+    // doesn't fire input automatically).
+    try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
   }
 
   function closeSlashDropdown(silent) {

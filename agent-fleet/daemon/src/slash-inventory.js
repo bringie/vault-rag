@@ -59,7 +59,12 @@ function readPluginCommands(home = os.homedir()) {
       catch { continue; }
       for (const f of files) {
         if (!f.endsWith('.md')) continue;
-        const name = '/' + f.slice(0, -3);
+        const stem = f.slice(0, -3);
+        // vt-0398 CRIT fix: only accept ASCII word-char filenames so a
+        // malicious plugin can't smuggle HTML/control characters via
+        // command names. Dotfiles + spaces + path separators rejected.
+        if (!/^[A-Za-z][\w\-]{0,63}$/.test(stem)) continue;
+        const name = '/' + stem;
         const filePath = path.join(cmdDir, f);
         let description = '';
         try {

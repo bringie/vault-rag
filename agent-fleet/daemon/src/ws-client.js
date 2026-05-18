@@ -458,6 +458,35 @@ async function runDaemon(opts) {
   // on 'exit' or daemon shutdown.
   const _daemonHome = process.env.HOME || os.homedir() || '/root';
 
+  // vt-0398 MED fix: hot-reload slash_inventory when the operator installs /
+  // uninstalls a plugin. Without this, the daemon ships a stale list until
+  // the next WS reconnect (could be hours).
+  function _sendSlashInventory(targetWs) {
+    if (!targetWs || targetWs.readyState !== 1) return;
+    try {
+      const { buildInventory } = require('./slash-inventory');
+      const inv = buildInventory(_daemonHome);
+      targetWs.send(JSON.stringify({
+        type: 'slash_inventory',
+        commands: inv.commands,
+      }));
+    } catch (e) {
+      console.error(`[daemon] slash-inventory build failed: ${e.message}`);
+    }
+  }
+  try {
+    const pluginsRoot = path.join(_daemonHome, '.claude', 'plugins', 'marketplaces');
+    if (fs.existsSync(pluginsRoot)) {
+      let slashReloadT = null;
+      fs.watch(pluginsRoot, { recursive: true }, () => {
+        if (slashReloadT) clearTimeout(slashReloadT);
+        slashReloadT = setTimeout(() => _sendSlashInventory(_currentWs), 750);
+      });
+    }
+  } catch (e) {
+    console.warn('[daemon] could not watch plugins dir:', e.message);
+  }
+
   // vt-0392 v4: per-session Ink-ready state + write queue.
   // Each entry: { ready: bool, queue: [text], timer: NodeJS.Timeout }.
   const _inkReady = new Map();
@@ -724,17 +753,8 @@ async function runDaemon(opts) {
       // vt-0398: ship slash-command inventory once per WS connect.
       // Built-ins + per-plugin commands discovered from
       // ~/.claude/plugins/. Hub broadcasts to viewers as-is.
-      try {
-        const { buildInventory } = require('./slash-inventory');
-        const inv = buildInventory(_daemonHome);
-        ws.send(JSON.stringify({
-          type: 'slash_inventory',
-          commands: inv.commands,
-          claude_version: backendVersions.claude || null,
-        }));
-      } catch (e) {
-        console.error(`[daemon] slash-inventory build failed: ${e.message}`);
-      }
+      // Hot-reload from the plugins-dir watcher (above) keeps it fresh.
+      _sendSlashInventory(ws);
       const local = store.list();
       const recon = local.map(([id, info]) => {
         const alive = ptyMgr.sessions.has(id);
