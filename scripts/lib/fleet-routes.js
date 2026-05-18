@@ -797,7 +797,14 @@ async function handleDaemonWs(ws, params, ctx) {
   let consecutiveErrs = 0;
 
   async function dispatchFrame(f) {
-      if (f.type === 'ping') return ws.send(JSON.stringify({ type: 'pong' }));
+      if (f.type === 'ping') {
+        // vt-0386: bump last_seen so the offline-reaper (rag-api.js:1637)
+        // does not flip the host to status='offline' after 3 min of
+        // pings alone. Without this, heartbeat-only sessions (no new
+        // hello frame) silently rot to offline despite a live WS.
+        try { await ctx.db.query("UPDATE fleet_hosts SET last_seen=now(), status='online' WHERE id=$1", [host.id]); } catch {}
+        return ws.send(JSON.stringify({ type: 'pong' }));
+      }
       if (f.type === 'hello') {
         // vt-0178: filter installed_backends to known names from
         // BACKEND_CONFIGS — a compromised daemon could otherwise send
@@ -1124,14 +1131,15 @@ async function handleViewerWs(ws, params, ctx) {
   if (droppedFrames > 0) {
     try { ws.send(JSON.stringify({ type: 'warn', dropped_frames: droppedFrames, reason: 'pre-ready queue overflow' })); } catch {}
   }
+  // vt-0392 Phase 2 fix: re-drive processFrame on each queued frame so the
+  // drain logic stays in sync with the live path. Previously this loop was
+  // a copy of the live handler that only knew about input/kill/resize,
+  // silently dropping send_text / control / replay_request frames that
+  // arrived during the (very short) getSession() window.
   while (queue.length) {
     const f = queue.shift();
-    if (f.type === 'input') ctx.bus.sendInput(s.id, s.host_id, f.data);
-    else if (f.type === 'kill') ctx.bus.sendKill(s.id, s.host_id, f.signal || 'SIGTERM');
-    else if (f.type === 'resize') {
-      const d = ctx.bus.getDaemon(s.host_id);
-      if (d) try { d.send(JSON.stringify({ type: 'resize', session_id: s.id, cols: f.cols, rows: f.rows })); } catch {}
-    }
+    try { processFrame(JSON.stringify(f)); }
+    catch (e) { log.warn('viewer_queue_drain_err', { msg: e.message, type: f && f.type }); }
   }
 }
 
