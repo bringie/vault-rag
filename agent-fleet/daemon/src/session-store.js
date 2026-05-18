@@ -27,6 +27,19 @@ class SessionStore {
   get(id) { return this.map.get(id) || null; }
   delete(id) { this.map.delete(id); this._flush(); }
   list() { return Array.from(this.map.entries()); }
+  // vt-chat-1a: byte-offset cursor for the per-session jsonl-tailer.
+  // Stored inline on each session entry; survives daemon restart so
+  // the tailer can resume without double-emitting or skipping lines.
+  getOffset(id) {
+    const e = this.map.get(id);
+    return (e && typeof e.jsonl_offset === 'number') ? e.jsonl_offset : 0;
+  }
+  setOffset(id, offset) {
+    const e = this.map.get(id);
+    if (!e) return;
+    e.jsonl_offset = offset;
+    this._flush();
+  }
   _flush() {
     const obj = Object.fromEntries(this.map);
     const tmp = this.file + '.tmp';

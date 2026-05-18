@@ -25,3 +25,33 @@ test('delete removes', () => {
   s.delete('x');
   assert.equal(s.get('x'), null);
 });
+
+test('SessionStore: getOffset returns 0 for unknown id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sst-'));
+  const s = new SessionStore(dir);
+  assert.strictEqual(s.getOffset('nope'), 0);
+});
+
+test('SessionStore: setOffset persists and getOffset returns it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sst-'));
+  const s = new SessionStore(dir);
+  s.put('s1', { pid: 1234, last_seq: 0 });
+  s.setOffset('s1', 4096);
+  assert.strictEqual(s.getOffset('s1'), 4096);
+});
+
+test('SessionStore: setOffset survives reload', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sst-'));
+  const s1 = new SessionStore(dir);
+  s1.put('s1', { pid: 1234, last_seq: 0 });
+  s1.setOffset('s1', 8192);
+  const s2 = new SessionStore(dir);
+  assert.strictEqual(s2.getOffset('s1'), 8192);
+});
+
+test('SessionStore: setOffset on unknown id is a no-op', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sst-'));
+  const s = new SessionStore(dir);
+  s.setOffset('nope', 999);
+  assert.strictEqual(s.getOffset('nope'), 0);
+});
