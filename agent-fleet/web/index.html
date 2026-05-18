@@ -253,7 +253,12 @@
             <button id="v-kill" class="btn-danger" disabled data-i18n="viewer.terminate">■ TERMINATE</button>
           </div>
         </div>
-        <div class="term-frame">
+        <div class="viewer-tabs">
+          <button id="tab-chat" class="tab-btn active" data-tab="chat">CHAT</button>
+          <button id="tab-raw" class="tab-btn" data-tab="raw">RAW TERMINAL</button>
+        </div>
+        <div id="chat-view"></div>
+        <div class="term-frame" hidden>
           <div class="term-corner tl"></div><div class="term-corner tr"></div>
           <div class="term-corner bl"></div><div class="term-corner br"></div>
           <div id="term"></div>
@@ -769,6 +774,7 @@
   <script src="/fleet/static/palette.js"></script>
   <script src="/fleet/static/vault.js"></script>
   <script src="/fleet/static/graph-view.js"></script>
+  <script src="/fleet/static/chat-view.js"></script>
   <script src="/fleet/static/app.js"></script>
 </body>
 </html>

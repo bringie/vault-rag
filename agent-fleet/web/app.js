@@ -726,6 +726,12 @@
       // If we were in reconnecting mode, clear the dim. Real status will arrive
       // via the 'hello' frame; meanwhile show 'attaching' as transient.
       if (state.viewerStatusValue === 'reconnecting') setViewerStatus('attaching');
+      // vt-0392 (Phase 1C): hook chat-view to this WS so it fires
+      // replay_request and starts ingesting structured frames.
+      try {
+        const stored = localStorage.getItem(`chatOffset:${id}`);
+        window.chatView?.attach(id, ws, { fromOffset: stored ? Number(stored) : 0 });
+      } catch {}
     };
     // Coalesce rapid pty_data frames into one term.write per animation frame.
     // The default per-frame write was the bottleneck on bursty claude output.
@@ -785,6 +791,10 @@
         }
       } else if (f.type === 'pty_data') {
         writeChunk(b64ToBytes(f.data));
+      } else if (f.type === 'claude_msg' || f.type === 'compact_boundary'
+                 || f.type === 'replay_batch' || f.type === 'session_lifecycle') {
+        // vt-0392 (Phase 1C): route structured frames to chat-view.
+        try { window.chatView?.handleFrame(f); } catch (e) { console.warn('chatView.handleFrame', e); }
       } else if (f.type === 'session_exit') {
         document.querySelector('.viewer').classList.add('exited');
         setViewerStatus(f.exit_code === 0 ? 'exited' : 'killed');
@@ -804,6 +814,11 @@
       if (ev.code === 4001) {
         localStorage.removeItem('fleetToken'); location.reload(); return;
       }
+      // vt-0392 (Phase 1C): persist chat offset so reconnect skips already-seen frames.
+      try {
+        const off = window.chatView?.getLastOffset?.();
+        if (off) localStorage.setItem(`chatOffset:${id}`, String(off));
+      } catch {}
       if (state.selected === id) {
         // Don't override terminal-state-flagged statuses with 'reconnecting'.
         const v = state.viewerStatusValue;
@@ -2211,6 +2226,22 @@
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
     setOverlay(true, 'STANDBY', 'select a session');
+    // vt-0392 (Phase 1C): mount chat-view + wire tab toggle.
+    const chatViewEl = $('chat-view');
+    if (chatViewEl && window.chatView) {
+      try { window.chatView.mount(chatViewEl); } catch (e) { console.warn('chatView.mount', e); }
+    }
+    document.querySelectorAll('.viewer-tabs .tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.viewer-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const t = btn.dataset.tab;
+        const chat = $('chat-view');
+        const termFrame = document.querySelector('.term-frame');
+        if (chat) chat.hidden = (t !== 'chat');
+        if (termFrame) termFrame.hidden = (t !== 'raw');
+      });
+    });
     startPolling();
     applyRoute();
   }
