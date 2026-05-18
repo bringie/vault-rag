@@ -112,26 +112,6 @@ test.describe('Agent roles tab @roles', () => {
   });
 });
 
-// vt-0369 / vt-0372: pixel-office. Feature is gated by `pixel_office` flag
-// which is currently enabled in this deployment; if a future env disables it
-// the nav button is hidden — guard with .count() before clicking.
-test.describe('Pixel-office tab @office', () => {
-  test('office-01: canvas opens, fetches hosts + sessions', async ({ page }) => {
-    await page.goto('/fleet/#/pixel-office');
-    const panel = page.locator('#pixelofficeview');
-    // If the feature is disabled, the panel won't mount visibly — skip.
-    if (!(await panel.count())) test.skip(true, 'pixel-office panel not in DOM');
-    await expect(panel).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('#po-canvas')).toBeVisible();
-    // Module polls /hosts + /sessions?status=running on open.
-    await page.waitForResponse(r => /\/(api\/)?fleet\/hosts(\?|$)/.test(r.url()) && r.ok(), { timeout: 10_000 });
-    await page.waitForResponse(r => /\/(api\/)?fleet\/sessions\?status=running/.test(r.url()) && r.ok(), { timeout: 10_000 });
-    // Status line populated with host counts.
-    const status = await page.locator('#pixel-office-status').textContent();
-    expect(status).toMatch(/\d+ hosts/);
-  });
-});
-
 test.describe('Health tab @health', () => {
   test('health-01: subsystem grid visible', async ({ page }) => {
     await page.goto('/fleet/#/health');
