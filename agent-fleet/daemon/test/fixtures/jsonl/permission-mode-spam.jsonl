@@ -1,0 +1,5 @@
+{"type":"permission-mode","sessionId":"sess-4","ts":"2026-05-18T12:00:00.000Z","uuid":"u-1","permissionMode":"default"}
+{"type":"permission-mode","sessionId":"sess-4","ts":"2026-05-18T12:00:01.000Z","uuid":"u-2","permissionMode":"default"}
+{"type":"permission-mode","sessionId":"sess-4","ts":"2026-05-18T12:00:02.000Z","uuid":"u-3","permissionMode":"plan"}
+{"type":"permission-mode","sessionId":"sess-4","ts":"2026-05-18T12:00:03.000Z","uuid":"u-4","permissionMode":"plan"}
+{"type":"permission-mode","sessionId":"sess-4","ts":"2026-05-18T12:00:04.000Z","uuid":"u-5","permissionMode":"default"}

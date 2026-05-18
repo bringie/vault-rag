@@ -1,0 +1,5 @@
+{"type":"system","subtype":"session_start","sessionId":"sess-1","ts":"2026-05-18T12:00:00.000Z","uuid":"u-1","version":"2.1.143"}
+{"type":"user","sessionId":"sess-1","ts":"2026-05-18T12:00:01.000Z","uuid":"u-2","parentUuid":null,"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","sessionId":"sess-1","ts":"2026-05-18T12:00:02.000Z","uuid":"u-3","parentUuid":"u-2","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+{"type":"permission-mode","sessionId":"sess-1","ts":"2026-05-18T12:00:03.000Z","uuid":"u-4","permissionMode":"default"}
+{"type":"user","sessionId":"sess-1","ts":"2026-05-18T12:00:04.000Z","uuid":"u-5","parentUuid":"u-3","message":{"role":"user","content":[{"type":"text","text":"bye"}]}}
