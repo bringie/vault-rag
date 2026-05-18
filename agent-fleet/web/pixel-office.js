@@ -1,19 +1,17 @@
 'use strict';
-// vt-0369 / vt-0371 / vt-0372: pixel-office SPA module.
+// vt-0369 Pixel-Office canvas SPA module.
 //
-// Phase 2 (vt-0371): SPA shell + feature flag + skeleton canvas.
-// Phase 3 (vt-0372): avatars + room layout + 5s state poll.
+// Phase a (vt-0379): responsive canvas that fills the panel like the
+// terminal viewer + ¾-isometric projection + iso-drawn primitives. The
+// 960×540 hardcoded canvas is gone — JS reads clientWidth/Height every
+// frame so resizing the browser, switching themes, or any future layout
+// change Just Works. Cubicles laid out on an iso tile grid.
 //
-// Single canvas, no engine, no sprites. Avatars are drawn from canvas
-// primitives — head/torso/legs blocks colored deterministically from a
-// 4-byte hash of host.id (4 bits hat hue, 4 bits shirt hue, 4 bits skin
-// tone, 4 bits accessory).
+// Later phases (vt-0381+): atlas-driven sprites, walking AI, dispatch
+// choreography.
 //
-// State refresh: poll /fleet/hosts + /fleet/sessions?status=running every
-// 5 s while the view is open. Cheap, no new server-side roles required.
-// A WS-driven path can be added if/when latency matters (the existing
-// fleet WS subscriptions are scoped to individual session/run/host ids,
-// not fleet-wide events).
+// Existing contract preserved: window.openPixelOfficeView/closePixelOfficeView,
+// 5 s poll with AbortController + visibilitychange + in-flight guard.
 (function () {
   function token() { return localStorage.fleetToken || ''; }
   async function api(path, { signal } = {}) {
@@ -29,117 +27,82 @@
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   }
 
-  // --- Layout constants -----------------------------------------------------
-  const CANVAS_W = 960;
-  const CANVAS_H = 540;
-  const TILE = 32;
-  const AVATAR_W = 16;
-  const AVATAR_H = 24;
-  const DESK_W = 48;
-  const DESK_H = 24;
-  // Desk grid: rows of 4 desks, evenly spaced. Computed at view-open time
-  // from host count so we don't waste space.
-  const DESKS_PER_ROW = 4;
-  const ROW_GAP_Y = 96;
-  const COL_GAP_X = 192;
-  const OFFICE_TOP = 96;   // leave space for header band
+  // --- Layout constants ---------------------------------------------------
+  // ¾-iso (dimetric) tile dims: 2:1 ratio, classic SNES office angle.
+  const TILE_W = 64;
+  const TILE_H = 32;
+  // Cubicle footprint in tile coords (2×2 + walkway).
+  const CUBICLE_TW = 3;
+  const CUBICLE_TH = 3;
+  // Avatar block-sprite size (still primitives in phase a).
+  const AV_W = 18;
+  const AV_H = 28;
 
-  // --- Module state ---------------------------------------------------------
-  let _ctx = null;          // CanvasRenderingContext2D
+  // --- Module state -------------------------------------------------------
+  let _canvas = null;        // <canvas>
+  let _ctx = null;           // 2d context
+  let _wrap = null;          // .pixel-office-wrap
+  let _w = 0, _h = 0;        // current canvas backing-store size (CSS px)
+  let _dpr = 1;
   let _running = false;
   let _pollTimer = null;
   let _rafId = null;
-  let _hosts = [];          // [{ id, name, display_name, status, ... }]
-  let _runningById = {};    // host_id → count of running sessions
-  // vt-0375: per-avatar animation state — drives idle bob, typing wiggle,
-  // and the "transition emoji" (e.g. ✅ when a session just exited).
-  let _animState = {};      // host_id → { startedAt, lastRunning, emoji?, emojiUntil? }
-  // vt-0376: in-flight guard + abort controller so a slow API doesn't let
-  // pollers stack and overwrite each other's state last-arrival-wins.
+  let _resizeObs = null;
+  let _hosts = [];
+  let _runningById = {};
+  let _animState = {};       // host_id → { emoji?, emojiUntil? }
   let _inFlight = false;
   let _pollAbort = null;
-  let _lastSuccess = 0;     // performance.now() — drives stale indicator
-  let _visHandler = null;   // pause poll + rAF when tab hidden
+  let _lastSuccess = 0;
+  let _visHandler = null;
+  // Cached layout (recomputed on resize / host-count change).
+  let _layout = null;
   const NOW = () => performance.now();
 
   // -------------------------------------------------------------------------
 
   async function openPixelOfficeView() {
     document.getElementById('pixelofficeview-close').onclick = closePixelOfficeView;
+    _canvas = document.getElementById('po-canvas');
+    _wrap = document.querySelector('.pixel-office-wrap');
+    if (!_canvas || !_wrap) return;
+    resizeCanvas();
 
-    const canvas = document.getElementById('po-canvas');
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width  = CANVAS_W * dpr;
-    canvas.height = CANVAS_H * dpr;
-    canvas.style.width  = `${CANVAS_W}px`;
-    canvas.style.height = `${CANVAS_H}px`;
-    _ctx = canvas.getContext('2d');
-    _ctx.imageSmoothingEnabled = false;
-    _ctx.scale(dpr, dpr);
-
-    // vt-0373 (Phase 4): left-click → prompt bubble.
-    // vt-0374 (Phase 5): right-click (contextmenu) → role picker.
-    function hitForEvent(ev) {
-      const rect = canvas.getBoundingClientRect();
-      const x = (ev.clientX - rect.left) * (CANVAS_W / rect.width);
-      const y = (ev.clientY - rect.top)  * (CANVAS_H / rect.height);
-      return {
-        host: hostAt(x, y),
-        bubbleX: ev.clientX - rect.left,
-        bubbleY: ev.clientY - rect.top,
-      };
-    }
-    canvas.onclick = (ev) => {
+    _canvas.onclick = (ev) => {
       const { host, bubbleX, bubbleY } = hitForEvent(ev);
       if (host) openPromptBubble(host, bubbleX, bubbleY);
     };
-    canvas.oncontextmenu = (ev) => {
+    _canvas.oncontextmenu = (ev) => {
       const { host, bubbleX, bubbleY } = hitForEvent(ev);
-      if (host) {
-        ev.preventDefault();
-        openRolePickerBubble(host, bubbleX, bubbleY);
-      }
+      if (host) { ev.preventDefault(); openRolePickerBubble(host, bubbleX, bubbleY); }
     };
+
+    // ResizeObserver re-paints when the panel changes size (theme switch,
+    // window resize, dev-tools opening, etc).
+    if (window.ResizeObserver) {
+      _resizeObs = new ResizeObserver(() => { resizeCanvas(); render(); });
+      _resizeObs.observe(_wrap);
+    } else {
+      window.addEventListener('resize', resizeCanvas);
+    }
 
     updateStatus('— loading —');
     await refreshState();
 
     startPolling();
     _running = true;
-    // vt-0375: animation loop runs at rAF — independent of the 5 s data
-    // poll so idle bob + typing wiggle stay smooth between polls.
     const tick = () => {
       if (!_running) return;
-      // rAF is throttled by the browser to ~1 Hz on hidden tabs; we still
-      // want to skip draw work entirely while hidden so the GPU is idle.
       if (!document.hidden) render();
       _rafId = requestAnimationFrame(tick);
     };
     _rafId = requestAnimationFrame(tick);
 
-    // vt-0376: pause polling on tab hide; resume immediately on show.
     _visHandler = () => {
       if (document.hidden) stopPolling();
-      else if (_running && !_pollTimer) {
-        startPolling();
-        // Catch up immediately on resume — operator just came back to a
-        // potentially stale view.
-        refreshState();
-      }
+      else if (_running && !_pollTimer) { startPolling(); refreshState(); }
     };
     document.addEventListener('visibilitychange', _visHandler);
-  }
-
-  function startPolling() {
-    if (_pollTimer) clearInterval(_pollTimer);
-    _pollTimer = setInterval(() => refreshState(), 5000);
-  }
-
-  function stopPolling() {
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
-    // Cancel any in-flight fetch — the next resume call will re-issue.
-    if (_pollAbort) { try { _pollAbort.abort(); } catch {} _pollAbort = null; }
   }
 
   function closePixelOfficeView() {
@@ -150,7 +113,32 @@
       document.removeEventListener('visibilitychange', _visHandler);
       _visHandler = null;
     }
+    if (_resizeObs) { _resizeObs.disconnect(); _resizeObs = null; }
+    else window.removeEventListener('resize', resizeCanvas);
     location.hash = '#/dashboard';
+  }
+
+  function startPolling() {
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(() => refreshState(), 5000);
+  }
+  function stopPolling() {
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    if (_pollAbort) { try { _pollAbort.abort(); } catch {} _pollAbort = null; }
+  }
+
+  function resizeCanvas() {
+    if (!_canvas || !_wrap) return;
+    _dpr = window.devicePixelRatio || 1;
+    const cssW = _wrap.clientWidth || 960;
+    const cssH = _wrap.clientHeight || 540;
+    _canvas.width  = Math.floor(cssW * _dpr);
+    _canvas.height = Math.floor(cssH * _dpr);
+    _ctx = _canvas.getContext('2d');
+    _ctx.imageSmoothingEnabled = false;
+    _ctx.setTransform(_dpr, 0, 0, _dpr, 0, 0);
+    _w = cssW; _h = cssH;
+    _layout = null;  // invalidated — rebuilt on next render
   }
 
   function updateStatus(text) {
@@ -159,9 +147,6 @@
   }
 
   async function refreshState() {
-    // vt-0376: in-flight guard — drop the tick if the prior one is still
-    // running. Without this, slow API (>5 s) lets pollers stack and
-    // late-arriving responses overwrite newer state last-arrival-wins.
     if (_inFlight) return;
     _inFlight = true;
     _pollAbort = new AbortController();
@@ -171,40 +156,31 @@
         api('/hosts', { signal }),
         api('/sessions?status=running', { signal }),
       ]);
-      // Stable order — keeps each host on the same desk between polls. Sort
-      // by name so a fresh-up host slots in alphabetically rather than jumping.
       _hosts = hosts.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       const liveIds = new Set(_hosts.map(h => h.id));
       const newRunning = {};
       for (const s of sessions) {
         newRunning[s.host_id] = (newRunning[s.host_id] || 0) + 1;
       }
-      // vt-0375/vt-0376: transition emojis fire when running-count crosses 0
-      // in either direction. Stays visible for 4 s above the avatar.
       const now = NOW();
       for (const h of _hosts) {
         const prev = _runningById[h.id] || 0;
         const cur  = newRunning[h.id] || 0;
         const st = _animState[h.id] || (_animState[h.id] = { startedAt: now });
-        if (prev === 0 && cur > 0) {
-          st.emoji = '💭'; st.emojiUntil = now + 4000;
-        } else if (prev > 0 && cur === 0) {
-          st.emoji = '✅'; st.emojiUntil = now + 4000;
-        }
+        if (prev === 0 && cur > 0) { st.emoji = '💭'; st.emojiUntil = now + 4000; }
+        else if (prev > 0 && cur === 0) { st.emoji = '✅'; st.emojiUntil = now + 4000; }
       }
-      // vt-0376: reap vanished hosts to prevent unbounded _animState growth
-      // and stale transition emojis if a host id is recycled.
       for (const id of Object.keys(_animState)) {
         if (!liveIds.has(id)) delete _animState[id];
       }
       _runningById = newRunning;
       _lastSuccess = now;
+      _layout = null;  // host-count may have changed → re-layout
       const online = _hosts.filter(h => h.status === 'online').length;
       const working = _hosts.filter(h => (_runningById[h.id] || 0) > 0).length;
       updateStatus(`${_hosts.length} hosts · ${online} online · ${working} working`);
     } catch (e) {
-      if (e.name === 'AbortError') return;  // expected — pollers cancel on close
-      // vt-0376: surface stale-poll state so a frozen office doesn't look fresh.
+      if (e.name === 'AbortError') return;
       const ageS = _lastSuccess ? Math.round((NOW() - _lastSuccess) / 1000) : -1;
       updateStatus(ageS >= 0
         ? `(stale · last update ${ageS}s ago) ${e.message}`
@@ -215,10 +191,59 @@
     }
   }
 
-  // --- Drawing -------------------------------------------------------------
+  // --- Iso projection -----------------------------------------------------
 
-  // 32-bit deterministic hash of a string. Simple FNV-1a — enough to
-  // generate stable palette indices, not security-grade.
+  // Tile coords (tx, ty) → screen coords. Origin at canvas top-center +
+  // an offset so the floor sits nicely under the header band.
+  function isoToScreen(tx, ty) {
+    const ox = _w / 2;
+    const oy = 72;  // header band below status line
+    return {
+      x: ox + (tx - ty) * (TILE_W / 2),
+      y: oy + (tx + ty) * (TILE_H / 2),
+    };
+  }
+
+  // --- Layout (cubicle grid) ----------------------------------------------
+
+  // Compute a square-ish tile grid sized to fit the current canvas.
+  // Each cubicle is 3×3 tiles (desk + chair + walkway). We want host count
+  // to fit on screen — so cubiclesPerRow scales with canvas width.
+  function computeLayout() {
+    const n = Math.max(_hosts.length, 1);
+    // Diamond projection width per cubicle: cubicle is 3 tiles wide,
+    // iso-projected horizontal span ≈ CUBICLE_TW * TILE_W. Add 1 tile gap.
+    const cubScreenW = (CUBICLE_TW + 1) * TILE_W;
+    const cubScreenH = (CUBICLE_TH + 1) * TILE_H;
+    // How many fit horizontally? Use canvas width with margin.
+    const perRow = Math.max(2, Math.min(8,
+      Math.floor((_w - 80) / cubScreenW)));
+    const rows = Math.ceil(n / perRow);
+    // Build a list of cubicle tile-origin (tx, ty) per host index.
+    const cubicles = [];
+    for (let i = 0; i < n; i++) {
+      const row = Math.floor(i / perRow);
+      const col = i % perRow;
+      // Stagger rows so iso projection lays them in a grid (not a diamond).
+      // Each row drops by CUBICLE_TH tiles in BOTH tx and ty so the rows
+      // visually march down-right.
+      const tx = col * CUBICLE_TW + row * CUBICLE_TH;
+      const ty = col * CUBICLE_TW - row * 0;  // keep ty aligned per col for now
+      cubicles.push({ tx, ty });
+    }
+    return { cubicles, perRow, rows, cubScreenW, cubScreenH };
+  }
+
+  // Avatar screen position for host index i.
+  function avatarPos(i) {
+    if (!_layout) _layout = computeLayout();
+    const c = _layout.cubicles[i];
+    // Place avatar 1 tile in from the cubicle corner (the "chair" spot).
+    return isoToScreen(c.tx + 1, c.ty + 1);
+  }
+
+  // --- Drawing ------------------------------------------------------------
+
   function hash32(s) {
     let h = 0x811c9dc5 >>> 0;
     for (let i = 0; i < s.length; i++) {
@@ -227,222 +252,262 @@
     }
     return h >>> 0;
   }
-
-  // Palette derived from hash. Returns hex strings for hat/shirt/skin/accent.
   function paletteFor(hostId) {
     const h = hash32(hostId);
     const hats   = ['#e74c3c','#f39c12','#27ae60','#2980b9','#8e44ad','#d35400','#16a085','#c0392b','#7f8c8d','#34495e'];
     const shirts = ['#3498db','#2ecc71','#e67e22','#9b59b6','#1abc9c','#e91e63','#ff5722','#607d8b','#795548','#009688'];
     const skins  = ['#fce4c4','#f1c27d','#e0ac69','#c68642','#8d5524'];
-    const accents = ['#f1c40f','#ecf0f1','#bdc3c7','#1abc9c'];
     return {
-      hat:    hats   [(h >>>  0) & 0x0f] || '#777',
-      shirt:  shirts [(h >>>  4) & 0x0f] || '#888',
+      hat:    hats   [(h >>>  0) % hats.length],
+      shirt:  shirts [(h >>>  4) % shirts.length],
       skin:   skins  [(h >>>  8) % skins.length],
-      accent: accents[(h >>> 12) % accents.length],
-      hasHat: ((h >>> 16) & 0x07) > 1,   // ~75% of avatars wear a hat
+      hasHat: ((h >>> 16) & 0x07) > 1,
     };
   }
 
-  // Desk + avatar position for host at index i. vt-0377: when host count
-  // exceeds ~16 (4 rows × 4 cols), compress ROW_GAP_Y so everything stays
-  // inside the 540 px canvas height instead of clipping below.
-  function deskPos(i) {
-    const total = Math.max(_hosts.length, 1);
-    const rows = Math.ceil(total / DESKS_PER_ROW);
-    const available = CANVAS_H - OFFICE_TOP - 24;   // 24 px footer breathing room
-    const rowGap = Math.min(ROW_GAP_Y, Math.floor(available / Math.max(rows, 1)));
-    const row = Math.floor(i / DESKS_PER_ROW);
-    const col = i % DESKS_PER_ROW;
-    const totalWidthForRow = (DESKS_PER_ROW - 1) * COL_GAP_X + DESK_W;
-    const startX = Math.floor((CANVAS_W - totalWidthForRow) / 2);
-    return {
-      x: startX + col * COL_GAP_X,
-      y: OFFICE_TOP + row * rowGap,
-    };
-  }
-
-  function drawRoom(ctx) {
-    // Background: dark office floor.
-    ctx.fillStyle = '#1a1f2c';
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-    // Tile grid for visual rhythm.
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  // Draw a single iso floor tile (diamond) at tile coords.
+  function drawFloorTile(ctx, tx, ty, fill) {
+    const { x, y } = isoToScreen(tx, ty);
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(x,            y);
+    ctx.lineTo(x + TILE_W/2, y + TILE_H/2);
+    ctx.lineTo(x,            y + TILE_H);
+    ctx.lineTo(x - TILE_W/2, y + TILE_H/2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)';
     ctx.lineWidth = 1;
-    for (let x = 0; x <= CANVAS_W; x += TILE) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_H); ctx.stroke();
-    }
-    for (let y = 0; y <= CANVAS_H; y += TILE) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CANVAS_W, y); ctx.stroke();
-    }
-    // Top header band — gives a "window" feel to the floor.
-    ctx.fillStyle = '#0e1320';
-    ctx.fillRect(0, 0, CANVAS_W, 64);
-    ctx.fillStyle = '#506075';
-    ctx.font = '11px "JetBrains Mono", "Courier New", monospace';
-    ctx.fillText('— FLEET OFFICE —', 16, 24);
-    ctx.fillText('avatars per host · darker = offline · monitor lit = working', 16, 42);
-    // vt-0377: empty-state banner so an operator with 0 hosts or all-offline
-    // hosts doesn't see what looks like an "empty grid bug". This sits below
-    // the header so the avatar row (if any) still renders on top.
-    if (_hosts.length === 0) {
-      ctx.fillStyle = '#8ab4f8';
-      ctx.font = 'bold 20px "JetBrains Mono", "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('no hosts registered', CANVAS_W / 2, CANVAS_H / 2 - 12);
-      ctx.fillStyle = '#506075';
-      ctx.font = '13px "JetBrains Mono", "Courier New", monospace';
-      ctx.fillText('install agent-fleet daemon on a host to populate the office', CANVAS_W / 2, CANVAS_H / 2 + 16);
-      ctx.textAlign = 'left';
-    } else {
-      const online = _hosts.filter(h => h.status === 'online').length;
-      if (online === 0) {
-        ctx.fillStyle = '#f6a96a';
-        ctx.font = 'bold 16px "JetBrains Mono", "Courier New", monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`all ${_hosts.length} host(s) offline — avatars greyed out below`,
-          CANVAS_W / 2, 80);
-        ctx.textAlign = 'left';
-      }
-    }
+    ctx.stroke();
   }
 
-  function drawDesk(ctx, x, y, working) {
-    // Desktop slab.
-    ctx.fillStyle = '#3e2a1a';
-    ctx.fillRect(x, y + AVATAR_H + 4, DESK_W, 6);
-    // Legs.
-    ctx.fillRect(x + 2, y + AVATAR_H + 10, 4, 10);
-    ctx.fillRect(x + DESK_W - 6, y + AVATAR_H + 10, 4, 10);
+  // Draw an iso desk + monitor on the tile (tx, ty). working=true lights the screen.
+  function drawDesk(ctx, tx, ty, working) {
+    const { x, y } = isoToScreen(tx, ty);
+    // Desk top (diamond).
+    ctx.fillStyle = '#5a3a1d';
+    ctx.beginPath();
+    ctx.moveTo(x,             y - 6);
+    ctx.lineTo(x + TILE_W/2,  y - 6 + TILE_H/2);
+    ctx.lineTo(x,             y - 6 + TILE_H);
+    ctx.lineTo(x - TILE_W/2,  y - 6 + TILE_H/2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#3a2410'; ctx.lineWidth = 1; ctx.stroke();
+    // Front face (gives 3D feel).
+    ctx.fillStyle = '#3e2614';
+    ctx.beginPath();
+    ctx.moveTo(x + TILE_W/2,  y - 6 + TILE_H/2);
+    ctx.lineTo(x + TILE_W/2,  y + TILE_H/2);
+    ctx.lineTo(x,             y + TILE_H);
+    ctx.lineTo(x,             y - 6 + TILE_H);
+    ctx.closePath();
+    ctx.fill();
     // Monitor.
-    ctx.fillStyle = '#222';
-    ctx.fillRect(x + 8, y + AVATAR_H - 14, 20, 16);
-    // Screen (green if working, dark if idle).
+    const mx = x - 8, my = y - 24;
+    ctx.fillStyle = '#1a1a1f';
+    ctx.fillRect(mx, my, 16, 12);
     ctx.fillStyle = working ? '#3affb0' : '#0a1a18';
-    ctx.fillRect(x + 10, y + AVATAR_H - 12, 16, 12);
-    // Keyboard.
-    ctx.fillStyle = '#555';
-    ctx.fillRect(x + 8, y + AVATAR_H + 2, 20, 3);
+    ctx.fillRect(mx + 2, my + 2, 12, 8);
+    // Stand.
+    ctx.fillStyle = '#222';
+    ctx.fillRect(mx + 6, my + 12, 4, 3);
   }
 
-  function drawAvatar(ctx, x, y, palette, alpha = 1) {
+  // Iso-draw the avatar block. (tx, ty) is the chair tile; we offset the
+  // block up so the feet land on the tile center.
+  function drawAvatar(ctx, sx, sy, palette, alpha = 1) {
     ctx.save();
     ctx.globalAlpha = alpha;
+    const x = Math.round(sx - AV_W / 2);
+    const y = Math.round(sy - AV_H);
+    // Shadow.
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 1, AV_W / 2, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
     // Head.
     ctx.fillStyle = palette.skin;
-    ctx.fillRect(x + 4, y, 8, 8);
+    ctx.fillRect(x + 5, y + 0, 8, 8);
     // Eyes.
     ctx.fillStyle = '#000';
-    ctx.fillRect(x + 6, y + 4, 1, 1);
-    ctx.fillRect(x + 9, y + 4, 1, 1);
+    ctx.fillRect(x + 7, y + 4, 1, 1);
+    ctx.fillRect(x + 10, y + 4, 1, 1);
     // Hat.
     if (palette.hasHat) {
       ctx.fillStyle = palette.hat;
-      ctx.fillRect(x + 3, y - 2, 10, 3);
-      ctx.fillRect(x + 5, y - 4, 6, 2);
+      ctx.fillRect(x + 4, y - 2, 10, 3);
+      ctx.fillRect(x + 6, y - 4, 6, 2);
     }
     // Torso.
     ctx.fillStyle = palette.shirt;
-    ctx.fillRect(x + 2, y + 8, 12, 10);
-    // Accent stripe across chest.
-    ctx.fillStyle = palette.accent;
-    ctx.fillRect(x + 2, y + 13, 12, 1);
+    ctx.fillRect(x + 3, y + 8, 12, 12);
     // Arms.
-    ctx.fillStyle = palette.shirt;
-    ctx.fillRect(x, y + 9, 2, 7);
-    ctx.fillRect(x + 14, y + 9, 2, 7);
+    ctx.fillRect(x + 1, y + 9, 2, 8);
+    ctx.fillRect(x + 15, y + 9, 2, 8);
     // Legs.
-    ctx.fillStyle = '#222';
-    ctx.fillRect(x + 4, y + 18, 3, 6);
-    ctx.fillRect(x + 9, y + 18, 3, 6);
+    ctx.fillStyle = '#1a1f2c';
+    ctx.fillRect(x + 5, y + 20, 3, 8);
+    ctx.fillRect(x + 10, y + 20, 3, 8);
     ctx.restore();
   }
 
-  function drawNameTag(ctx, x, y, name, badge) {
+  function drawNameTag(ctx, sx, sy, name, badge, emoji) {
     ctx.fillStyle = '#c8d4e2';
     ctx.font = '10px "JetBrains Mono", "Courier New", monospace';
     ctx.textAlign = 'center';
-    const t = (name || '').slice(0, 14);
-    ctx.fillText(t, x + AVATAR_W / 2, y + AVATAR_H + 32);
+    ctx.fillText((name || '').slice(0, 16), sx, sy + 14);
     if (badge) {
       ctx.fillStyle = '#3affb0';
-      ctx.fillText(badge, x + AVATAR_W / 2, y + AVATAR_H + 44);
+      ctx.fillText(badge, sx, sy + 26);
+    }
+    if (emoji) {
+      ctx.font = '14px serif';
+      ctx.fillText(emoji, sx, sy - AV_H - 4);
     }
     ctx.textAlign = 'left';
   }
 
+  function drawHeaderBand(ctx) {
+    ctx.fillStyle = '#0e1320';
+    ctx.fillRect(0, 0, _w, 56);
+    ctx.fillStyle = '#506075';
+    ctx.font = '12px "JetBrains Mono", "Courier New", monospace';
+    ctx.fillText('FLEET // OFFICE', 16, 22);
+    ctx.font = '10px "JetBrains Mono", "Courier New", monospace';
+    ctx.fillText('left-click → prompt · right-click → roles · brighter = working · dim = offline',
+      16, 40);
+  }
+
+  function drawEmptyState(ctx) {
+    ctx.fillStyle = '#8ab4f8';
+    ctx.font = 'bold 22px "JetBrains Mono", "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('no hosts registered', _w / 2, _h / 2 - 12);
+    ctx.fillStyle = '#506075';
+    ctx.font = '13px "JetBrains Mono", "Courier New", monospace';
+    ctx.fillText('install agent-fleet daemon on a host to populate the office',
+      _w / 2, _h / 2 + 16);
+    ctx.textAlign = 'left';
+  }
+
   function render() {
-    if (!_ctx) return;
+    if (!_ctx || !_w || !_h) return;
     const ctx = _ctx;
     const now = NOW();
-    drawRoom(ctx);
-    _hosts.forEach((h, i) => {
-      const pos = deskPos(i);
+
+    // Floor wash.
+    ctx.fillStyle = '#1a1f2c';
+    ctx.fillRect(0, 0, _w, _h);
+
+    if (!_hosts.length) {
+      drawHeaderBand(ctx);
+      drawEmptyState(ctx);
+      return;
+    }
+
+    if (!_layout) _layout = computeLayout();
+
+    // Draw floor for the bounding region.
+    const { perRow, rows } = _layout;
+    const maxCol = perRow * CUBICLE_TW + rows * CUBICLE_TH + 2;
+    const maxRow = perRow * CUBICLE_TW + rows * CUBICLE_TH + 2;
+    for (let tx = -1; tx < maxCol; tx++) {
+      for (let ty = -1; ty < maxRow; ty++) {
+        // Alternate tile shades for a checker hint.
+        const fill = ((tx + ty) & 1) ? '#252b3a' : '#2a3144';
+        const { x, y } = isoToScreen(tx, ty);
+        // Cull tiles outside the visible viewport (cheap).
+        if (x < -TILE_W || x > _w + TILE_W || y < -TILE_H || y > _h + TILE_H) continue;
+        drawFloorTile(ctx, tx, ty, fill);
+      }
+    }
+
+    // Build a draw list of (host index, screen-y) for y-sort so avatars in
+    // back rows draw behind desks in front rows.
+    const drawList = _hosts.map((h, i) => {
+      const cub = _layout.cubicles[i];
+      const dt = isoToScreen(cub.tx + 1, cub.ty + 1);
+      return { i, h, dt };
+    }).sort((a, b) => a.dt.y - b.dt.y);
+
+    for (const { i, h, dt } of drawList) {
+      const cub = _layout.cubicles[i];
       const running = _runningById[h.id] || 0;
       const isOnline = h.status === 'online';
       const isWorking = isOnline && running > 0;
-      // vt-0375: idle bob + typing wiggle — tiny per-frame y-offset so
-      // avatars feel alive without proper animation frames. Phase offset
-      // is per-host so they don't all bob in sync (looks creepy).
+
+      // Desk on (tx, ty); chair/avatar one tile in.
+      drawDesk(ctx, cub.tx, cub.ty, isWorking);
+
+      // Idle bob: small ±1 px y offset, per-host phase so they're not synced.
       const phase = (hash32(h.id) % 1000) / 1000;
       let dy = 0;
       if (isOnline) {
-        if (isWorking) {
-          // Typing wiggle: fast small jitter ~ ±1 px.
-          dy = Math.round(Math.sin(now / 90 + phase * 6.28) * 1.2);
-        } else {
-          // Idle bob: slow ±1 px.
-          dy = Math.round(Math.sin(now / 700 + phase * 6.28));
-        }
+        if (isWorking) dy = Math.round(Math.sin(now / 90 + phase * 6.28) * 1.2);
+        else dy = Math.round(Math.sin(now / 700 + phase * 6.28));
       }
-      drawDesk(ctx, pos.x, pos.y, isWorking);
       const palette = paletteFor(h.id);
-      drawAvatar(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y + dy, palette,
-        isOnline ? 1.0 : 0.35);
-      const badge = isWorking ? `${running} session${running > 1 ? 's' : ''}` : '';
-      drawNameTag(ctx, pos.x + (DESK_W - AVATAR_W) / 2, pos.y,
-        h.display_name || h.name, badge);
+      drawAvatar(ctx, dt.x, dt.y + dy, palette, isOnline ? 1.0 : 0.35);
 
-      // Status emoji bubble (transient transitions + heavy-load indicator).
+      // Status emoji bubble.
       const st = _animState[h.id];
       let emoji = null;
       if (st && st.emoji && st.emojiUntil > now) emoji = st.emoji;
-      else if (isWorking && running >= 3) emoji = '🔥';  // 3+ concurrent sessions
-      if (emoji) {
-        ctx.font = '14px serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(emoji, pos.x + DESK_W / 2, pos.y - 6);
-        ctx.textAlign = 'left';
-      }
-    });
+      else if (isWorking && running >= 3) emoji = '🔥';
+      const badge = isWorking ? `${running} session${running > 1 ? 's' : ''}` : '';
+      drawNameTag(ctx, dt.x, dt.y + 4, h.display_name || h.name, badge, emoji);
+    }
+
+    drawHeaderBand(ctx);
+
+    // "All offline" strip below the header.
+    const online = _hosts.filter(h => h.status === 'online').length;
+    if (online === 0) {
+      ctx.fillStyle = '#f6a96a';
+      ctx.font = 'bold 14px "JetBrains Mono", "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`all ${_hosts.length} host(s) offline — avatars greyed out`,
+        _w / 2, 72);
+      ctx.textAlign = 'left';
+    }
   }
 
-  // --- Click hit-test + prompt bubble (vt-0373) ----------------------------
+  // --- Click hit-test -----------------------------------------------------
+
+  function hitForEvent(ev) {
+    const rect = _canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (_w / rect.width);
+    const y = (ev.clientY - rect.top)  * (_h / rect.height);
+    return { host: hostAt(x, y), bubbleX: ev.clientX - rect.left, bubbleY: ev.clientY - rect.top };
+  }
 
   function hostAt(x, y) {
-    // Hit-rect = avatar block + desk block, both centred on deskPos.x.
+    if (!_layout) _layout = computeLayout();
+    // Hit test: distance from cursor to avatar foot-point.
     for (let i = 0; i < _hosts.length; i++) {
-      const pos = deskPos(i);
-      const ax = pos.x + (DESK_W - AVATAR_W) / 2;
-      // y-range covers avatar head down through desk + name tag.
-      if (x >= pos.x && x <= pos.x + DESK_W &&
-          y >= pos.y - 4 && y <= pos.y + AVATAR_H + 48) {
-        return _hosts[i];
-      }
+      const cub = _layout.cubicles[i];
+      const dt = isoToScreen(cub.tx + 1, cub.ty + 1);
+      const dx = x - dt.x;
+      const dy = y - dt.y;
+      // Generous oval hitbox covering avatar + name tag.
+      if (Math.abs(dx) < AV_W && (dy < 4 && dy > -AV_H - 8)) return _hosts[i];
+      // Also accept clicks on the name tag below.
+      if (Math.abs(dx) < 60 && dy > 0 && dy < 32) return _hosts[i];
     }
     return null;
   }
 
+  // --- Prompt bubble + role picker (unchanged from prior phases) ----------
+
   function openPromptBubble(host, anchorX, anchorY) {
     const overlay = document.getElementById('po-overlay');
     if (!overlay) return;
-    // Drop any prior bubble — only one open at a time.
     overlay.innerHTML = '';
     const bubble = document.createElement('div');
     bubble.className = 'po-bubble';
-    // Position relative to the overlay (which is .inset:0 over the canvas).
-    bubble.style.left = `${Math.min(anchorX + 12, CANVAS_W - 280)}px`;
-    bubble.style.top  = `${Math.min(anchorY + 12, CANVAS_H - 200)}px`;
+    bubble.style.left = `${Math.min(anchorX + 12, _w - 280)}px`;
+    bubble.style.top  = `${Math.min(anchorY + 12, _h - 200)}px`;
     bubble.innerHTML = `
       <div style="display:flex;align-items:center;gap:.5em;margin-bottom:.4em">
         <strong>${esc(host.display_name || host.name)}</strong>
@@ -461,13 +526,11 @@
     `;
     overlay.appendChild(bubble);
     bubble.querySelector('[data-po-close]').onclick = () => { overlay.innerHTML = ''; };
-
     const sendBtn = bubble.querySelector('[data-po-send]');
     const statusEl = bubble.querySelector('#po-status');
     const resultEl = bubble.querySelector('#po-result');
     const promptEl = bubble.querySelector('#po-prompt');
     if (promptEl && !promptEl.disabled) setTimeout(() => promptEl.focus(), 0);
-
     if (sendBtn) sendBtn.onclick = async () => {
       const prompt = promptEl.value.trim();
       if (!prompt) { statusEl.textContent = 'prompt required'; return; }
@@ -487,10 +550,6 @@
         }
         const j = await r.json();
         const out = (j.output || '(no output)').slice(0, 6000);
-        // vt-0376: build status DOM with textContent + appendChild rather
-        // than innerHTML — even though exit_code is a number from a
-        // trusted daemon today, an unsanitized template was the vector
-        // flagged by the security audit. session_id was already esc'd.
         const exitCode = (j.exit_code == null) ? '?' : Number(j.exit_code);
         statusEl.textContent = '';
         statusEl.appendChild(document.createTextNode(`done · exit=${exitCode}`));
@@ -502,7 +561,6 @@
           a.style.color = 'var(--accent)';
           statusEl.appendChild(a);
         }
-        // vt-0376: also surface 429 Retry-After if the daemon backpressures.
         const retry = r.headers.get('retry-after');
         if (r.status === 429 && retry) {
           statusEl.appendChild(document.createTextNode(` (retry in ${retry}s)`));
@@ -517,16 +575,14 @@
     };
   }
 
-  // --- Role picker bubble (vt-0374) ----------------------------------------
-
   async function openRolePickerBubble(host, anchorX, anchorY) {
     const overlay = document.getElementById('po-overlay');
     if (!overlay) return;
     overlay.innerHTML = '';
     const bubble = document.createElement('div');
     bubble.className = 'po-bubble';
-    bubble.style.left = `${Math.min(anchorX + 12, CANVAS_W - 320)}px`;
-    bubble.style.top  = `${Math.min(anchorY + 12, CANVAS_H - 280)}px`;
+    bubble.style.left = `${Math.min(anchorX + 12, _w - 320)}px`;
+    bubble.style.top  = `${Math.min(anchorY + 12, _h - 280)}px`;
     bubble.innerHTML = `
       <div style="display:flex;align-items:center;gap:.5em;margin-bottom:.4em">
         <strong>${esc(host.display_name || host.name)}</strong>
@@ -536,8 +592,7 @@
       </div>
       <div id="po-roles-body" style="font-size:11px;color:var(--text-dim)">loading…</div>
       <div style="margin-top:.4em;font-size:10px;color:var(--text-faint)">
-        Group roles override host roles at spawn. /roles/effective shows what
-        will actually be applied.
+        Group roles override host roles at spawn.
       </div>
     `;
     overlay.appendChild(bubble);
@@ -545,9 +600,6 @@
     await renderRolePickerBody(host, bubble);
   }
 
-  // vt-0377: /agent-roles seldom changes mid-picker-session — cache it
-  // on the bubble itself so re-render after a checkbox toggle only refetches
-  // the two host-scoped endpoints (1/3 of the original traffic).
   async function renderRolePickerBody(host, bubble) {
     const body = bubble.querySelector('#po-roles-body');
     try {
@@ -600,7 +652,6 @@
               });
               if (!r.ok && r.status !== 204) throw new Error(`${r.status}`);
             }
-            // Re-render to refresh the effective dot.
             await renderRolePickerBody(host, bubble);
           } catch (e) {
             cb.checked = !cb.checked;

@@ -1200,21 +1200,25 @@ dialog#wf-tpl-picker::backdrop { background:rgba(0,0,0,.7); }
   .vault-history-list { width:auto; border-right:none; border-bottom:1px solid var(--border, #333); max-height:40vh; }
 }
 
-/* vt-0369/vt-0371: pixel-office canvas + overlay layer. */
+/* vt-0369/vt-0371/vt-0379: pixel-office canvas. The wrap fills the panel
+   below the header (same shape as the terminal viewer). Canvas itself
+   stretches to the wrap; the JS module reads clientWidth/Height on a
+   ResizeObserver tick and re-paints, so the office always fills the
+   available space instead of staying boxed at 960×540. */
 .pixel-office-wrap {
   position: relative;
-  display: flex;
-  justify-content: center;
-  padding: 1em 1.4em 1em;
+  flex: 1;          /* fill remaining height under the archive-head */
+  min-height: 0;    /* lets the flex child shrink correctly */
   background: var(--bg);
+  overflow: hidden;
 }
 #po-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
   background: #1a1f2c; /* office floor */
-  border: 1px solid var(--line);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  max-width: 100%;
-  height: auto;
   cursor: crosshair;
 }
 #po-overlay {
