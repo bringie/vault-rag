@@ -547,6 +547,10 @@
     if (state.term) { try { state.term.dispose(); } catch {} state.term = null; }
     if (state.sessionCostTimer) { clearInterval(state.sessionCostTimer); state.sessionCostTimer = null; }
     if (state.ro) { try { state.ro.disconnect(); } catch {} state.ro = null; }
+    // vt-0392 (Phase 1C, MED fix): detach chat-view before binding to a new
+    // session so in-flight frames for the previous session don't render into
+    // the new view between ws close and ws open.
+    try { window.chatView?.detach(); } catch {}
     state.selected = id;
     state.selectedHost = null;
     setViewMode('session');
@@ -614,6 +618,9 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open($('term'));
+    // vt-0392 (MED fix): expose fit addon so the tab-toggle can re-run
+    // fit() when the raw-terminal tab first becomes visible.
+    state.fitAddon = fit;
     // Canvas renderer: ~5-10× faster than DOM for bursty TUI output (claude).
     try {
       if (window.CanvasAddon && CanvasAddon.CanvasAddon) {
@@ -2240,6 +2247,20 @@
         const termFrame = document.querySelector('.term-frame');
         if (chat) chat.hidden = (t !== 'chat');
         if (termFrame) termFrame.hidden = (t !== 'raw');
+        // vt-0392 (MED fix): xterm starts hidden → clientWidth 0 → initial
+        // fit never runs. Kick it on first reveal so the terminal lays out
+        // at the viewer's actual dimensions instead of the default 80x24.
+        if (t === 'raw' && state.fitAddon && state.term) {
+          requestAnimationFrame(() => {
+            try {
+              state.fitAddon.fit();
+              const cols = state.term.cols, rows = state.term.rows;
+              if (state.ws && state.ws.readyState === 1) {
+                state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+              }
+            } catch {}
+          });
+        }
       });
     });
     startPolling();

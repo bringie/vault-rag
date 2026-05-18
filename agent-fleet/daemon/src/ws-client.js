@@ -627,12 +627,11 @@ async function runDaemon(opts) {
             }
             ws.send(JSON.stringify({ type: 'replay_end', session_id: sid, since_seq: sinceSeq, count: frames.length }));
           } else if (f.type === 'replay_request') {
-            // vt-chat-1b: chat-UI history replay. Read jsonl from
-            // from_offset, parse up to max_messages claude_msg /
-            // compact_boundary lines, emit one replay_batch with the
-            // results. is_last=true means caller has reached current
-            // EOF; live tail continues afterwards on the existing
-            // jsonl-tailer's own channel.
+            // vt-chat-1b: chat-UI history replay. Streams the jsonl from
+            // from_offset in 64 KiB chunks (does NOT load the entire file
+            // — vt-0392 MED fix), parses up to max_messages payloads,
+            // emits one replay_batch. is_last=true means caller reached
+            // current EOF; live tail continues on the JsonlTailer channel.
             const sid = f.session_id;
             const fromOffset = Math.max(0, Number(f.from_offset) || 0);
             const maxMessages = Math.min(Number(f.max_messages) || 500, 2000);
@@ -653,31 +652,62 @@ async function runDaemon(opts) {
                 catch { emptyBatch(); return; }
                 if (stat.size <= fromOffset) { emptyBatch(); }
                 else {
-                  const content = fs.readFileSync(jsonlPath, 'utf8');
-                  // Backtrack to last newline before fromOffset to avoid
-                  // splitting a line.
-                  let pos = fromOffset;
-                  while (pos > 0 && content[pos - 1] !== '\n') pos--;
-                  const lines = [];
-                  let cursor = pos;
-                  while (cursor < content.length && lines.length < maxMessages) {
-                    const nl = content.indexOf('\n', cursor);
-                    if (nl === -1) break;
-                    const line = content.slice(cursor, nl);
-                    if (line.length > 0) {
-                      const parsed = parseJsonlLine(line, cursor);
-                      if (parsed && (parsed.type === 'claude_msg' || parsed.type === 'compact_boundary')) {
-                        lines.push({ type: parsed.type, session_id: sid, ...parsed.payload });
+                  // Streaming read from from_offset. Backtrack to last
+                  // newline so we never split a line.
+                  const fd = fs.openSync(jsonlPath, 'r');
+                  try {
+                    let start = fromOffset;
+                    if (start > 0) {
+                      // Probe one byte back; if not '\n' walk further back.
+                      // In practice from_offset is always at a newline
+                      // boundary (set by the tailer right after \n) so
+                      // this loop is a no-op or single iteration.
+                      const probe = Buffer.alloc(1);
+                      while (start > 0) {
+                        fs.readSync(fd, probe, 0, 1, start - 1);
+                        if (probe[0] === 0x0A) break;
+                        start--;
                       }
                     }
-                    cursor = nl + 1;
+                    const CHUNK = 64 * 1024;
+                    const buf = Buffer.alloc(CHUNK);
+                    let pos = start;
+                    let lineBuf = '';
+                    const lines = [];
+                    let cutOffset = start;
+                    while (pos < stat.size && lines.length < maxMessages) {
+                      const toRead = Math.min(CHUNK, stat.size - pos);
+                      const n = fs.readSync(fd, buf, 0, toRead, pos);
+                      if (n === 0) break;
+                      lineBuf += buf.slice(0, n).toString('utf8');
+                      pos += n;
+                      let lineStart = cutOffset;
+                      let nl;
+                      while ((nl = lineBuf.indexOf('\n')) !== -1
+                             && lines.length < maxMessages) {
+                        const line = lineBuf.slice(0, nl);
+                        const consumed = Buffer.byteLength(line, 'utf8') + 1;
+                        lineBuf = lineBuf.slice(nl + 1);
+                        if (line.length > 0) {
+                          const parsed = parseJsonlLine(line, lineStart);
+                          if (parsed && (parsed.type === 'claude_msg' || parsed.type === 'compact_boundary')) {
+                            lines.push({ type: parsed.type, session_id: sid, ...parsed.payload });
+                          }
+                        }
+                        lineStart += consumed;
+                        cutOffset = lineStart;
+                      }
+                      if (lines.length >= maxMessages) break;
+                    }
+                    safeSend(ws, {
+                      type: 'replay_batch', session_id: sid,
+                      from_offset: fromOffset, to_offset: cutOffset,
+                      is_last: cutOffset >= stat.size,
+                      lines,
+                    });
+                  } finally {
+                    fs.closeSync(fd);
                   }
-                  safeSend(ws, {
-                    type: 'replay_batch', session_id: sid,
-                    from_offset: fromOffset, to_offset: cursor,
-                    is_last: cursor >= stat.size,
-                    lines,
-                  });
                 }
               } catch (e) {
                 console.error(`[ws] replay_request ${sid}: ${e.message}`);

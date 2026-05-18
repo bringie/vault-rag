@@ -86,11 +86,27 @@
     c.scrollTop = c.scrollHeight;
   }
 
+  // vt-0392 (MED fix): soft cap on mounted DOM nodes. Full virtualization
+  // is vt-0392-followup (react-virtuoso). For now drop oldest nodes when
+  // the list grows past CAP — sessions with 10k+ turns no longer freeze
+  // the page. User can re-replay via reload (chat tab fires replay_request
+  // from offset 0 if localStorage cleared).
+  const MAX_MOUNTED_NODES = 2000;
   function appendNode(node, seq) {
     if (!STATE.list) return;
     const stick = STATE.stickToBottom && isAtBottom();
     STATE.list.appendChild(node);
     if (seq != null) STATE.nodeBySeq.set(seq, node);
+    // Trim oldest when over cap.
+    while (STATE.list.childElementCount > MAX_MOUNTED_NODES) {
+      const first = STATE.list.firstElementChild;
+      if (!first) break;
+      // Sync nodeBySeq map (find + delete the matching entry).
+      for (const [k, v] of STATE.nodeBySeq) {
+        if (v === first) { STATE.nodeBySeq.delete(k); break; }
+      }
+      STATE.list.removeChild(first);
+    }
     if (stick) scrollToBottom();
   }
 
@@ -285,7 +301,10 @@
         type: 'replay_request',
         session_id: STATE.sessionId,
         from_offset: fromOffset || 0,
-        max_messages: 500,
+        // vt-0392 (MED fix): use the daemon's hard cap to minimise
+        // round-trip count on large sessions (was 500 → ~20 RT on a
+        // 10k-turn session; now ~5 RT).
+        max_messages: 2000,
       }));
     } catch {}
   }
