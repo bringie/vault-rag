@@ -64,6 +64,10 @@ if [[ -z "${AGENT_FLEET_HUB:-}" ]] && ! grep -q '^AGENT_FLEET_HUB=wss' "$CONF_DI
   read -r -p "Hub URL (e.g. wss://brain.example.com/api/fleet/ws): " AGENT_FLEET_HUB
 fi
 if [[ -z "${AGENT_FLEET_TOKEN:-}" ]] && ! grep -q '^AGENT_FLEET_TOKEN=.\+' "$CONF_DIR/daemon.env"; then
+  # vt-0389: MUST be the FLEET_ADMIN_TOKEN, not the regular API token.
+  # The hub WS upgrade rejects regular-tier bearers with code 4001.
+  echo "Bearer token = the hub's FLEET_ADMIN_TOKEN (not the regular API token)."
+  echo "  Retrieve from vault: vt secrets get VAULT_RAG_FLEET_ADMIN_TOKEN"
   read -r -s -p "Bearer token: " AGENT_FLEET_TOKEN
   echo
 fi
