@@ -46,8 +46,6 @@ async function runRetention(pool) {
 // (fleet_events transcript + ring) for the top-N most-recently
 // completed sessions per host; drop older. fleet_sessions rows
 // are preserved (duration / cost / exit_code stay for analytics).
-// Synthetic mux_attach rows excluded — they're operational, not
-// content-worth-keeping.
 const SESSION_KEEP_PER_HOST = parseInt(
   process.env.VAULT_RAG_SESSION_KEEP_PER_HOST || '10', 10);
 const SESSION_PURGE_BATCH = parseInt(
@@ -59,7 +57,6 @@ async function purgeOldSessionEvents(pg) {
     `SELECT host_id, COUNT(*)::int AS n
      FROM fleet_sessions
      WHERE status IN ('done','failed','cancelled','exited','killed','orphaned')
-       AND COALESCE(metadata->>'kind','') != 'mux_attach'
      GROUP BY host_id
      HAVING COUNT(*) > $1`,
     [SESSION_KEEP_PER_HOST]);
@@ -78,7 +75,6 @@ async function purgeOldSessionEvents(pg) {
         FROM fleet_sessions
         WHERE host_id = $1
           AND status IN ('done','failed','cancelled','exited','killed','orphaned')
-          AND COALESCE(metadata->>'kind','') != 'mux_attach'
       )
       SELECT id FROM ranked WHERE rn > $2 LIMIT $3`,
       [h.host_id, SESSION_KEEP_PER_HOST, SESSION_PURGE_BATCH]);
