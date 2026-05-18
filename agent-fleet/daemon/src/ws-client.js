@@ -148,6 +148,19 @@ function submitTextToPty(ptyMgr, sessionId, text) {
   ptyMgr.writeInput(sessionId, payload);
 }
 
+// vt-0392 v4: stdin writes are gated on Ink raw-mode activation.
+// strace evidence: pty.spawn → cooked mode by default → submitTextToPty's
+// \r gets converted to \n by the kernel (ICRNL) BEFORE Ink takes over.
+// Ink later reads the buffered \n and treats it as a literal newline,
+// NOT Enter. Composer texts that arrive later (Ink raw mode active) all
+// concatenate with the unsubmitted initial prompt.
+// Fix: queue every stdin write until we observe \x1b[?2004h (bracketed-
+// paste mode-on) in PTY output, which Ink emits IMMEDIATELY after it
+// switches into raw mode. Then drain. A 30s safety timer force-drains
+// in case Ink never gets there.
+const INK_READY_SIGNAL = '\x1b[?2004h';
+const INK_READY_SAFETY_MS = 30_000;
+
 function applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin }) {
   // vt-0200: validate before touching pty.
   validateSpawnFrame(f);
@@ -178,11 +191,14 @@ function applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin }) {
     sessionId: f.session_id, cwd: f.cwd,
     args: argv, env, binOverride: bin,
   });
-  // vt-0392 Phase 2: route initial backend stdin through the shared
-  // submit helper so the initial prompt actually submits (was using \n
-  // which Ink treats as literal newline, leaving the prompt unsubmitted
-  // and later composer text concatenated onto it as one turn).
-  if (stdin) submitTextToPty(ptyMgr, f.session_id, stdin);
+  // vt-0392 v4: initial-prompt stdin is QUEUED until Ink raw mode
+  // confirmed. submitTextToPty at spawn time hits cooked-mode kernel
+  // and \r is rewritten to \n; queueing fixes this. The queue lives in
+  // ws-client's _inkReady map (per session), so applySpawnFrame can't
+  // see it directly — we expose a magic property on f so the caller in
+  // the WS frame loop routes through _queueOrSubmit. Tests can still
+  // assert the legacy path by setting f.__sync_stdin = true.
+  if (stdin) f.__pending_stdin = stdin;
 }
 
 function collectHostInfo() {
@@ -439,6 +455,32 @@ async function runDaemon(opts) {
   // on 'exit' or daemon shutdown.
   const _daemonHome = process.env.HOME || os.homedir() || '/root';
 
+  // vt-0392 v4: per-session Ink-ready state + write queue.
+  // Each entry: { ready: bool, queue: [text], timer: NodeJS.Timeout }.
+  const _inkReady = new Map();
+
+  function _queueOrSubmit(sessionId, text) {
+    const state = _inkReady.get(sessionId);
+    if (state && !state.ready) {
+      state.queue.push(text);
+    } else {
+      submitTextToPty(ptyMgr, sessionId, text);
+    }
+  }
+
+  function _drainInkQueue(sessionId, reason) {
+    const state = _inkReady.get(sessionId);
+    if (!state || state.ready) return;
+    state.ready = true;
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    if (state.queue.length === 0) return;
+    console.log(`[daemon] ink ready (${reason}) → draining ${state.queue.length} queued stdin writes for ${sessionId}`);
+    for (const text of state.queue) {
+      submitTextToPty(ptyMgr, sessionId, text);
+    }
+    state.queue = [];
+  }
+
   function _emitTailerFrame(sessionId, frame) {
     // frame = { type: 'claude_msg' | 'compact_boundary', payload: {...} }
     // Flatten payload onto the WS frame and tag with session_id.
@@ -482,6 +524,14 @@ async function runDaemon(opts) {
     safeSend(ws, { type: 'spawn_ok', session_id: sessionId, pid });
     safeSend(ws, { type: 'session_lifecycle', session_id: sessionId, state: 'ready' });
     _startTailersFor(sessionId, cwd || cur.cwd);
+    // vt-0392 v4: arm the Ink-ready gate. All stdin writes (initial
+    // prompt + composer send_text) are queued until \x1b[?2004h appears
+    // in PTY output OR 30s elapses.
+    const state = { ready: false, queue: [], timer: null };
+    state.timer = setTimeout(() => _drainInkQueue(sessionId, 'safety-timeout'),
+      INK_READY_SAFETY_MS);
+    state.timer.unref?.();
+    _inkReady.set(sessionId, state);
   });
   ptyMgr.on('data', ({ sessionId, seq, data }) => {
     const cur = store.get(sessionId);
@@ -492,6 +542,12 @@ async function runDaemon(opts) {
     // replay on reconnect.
     _ringPush(sessionId, seq, b64, data.length);
     safeSend(ws, { type: 'pty_data', session_id: sessionId, seq, data: b64 });
+    // vt-0392 v4: scan output for Ink raw-mode-on signal → drain queue.
+    const state = _inkReady.get(sessionId);
+    if (state && !state.ready
+        && data.includes(INK_READY_SIGNAL)) {
+      _drainInkQueue(sessionId, 'ink-bracketed-paste-on');
+    }
   });
   ptyMgr.on('exit', ({ sessionId, exitCode, signal }) => {
     safeSend(ws, { type: 'session_exit', session_id: sessionId, exit_code: exitCode, signal: signal || undefined });
@@ -499,6 +555,9 @@ async function runDaemon(opts) {
     _stopTailersFor(sessionId).catch(()=>{});
     _ringDelete(sessionId);
     store.delete(sessionId);
+    const state = _inkReady.get(sessionId);
+    if (state?.timer) clearTimeout(state.timer);
+    _inkReady.delete(sessionId);
   });
 
   // vt-0384: tokmon-watcher removed — duplicated tokmon-shipper.timer
@@ -616,6 +675,11 @@ async function runDaemon(opts) {
                 throw new Error('hub feature mask: fleet disabled');
               }
               applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin: opts.claudeBin });
+              // vt-0392 v4: route deferred initial prompt through the
+              // Ink-ready queue (applySpawnFrame sets f.__pending_stdin).
+              if (f.__pending_stdin) {
+                _queueOrSubmit(f.session_id, f.__pending_stdin);
+              }
             } catch (e) {
               safeSend(ws, { type: 'spawn_err', session_id: f.session_id, error: e.message });
             }
@@ -635,15 +699,15 @@ async function runDaemon(opts) {
           } else if (f.type === 'kill') {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
           } else if (f.type === 'send_text') {
-            // vt-0392 Phase 2: chat-view composer → PTY stdin via shared
-            // submitTextToPty helper. See helper docstring for the \r vs
-            // \n + bracketed-paste rationale.
+            // vt-0392 v4: chat-view composer → PTY stdin via the Ink-ready
+            // gate so writes that race spawn don't concat with an
+            // unsubmitted initial prompt.
             if (typeof f.text !== 'string') {
               console.warn(`[daemon] send_text ${f.session_id}: text must be string`);
             } else if (f.text.length > 65536) {
               console.warn(`[daemon] send_text ${f.session_id} dropped: ${f.text.length} bytes > 65536`);
             } else {
-              submitTextToPty(ptyMgr, f.session_id, f.text);
+              _queueOrSubmit(f.session_id, f.text);
             }
           } else if (f.type === 'control') {
             // vt-0392 Phase 2: chat-view toolbar buttons → PTY signals.

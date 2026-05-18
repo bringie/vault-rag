@@ -68,16 +68,24 @@ test('applySpawnFrame writes backend stdin to PTY after spawn (structured path)'
     { type: 'spawn', session_id: 's1', cwd: '/tmp', agent: 'hermes', prompt: 'HELLO' },
     { ptyMgr, backends, defaultBackend: 'hermes', baseBin: '/bin/claude' },
   );
-  assert.equal(calls.length, 2);
+  // vt-0392 v4: stdin is no longer written synchronously by applySpawnFrame
+  // — it is stashed on f.__pending_stdin so the WS frame loop can route it
+  // through the Ink-ready queue. Only the spawn call lands on ptyMgr here.
+  assert.equal(calls.length, 1);
   assert.equal(calls[0].k, 'spawn');
   assert.equal(calls[0].sessionId, 's1');
   assert.equal(calls[0].binOverride, '/usr/local/bin/hermes-wrapper.sh');
-  assert.equal(calls[1].k, 'write');
-  assert.equal(calls[1].id, 's1');
-  // vt-0392 Phase 2: multi-line stdin is bracketed-paste-wrapped and
-  // terminated with \r (CR) so Ink line-editor treats embedded \n as
-  // paste and the final \r as Enter (was: plain text + \n).
-  assert.equal(calls[1].d, '\x1b[200~<<USER>>\nHELLO\x1b[201~\r');
+});
+
+test('applySpawnFrame: stashes stdin on f.__pending_stdin for caller to queue', () => {
+  const ptyMgr = { spawn: () => {}, writeInput: () => {} };
+  const backends = new Map([['hermes', {
+    name: 'hermes', bin: '/usr/local/bin/hermes-wrapper.sh',
+    buildSpawnArgs: () => ({ argv: [], env: {}, stdin: '<<USER>>\nHELLO' }),
+  }]]);
+  const f = { type: 'spawn', session_id: 's1', cwd: '/tmp', agent: 'hermes', prompt: 'HELLO' };
+  applySpawnFrame(f, { ptyMgr, backends, defaultBackend: 'hermes', baseBin: '/bin/claude' });
+  assert.equal(f.__pending_stdin, '<<USER>>\nHELLO');
 });
 
 test('applySpawnFrame skips writeInput when backend returns null stdin', () => {
@@ -115,22 +123,17 @@ test('applySpawnFrame legacy path: no backend lookup when no structured fields',
   assert.deepEqual(calls[0].args, ['-p', 'hi']);
 });
 
-test('applySpawnFrame: trailing newline stripped before submit (single-line case)', () => {
-  // vt-0392 Phase 2: submitTextToPty strips trailing \n then appends \r
-  // (Ink Enter). Single-line content takes the plain-text path; no
-  // bracketed-paste markers needed.
-  const calls = [];
-  const ptyMgr = {
-    spawn: () => {},
-    writeInput: (id, d) => calls.push(d),
-  };
+test('applySpawnFrame: __pending_stdin preserved verbatim (trailing \\n included)', () => {
+  // vt-0392 v4: applySpawnFrame no longer normalises or submits the
+  // initial stdin — that happens in the WS frame loop via the Ink-ready
+  // queue. submitTextToPty (called later) is the one that strips the
+  // trailing \n and appends \r. Here we just verify the raw stash.
+  const ptyMgr = { spawn: () => {}, writeInput: () => {} };
   const backends = new Map([['x', {
     name: 'x', bin: '/bin/cat',
     buildSpawnArgs: () => ({ argv: [], env: {}, stdin: 'already-newlined\n' }),
   }]]);
-  applySpawnFrame(
-    { type: 'spawn', session_id: 'sN', agent: 'x', prompt: 'p' },
-    { ptyMgr, backends, defaultBackend: 'x', baseBin: '/bin/claude' },
-  );
-  assert.deepEqual(calls, ['already-newlined\r']);
+  const f = { type: 'spawn', session_id: 'sN', agent: 'x', prompt: 'p' };
+  applySpawnFrame(f, { ptyMgr, backends, defaultBackend: 'x', baseBin: '/bin/claude' });
+  assert.equal(f.__pending_stdin, 'already-newlined\n');
 });
