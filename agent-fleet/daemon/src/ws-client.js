@@ -312,6 +312,9 @@ async function runDaemon(opts) {
   // Declare ptyMgrRef / _currentWs BEFORE the signal handlers so the
   // handler body can never hit a TDZ ReferenceError on an early SIGTERM.
   const ptyMgrRef = { current: null };
+  // vt-chat-1b: jsonl-tailers per spawned session, declared early for
+  // daemonShutdown reachability. Populated by _startTailersFor().
+  const _tailers = new Map();
   let _currentWs = null;
   let _daemonShuttingDown = false;
   // 5.5s grace matches PtyManager's killGraceMs=5000 (vt-0251 review fix
@@ -335,6 +338,15 @@ async function runDaemon(opts) {
         ptyMgrRef.current.kill(id, 'SIGTERM');
       }
     } catch (e) { console.error(`[daemon] pty kill on shutdown: ${e.message}`); }
+    // vt-chat-1b: stop tailers explicitly so fs.watch handles are closed
+    // deterministically rather than relying on process-exit reaper.
+    try {
+      for (const t of _tailers.values()) {
+        t.jsonl.stop().catch(()=>{});
+        t.subagent.stop().catch(()=>{});
+      }
+      _tailers.clear();
+    } catch (e) { console.error(`[daemon] tailer stop on shutdown: ${e.message}`); }
     setTimeout(() => {
       try { ws?.close(1001, 'shutdown'); } catch {}
       process.exit(0);
@@ -402,14 +414,18 @@ async function runDaemon(opts) {
   const cfgPath = path.join(opts.stateDir, 'config.json');
   try { hostId = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).host_id; } catch {}
 
-  // vt-chat-1b: jsonl-tailers per spawned session. Keyed by sessionId,
-  // {jsonl, subagent} pair. Started on ptyMgr 'spawn', stopped on 'exit'.
-  const _tailers = new Map();
+  // _tailers Map declared at top-of-runDaemon for SIGTERM reachability.
+  // Per-session {jsonl, subagent} pair; started on ptyMgr 'spawn', stopped
+  // on 'exit' or daemon shutdown.
   const _daemonHome = process.env.HOME || os.homedir() || '/root';
 
   function _emitTailerFrame(sessionId, frame) {
     // frame = { type: 'claude_msg' | 'compact_boundary', payload: {...} }
     // Flatten payload onto the WS frame and tag with session_id.
+    // Note: when ws is down, safeSend silently drops these. No ring buffer
+    // is needed because the daemon's byte-offset cursor + the viewer's
+    // replay_request (spec § Cross-phase invariants) recover any gap on
+    // reconnect. Do NOT add per-session caching here.
     safeSend(ws, { type: frame.type, session_id: sessionId, ...frame.payload });
   }
 

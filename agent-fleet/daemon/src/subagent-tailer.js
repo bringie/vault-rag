@@ -32,24 +32,47 @@ class SubagentTailer {
 
   async start() {
     if (this.state !== 'idle') return;
-    if (!fs.existsSync(this._subagentDir)) {
-      this.state = 'waiting_for_dir';
-      const parent = path.dirname(this._subagentDir);
-      if (fs.existsSync(parent)) {
-        this._dirWatcher = fs.watch(parent, (eventType, filename) => {
-          if (filename !== 'subagents') return;
-          if (this.state !== 'waiting_for_dir') return;
-          if (fs.existsSync(this._subagentDir)) {
-            this._dirWatcher.close();
-            this._dirWatcher = null;
-            this._enterWatching().catch(e =>
-              console.error(`[subagent-tailer] enter failed: ${e.message}`));
-          }
-        });
-      }
+    if (fs.existsSync(this._subagentDir)) {
+      await this._enterWatching();
       return;
     }
-    await this._enterWatching();
+    this.state = 'waiting_for_dir';
+    // Walk up the path to find the first existing ancestor and watch it.
+    // Claude Code creates the project dir lazily on first message, then the
+    // <parentSid>/ subdir, then subagents/. We need to react regardless of
+    // which level appears first.
+    await this._armAncestorWatcher();
+  }
+
+  async _armAncestorWatcher() {
+    let ancestor = path.dirname(this._subagentDir);
+    const projectsRoot = path.join(this.home, '.claude', 'projects');
+    while (!fs.existsSync(ancestor) && ancestor.startsWith(projectsRoot)
+           && ancestor !== projectsRoot) {
+      ancestor = path.dirname(ancestor);
+    }
+    if (!fs.existsSync(ancestor)) {
+      // Even ~/.claude/projects/ is missing — bail. The parent JsonlTailer's
+      // project-dir watcher will surface activity later if the host ever
+      // produces a jsonl, but we cannot watch nothing.
+      return;
+    }
+    this._dirWatcher = fs.watch(ancestor, { recursive: false },
+      async (eventType, filename) => {
+        if (this.state !== 'waiting_for_dir') return;
+        if (fs.existsSync(this._subagentDir)) {
+          if (this._dirWatcher) { this._dirWatcher.close(); this._dirWatcher = null; }
+          this._enterWatching().catch(e =>
+            console.error(`[subagent-tailer] enter failed: ${e.message}`));
+          return;
+        }
+        // Intermediate ancestor materialised — re-arm one level deeper.
+        const nextLevel = path.dirname(this._subagentDir);
+        if (fs.existsSync(nextLevel) && nextLevel !== ancestor) {
+          if (this._dirWatcher) { this._dirWatcher.close(); this._dirWatcher = null; }
+          await this._armAncestorWatcher();
+        }
+      });
   }
 
   async _enterWatching() {

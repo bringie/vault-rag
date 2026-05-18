@@ -950,9 +950,23 @@ async function handleDaemonWs(ws, params, ctx) {
       // Hub does not persist (jsonl on daemon host is authoritative);
       // we just fan out to attached viewers. SPA chat-view subscribes
       // to these; raw-terminal tab keeps consuming pty_data.
+      //
+      // Defence-in-depth size guard: a compromised daemon could ship
+      // arbitrarily large `raw` payloads. The 1 MiB cap is well above
+      // legitimate jsonl line sizes (real samples top out ~200 KB for
+      // big tool_result.content) and well under the WS maxPayload.
       if (f.type === 'claude_msg' || f.type === 'compact_boundary'
           || f.type === 'session_lifecycle') {
         if (!f.session_id) return;
+        try {
+          const serialised = JSON.stringify(f);
+          if (serialised.length > 1024 * 1024) {
+            log.warn('chat_ui_frame_oversize_drop', {
+              session_id: f.session_id, type: f.type, bytes: serialised.length
+            });
+            return;
+          }
+        } catch { return; }
         ctx.bus.broadcastViewers(f.session_id, f);
         return;
       }
