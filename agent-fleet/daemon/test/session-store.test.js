@@ -40,11 +40,14 @@ test('SessionStore: setOffset persists and getOffset returns it', () => {
   assert.strictEqual(s.getOffset('s1'), 4096);
 });
 
-test('SessionStore: setOffset survives reload', () => {
+test('SessionStore: setOffset survives reload (after flushNow)', () => {
+  // vt-0392 v6: setOffset is debounced (5s coalesced flush). Tests need
+  // explicit flushNow() to force the write before reloading.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sst-'));
   const s1 = new SessionStore(dir);
   s1.put('s1', { pid: 1234, last_seq: 0 });
   s1.setOffset('s1', 8192);
+  s1.flushNow();
   const s2 = new SessionStore(dir);
   assert.strictEqual(s2.getOffset('s1'), 8192);
 });

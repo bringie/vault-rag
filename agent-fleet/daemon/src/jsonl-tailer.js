@@ -111,6 +111,9 @@ class JsonlTailer {
     this.state = 'stopped';
     if (this._dirWatcher) { this._dirWatcher.close(); this._dirWatcher = null; }
     if (this._fileWatcher) { this._fileWatcher.close(); this._fileWatcher = null; }
+    // vt-0392 v6: flush the debounced offset cursor so a clean stop +
+    // restart resumes at the exact byte without re-emitting.
+    try { this.store.flushNow?.(); } catch {}
   }
 }
 

@@ -630,12 +630,10 @@
       // If we were in reconnecting mode, clear the dim. Real status will arrive
       // via the 'hello' frame; meanwhile show 'attaching' as transient.
       if (state.viewerStatusValue === 'reconnecting') setViewerStatus('attaching');
-      // vt-0392 (Phase 1C): hook chat-view to this WS so it fires
-      // replay_request and starts ingesting structured frames.
-      try {
-        const stored = localStorage.getItem(`chatOffset:${id}`);
-        window.chatView?.attach(id, ws, { fromOffset: stored ? Number(stored) : 0 });
-      } catch {}
+      // vt-0392 v6: chat-view attaches and always replays from offset 0
+      // (UUID dedup handles overlaps; per-viewer request_id routes the
+      // batch back to this viewer only).
+      try { window.chatView?.attach(id, ws); } catch {}
     };
     ws.onmessage = (e) => {
       let f;
@@ -663,11 +661,7 @@
       if (ev.code === 4001) {
         localStorage.removeItem('fleetToken'); location.reload(); return;
       }
-      // vt-0392 (Phase 1C): persist chat offset so reconnect skips already-seen frames.
-      try {
-        const off = window.chatView?.getLastOffset?.();
-        if (off) localStorage.setItem(`chatOffset:${id}`, String(off));
-      } catch {}
+      // vt-0392 v6: chatOffset localStorage GC'd — always replay from 0.
       if (state.selected === id) {
         // Don't override terminal-state-flagged statuses with 'reconnecting'.
         const v = state.viewerStatusValue;
@@ -2150,28 +2144,40 @@
     const wfBack = $('workflowsview-close'); if (wfBack) wfBack.onclick = () => navigate('/dashboard');
     const wfvBack = $('workflowrunviewer-close'); if (wfvBack) wfvBack.onclick = () => navigate('/workflows');
     setOverlay(true, 'STANDBY', 'select a session');
+    // vt-0392 v6: clean up stale chatOffset:<sid> localStorage keys.
+    // They are no longer used (replay always from 0 — UUID dedup), but
+    // some users have leftovers from earlier versions. One-shot purge.
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('chatOffset:')) keys.push(k);
+      }
+      keys.forEach(k => localStorage.removeItem(k));
+    } catch {}
     // vt-0392 (Phase 1C): mount chat-view + wire tab toggle.
     const chatViewEl = $('chat-view');
     if (chatViewEl && window.chatView) {
       try { window.chatView.mount(chatViewEl); } catch (e) { console.warn('chatView.mount', e); }
     }
-    document.querySelectorAll('.viewer-tabs .tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.viewer-tabs .tab-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const t = btn.dataset.tab;
+    // vt-0392 v6: raw tab → icon-button toggle in viewer-head. Chat-view
+    // is default; raw is opt-in. aria-pressed reflects state for a11y.
+    const rawBtn = $('v-toggle-raw');
+    if (rawBtn) {
+      rawBtn.addEventListener('click', () => {
+        const pressed = rawBtn.getAttribute('aria-pressed') === 'true';
+        const showRaw = !pressed;
+        rawBtn.setAttribute('aria-pressed', String(showRaw));
         const chat = $('chat-view');
         const raw = $('static-transcript');
-        if (chat) chat.hidden = (t !== 'chat');
-        if (raw) raw.hidden = (t !== 'raw');
-        // vt-0392 v2: raw tab = static post-hoc transcript. Lazy fetch on
-        // first reveal per session; reload button re-fetches.
-        if (t === 'raw' && state.selected) {
+        if (chat) chat.hidden = showRaw;
+        if (raw) raw.hidden = !showRaw;
+        if (showRaw && state.selected) {
           refreshStaticTranscript(state.selected);
           requestAnimationFrame(fitStaticTerm);
         }
       });
-    });
+    }
     const reloadBtn = $('static-transcript-reload');
     if (reloadBtn) reloadBtn.addEventListener('click', () => {
       if (state.selected) refreshStaticTranscript(state.selected, { force: true });

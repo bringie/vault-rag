@@ -295,6 +295,32 @@ function makeBus() {
       ws.on('close', () => { if (daemonsByHost.get(hostId) === ws) daemonsByHost.delete(hostId); });
     },
     getDaemon(hostId) { return daemonsByHost.get(hostId); },
+    // vt-0392 v6: per-viewer routing for replay_batch. Viewer's
+    // replay_request includes request_id; hub maps id→viewer ws here.
+    // Daemon echoes the id on its replay_batch; hub looks up and sends
+    // ONLY to that viewer instead of broadcasting to the whole session.
+    // 60s TTL so abandoned request_ids self-clear.
+    _pendingReplays: new Map(),
+    armPendingReplay(requestId, ws) {
+      if (!requestId) return;
+      const expires = Date.now() + 60_000;
+      this._pendingReplays.set(requestId, { ws, expires });
+      // GC stale entries opportunistically.
+      if (this._pendingReplays.size > 32) {
+        const now = Date.now();
+        for (const [k, v] of this._pendingReplays) {
+          if (v.expires < now) this._pendingReplays.delete(k);
+        }
+      }
+    },
+    routePendingReplay(requestId, frame) {
+      if (!requestId) return false;
+      const entry = this._pendingReplays.get(requestId);
+      if (!entry) return false;
+      try { entry.ws.send(JSON.stringify(frame)); } catch {}
+      if (frame.is_last) this._pendingReplays.delete(requestId);
+      return true;
+    },
     addViewer(sessionId, ws) {
       let set = viewersBySession.get(sessionId);
       if (!set) { set = new Set(); viewersBySession.set(sessionId, set); }
@@ -964,7 +990,8 @@ async function handleDaemonWs(ws, params, ctx) {
       // big tool_result.content) and well under the WS maxPayload.
       if (f.type === 'claude_msg' || f.type === 'compact_boundary'
           || f.type === 'session_lifecycle' || f.type === 'replay_batch'
-          || f.type === 'permission_request' || f.type === 'permission_resolved') {
+          || f.type === 'permission_request' || f.type === 'permission_resolved'
+          || f.type === 'session_busy') {
         if (!f.session_id) return;
         try {
           const serialised = JSON.stringify(f);
@@ -975,6 +1002,12 @@ async function handleDaemonWs(ws, params, ctx) {
             return;
           }
         } catch { return; }
+        // vt-0392 v6: replay_batch is per-viewer if it carries a
+        // request_id we've armed. Otherwise (or as fallback) broadcast.
+        if (f.type === 'replay_batch' && f.request_id) {
+          const routed = ctx.bus.routePendingReplay(f.request_id, f);
+          if (routed) return;
+        }
         ctx.bus.broadcastViewers(f.session_id, f);
         return;
       }
@@ -1036,14 +1069,15 @@ async function handleViewerWs(ws, params, ctx) {
       if (d) try { d.send(JSON.stringify({ type: 'resize', session_id: session.id, cols: f.cols, rows: f.rows })); } catch {}
     }
     else if (f.type === 'replay_request') {
-      // vt-chat-1b: forward chat-UI history request to the daemon that
-      // owns the session. Daemon emits a single replay_batch back; hub
-      // broadcasts it to all viewers (other viewers ignore if their
-      // local cursor is ahead). Per-viewer routing is Phase 1C scope.
+      // vt-0392 v6: arm per-viewer routing via request_id round-trip so
+      // the response goes ONLY to the requesting viewer.
       const d = ctx.bus.getDaemon(session.host_id);
+      const requestId = typeof f.request_id === 'string' ? f.request_id : null;
+      if (requestId) ctx.bus.armPendingReplay(requestId, ws);
       if (d) try {
         d.send(JSON.stringify({
           type: 'replay_request', session_id: session.id,
+          request_id: requestId,
           from_offset: Math.max(0, Number(f.from_offset) || 0),
           max_messages: Math.min(Number(f.max_messages) || 500, 2000),
         }));

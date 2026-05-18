@@ -34,11 +34,29 @@ class SessionStore {
     const e = this.map.get(id);
     return (e && typeof e.jsonl_offset === 'number') ? e.jsonl_offset : 0;
   }
+  // vt-0392 v6: setOffset is fired per jsonl line (~50/sec on a busy
+  // session) → would do full JSON.stringify + tmp-rename on each call.
+  // Coalesce into a single 5s flush timer + flush-on-stop. Memory map
+  // is updated synchronously so getOffset is always correct.
   setOffset(id, offset) {
     const e = this.map.get(id);
     if (!e) return;
     e.jsonl_offset = offset;
-    this._flush();
+    this._scheduleOffsetFlush();
+  }
+  _scheduleOffsetFlush() {
+    if (this._offsetTimer) return;
+    this._offsetTimer = setTimeout(() => {
+      this._offsetTimer = null;
+      try { this._flush(); } catch (e) {
+        console.error(`[session-store] flush failed: ${e.message}`);
+      }
+    }, 5000);
+    this._offsetTimer.unref?.();
+  }
+  flushNow() {
+    if (this._offsetTimer) { clearTimeout(this._offsetTimer); this._offsetTimer = null; }
+    try { this._flush(); } catch {}
   }
   _flush() {
     const obj = Object.fromEntries(this.map);

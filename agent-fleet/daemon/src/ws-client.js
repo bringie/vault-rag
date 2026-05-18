@@ -383,6 +383,9 @@ async function runDaemon(opts) {
       }
       _tailers.clear();
     } catch (e) { console.error(`[daemon] tailer stop on shutdown: ${e.message}`); }
+    // vt-0392 v6: force a final session-store flush so the debounced
+    // offset cursor is on disk before exit.
+    try { store.flushNow(); } catch {}
     setTimeout(() => {
       try { ws?.close(1001, 'shutdown'); } catch {}
       process.exit(0);
@@ -459,6 +462,19 @@ async function runDaemon(opts) {
   // Each entry: { ready: bool, queue: [text], timer: NodeJS.Timeout }.
   const _inkReady = new Map();
 
+  // vt-0392 v6: busy-state derivation from jsonl event sequence.
+  // busy=false only when last assistant turn had stop_reason ∈ TERMINAL.
+  // tool_use mid-loop → busy=true. user tool_result during chain → busy=true.
+  // Emit session_busy frame only on transitions to avoid spam.
+  const TERMINAL_STOP_REASONS = new Set(['end_turn', 'stop_sequence', 'max_tokens']);
+  const _busyState = new Map();  // sessionId → bool
+  function _updateBusy(sessionId, busy) {
+    const prev = _busyState.get(sessionId);
+    if (prev === busy) return;
+    _busyState.set(sessionId, busy);
+    safeSend(ws, { type: 'session_busy', session_id: sessionId, busy });
+  }
+
   // vt-0392 v5: permission-prompt detector. Claude's interactive TUI
   // renders a "Do you want to proceed?" dialog ONLY in PTY output —
   // not in jsonl — so chat-view has no way to surface approve/deny
@@ -477,13 +493,18 @@ async function runDaemon(opts) {
     return s.replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '');
   }
 
+  // vt-0392 v6: permission dialog auto-timeout. If the dialog stays
+  // "active" longer than this (TTY hung, daemon disconnected from PTY
+  // visually), forcibly emit permission_resolved so UI cards clear.
+  const PERM_ACTIVE_TIMEOUT_MS = 5 * 60 * 1000;
+  let _permSeq = 0;
+
   function _scanPermissionPrompt(sessionId, chunkStr) {
     let st = _permState.get(sessionId);
     if (!st) {
-      st = { tail: '', active: false, lastReqId: null };
+      st = { tail: '', active: false, lastReqId: null, activeSince: 0, timer: null };
       _permState.set(sessionId, st);
     }
-    // Keep ~4 KB tail so the dialog (~500 bytes) is always wholly visible.
     st.tail = (st.tail + chunkStr).slice(-4096);
     const stripped = _stripAnsi(st.tail);
     const hasTitle = PERM_TITLE_RE.test(stripped);
@@ -491,10 +512,12 @@ async function runDaemon(opts) {
     const active = hasTitle && hasFooter;
     if (active && !st.active) {
       st.active = true;
-      st.lastReqId = `pp-${sessionId}-${Date.now()}`;
+      st.activeSince = Date.now();
+      // Monotonic sequence — guarantee unique request_id even on same-ms
+      // double-show. v5 used Date.now() alone → collision under load.
+      _permSeq = (_permSeq + 1) % 1e9;
+      st.lastReqId = `pp-${sessionId}-${Date.now()}-${_permSeq}`;
       const askAgain = PERM_ASK_AGAIN_RE.test(stripped);
-      // Try to pull the tool/action context out of the buffer — the
-      // dialog title line usually has the tool name a few lines up.
       const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
       const titleIdx = lines.findIndex(l => /Do you want to proceed/i.test(l));
       const contextLines = lines.slice(Math.max(0, titleIdx - 6), titleIdx);
@@ -507,9 +530,24 @@ async function runDaemon(opts) {
           ? ['Yes', 'Yes, don\'t ask again', 'No']
           : ['Yes', 'No'],
       });
+      // Arm safety timeout.
+      if (st.timer) clearTimeout(st.timer);
+      st.timer = setTimeout(() => {
+        if (st.active && st.lastReqId) {
+          safeSend(ws, {
+            type: 'permission_resolved',
+            session_id: sessionId,
+            request_id: st.lastReqId,
+            reason: 'timeout',
+          });
+          st.active = false;
+          st.lastReqId = null;
+        }
+      }, PERM_ACTIVE_TIMEOUT_MS);
+      st.timer.unref?.();
     } else if (!active && st.active) {
-      // Dialog disappeared (user responded somehow, or claude moved on).
       st.active = false;
+      if (st.timer) { clearTimeout(st.timer); st.timer = null; }
       const reqId = st.lastReqId;
       st.lastReqId = null;
       if (reqId) {
@@ -552,6 +590,18 @@ async function runDaemon(opts) {
     // replay_request (spec § Cross-phase invariants) recover any gap on
     // reconnect. Do NOT add per-session caching here.
     safeSend(ws, { type: frame.type, session_id: sessionId, ...frame.payload });
+    // vt-0392 v6: derive busy-state from the structured frame.
+    try {
+      const ex = frame.payload && frame.payload.extracted;
+      if (!ex) return;
+      if (ex.role === 'assistant') {
+        const terminal = TERMINAL_STOP_REASONS.has(ex.stop_reason);
+        _updateBusy(sessionId, !terminal);
+      } else if (ex.role === 'user' && ex.tool_results && ex.tool_results.length) {
+        // tool_result during a chain → claude is still working.
+        _updateBusy(sessionId, true);
+      }
+    } catch {}
   }
 
   function _startTailersFor(sessionId, cwd) {
@@ -583,10 +633,14 @@ async function runDaemon(opts) {
   // PTY → WS bridge
   ptyMgr.on('spawn', ({ sessionId, pid, cwd }) => {
     const cur = store.get(sessionId) || {};
-    store.put(sessionId, { ...cur, pid, last_seq: 0, cwd: cwd || cur.cwd });
+    // vt-0392 v6: resolve symlinks in cwd so the jsonl-tailer watches
+    // the same encoded dir Claude Code writes to.
+    let resolvedCwd = cwd || cur.cwd;
+    try { if (resolvedCwd) resolvedCwd = fs.realpathSync(resolvedCwd); } catch {}
+    store.put(sessionId, { ...cur, pid, last_seq: 0, cwd: resolvedCwd });
     safeSend(ws, { type: 'spawn_ok', session_id: sessionId, pid });
     safeSend(ws, { type: 'session_lifecycle', session_id: sessionId, state: 'ready' });
-    _startTailersFor(sessionId, cwd || cur.cwd);
+    _startTailersFor(sessionId, resolvedCwd);
     // vt-0392 v4: arm the Ink-ready gate. All stdin writes (initial
     // prompt + composer send_text) are queued until \x1b[?2004h appears
     // in PTY output OR 30s elapses.
@@ -623,7 +677,10 @@ async function runDaemon(opts) {
     const state = _inkReady.get(sessionId);
     if (state?.timer) clearTimeout(state.timer);
     _inkReady.delete(sessionId);
+    const ps = _permState.get(sessionId);
+    if (ps?.timer) clearTimeout(ps.timer);
     _permState.delete(sessionId);
+    _busyState.delete(sessionId);
   });
 
   // vt-0384: tokmon-watcher removed — duplicated tokmon-shipper.timer
@@ -803,7 +860,9 @@ async function runDaemon(opts) {
             }
             ws.send(JSON.stringify({ type: 'replay_end', session_id: sid, since_seq: sinceSeq, count: frames.length }));
           } else if (f.type === 'replay_request') {
-            // vt-chat-1b: chat-UI history replay. Streams the jsonl from
+            // vt-0392 v6: thread request_id back into the response so the
+            // hub can route the batch to the requesting viewer only.
+            const replyReqId = f.request_id || null;
             // from_offset in 64 KiB chunks (does NOT load the entire file
             // — vt-0392 MED fix), parses up to max_messages payloads,
             // emits one replay_batch. is_last=true means caller reached
@@ -814,6 +873,7 @@ async function runDaemon(opts) {
             const entry = store.get(sid);
             const emptyBatch = () => safeSend(ws, {
               type: 'replay_batch', session_id: sid,
+              request_id: replyReqId,
               from_offset: fromOffset, to_offset: fromOffset,
               is_last: true, lines: [],
             });
@@ -877,6 +937,7 @@ async function runDaemon(opts) {
                     }
                     safeSend(ws, {
                       type: 'replay_batch', session_id: sid,
+                      request_id: replyReqId,
                       from_offset: fromOffset, to_offset: cutOffset,
                       is_last: cutOffset >= stat.size,
                       lines,

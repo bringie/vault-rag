@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/fleet/static/xterm.min.css">
   <link rel="stylesheet" href="/fleet/static/themes.css">
   <link rel="stylesheet" href="/fleet/static/app.css">
+  <link rel="stylesheet" href="/fleet/static/chat-view.css">
   <script src="/fleet/static/i18n.js"></script>
   <script src="/fleet/static/theme.js"></script>
 </head>
@@ -250,12 +251,11 @@
             <span class="lbl" data-i18n="viewer.cost">COST</span><span id="v-cost" class="val">—</span>
           </div>
           <div class="viewer-actions">
+            <button id="v-toggle-raw" class="viewer-raw-toggle" type="button" aria-pressed="false" title="toggle raw transcript">
+              <span class="icon">◧</span><span>raw</span>
+            </button>
             <button id="v-kill" class="btn-danger" disabled data-i18n="viewer.terminate">■ TERMINATE</button>
           </div>
-        </div>
-        <div class="viewer-tabs">
-          <button id="tab-chat" class="tab-btn active" data-tab="chat">CHAT</button>
-          <button id="tab-raw" class="tab-btn" data-tab="raw">RAW TRANSCRIPT</button>
         </div>
         <div class="viewer-body">
           <div id="chat-view"></div>
