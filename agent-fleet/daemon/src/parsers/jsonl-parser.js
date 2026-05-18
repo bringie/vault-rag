@@ -69,15 +69,24 @@ function parseJsonlLine(text, byteOffset) {
     const msg = raw.message || {};
     extracted.tool_results = [];
     extracted.text_in = null;
-    for (const block of (msg.content || [])) {
-      if (block.type === 'text') {
-        extracted.text_in = (extracted.text_in || '') + block.text;
-      } else if (block.type === 'tool_result') {
-        extracted.tool_results.push({
-          tool_use_id: block.tool_use_id,
-          content: block.content,
-          is_error: block.is_error === true,
-        });
+    // Real Claude Code writes user-turn message.content in two shapes:
+    //   string  — when the user typed a plain prompt into Ink and submitted
+    //   array   — when the daemon-mode CLI invoked claude with structured
+    //             content (text + tool_result blocks). Handle both.
+    if (typeof msg.content === 'string') {
+      extracted.text_in = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (!block || typeof block !== 'object') continue;
+        if (block.type === 'text') {
+          extracted.text_in = (extracted.text_in || '') + (block.text || '');
+        } else if (block.type === 'tool_result') {
+          extracted.tool_results.push({
+            tool_use_id: block.tool_use_id,
+            content: block.content,
+            is_error: block.is_error === true,
+          });
+        }
       }
     }
   } else if (raw.type === 'system') {
