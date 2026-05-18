@@ -1,9 +1,9 @@
 # Fleet daemon: replace PTY/xterm.js terminal UI with structured chat-UI
 
 **Date:** 2026-05-18
-**Status:** Brainstormed, reviewed by architect agent (Plan/Opus), revised to phased plan
+**Status:** Brainstormed, two architect-agent review passes folded in
 **Supersedes:** None (tmux/mux feature already reverted in commits `fe8e1f3`, `41bf516`, `1d8091f`, `07f2ef9`)
-**Epic:** new (see Open tasks below)
+**Epic:** new (to be filed)
 
 ---
 
@@ -14,48 +14,55 @@ Replace the fleet web-SPA's terminal-emulator view (xterm.js + PTY-relay frames)
 ## Non-goals
 
 - Attach to locally-launched (non-fleet-spawned) claude sessions. Spawn-only.
-- Cross-CLI generalisation. Only Claude Code is targeted; other backends (codex/opencode/hermes) keep current PTY relay or get their own design later.
+- Cross-CLI generalisation. Only Claude Code is targeted; other backends (codex/opencode/hermes) keep current PTY relay.
 - Build a transcript archiver. JSONL files on disk are authoritative; hub does not duplicate them.
+- Eliminate xterm.js entirely. **xterm.js is kept as a "Raw terminal" tab permanently** because Claude Code 2.1.143's `--permission-prompt-tool` flag only works in `-p` headless mode, not interactive. The chat-UI is the default tab; the raw-terminal tab is the fallback for permission prompts and any ANSI-rendered UI moments Ink owns.
 
-## Architecture (target state, end of Phase 3)
+## Architecture (steady state, end of Phase 2)
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
 │  Browser SPA (agent-fleet/web/)                                       │
 │                                                                        │
-│   chat-view.js  (NEW, replaces xterm wiring in app.js)                │
+│   chat-view.js   (NEW) — DEFAULT tab                                  │
 │   ├─ MessageBubble       (user / assistant text)                      │
 │   ├─ ToolCallCard        (collapsible: name + args + tool_result)     │
-│   ├─ PermissionPrompt    (Allow once / Allow always / Deny)           │
+│   ├─ SubagentBlock       (nested collapsible for isSidechain turns)   │
 │   ├─ SystemNotice        (permission-mode change, errors, exits)      │
-│   ├─ ThinkingBlock       (collapsed by default; opt-in expand)        │
+│   ├─ CompactBoundary     (visual divider on compact_boundary frame)   │
+│   ├─ ThinkingBlock       (collapsed icon + token count, opt-in)       │
 │   └─ Composer            (textbox + slash autocomplete + toolbar)     │
+│                                                                        │
+│   raw-terminal tab — existing xterm.js view, kept for                 │
+│                      permission prompts and edge cases.               │
+│   SPA only subscribes to `pty_data` while raw-terminal tab is active. │
 └───────────────────────────────────────────────────────────────────────┘
                               ▲ WS frames                ▼
 ┌───────────────────────────────────────────────────────────────────────┐
 │  Hub (scripts/lib/fleet-routes.js)                                    │
 │                                                                        │
-│   New frame dispatcher cases (claude_msg, permission_request,         │
-│   permission_resolved, session_rotated, session_lifecycle,            │
-│   replay_request, replay_batch) — broadcast via existing bus.         │
-│   Old PTY relay (pty_data / reconciliation / pty_gap) removed end of  │
-│   Phase 3.                                                             │
+│   New frame dispatch cases (claude_msg, compact_boundary,             │
+│   session_lifecycle, slash_inventory, replay_request, replay_batch).  │
+│   Existing pty_data / reconciliation / pty_gap relay kept intact.     │
 └───────────────────────────────────────────────────────────────────────┘
                               ▲ WS frames
 ┌───────────────────────────────────────────────────────────────────────┐
 │  Daemon (agent-fleet/daemon/src/)                                     │
 │                                                                        │
-│   pty-manager.js     spawn claude in node-pty; stdin = paste-mode     │
-│                      wrapper; stdout/stderr ignored for UI            │
-│   jsonl-tailer.js    (NEW) fs.watch project-dir → open jsonl on       │
-│                      create → tail with byte-offset cursor → emit     │
-│                      claude_msg frames                                 │
-│   permission-mcp.js  (NEW, Phase 3) local MCP server bound to         │
-│                      --permission-prompt-tool; routes per-tool        │
-│                      approval through structured frames               │
-│   stdin-bridge.js    (NEW) send_text frame → paste-mode wrap →        │
-│                      pty.write                                         │
-│   control-bridge.js  (NEW) control frame → \x03 / SIGTERM / \e\e      │
+│   pty-manager.js     spawn claude in node-pty; stdin in Phase 2 uses  │
+│                      bracketed-paste wrap                              │
+│   jsonl-path.js      (NEW) cwd → ~/.claude/projects/<enc>/<sid>.jsonl │
+│   jsonl-tailer.js    (NEW) fs.watch + open-on-create + tail with      │
+│                      byte-offset cursor → parse → emit claude_msg     │
+│                      + compact_boundary + session_lifecycle frames     │
+│   subagent-tailer.js (NEW) discovers <sid>/subagents/<sub>.jsonl      │
+│                      sidecars, tails each, tags isSidechain=true      │
+│   stdin-bridge.js    (NEW, Phase 2) send_text frame → bracketed-paste │
+│                      wrap → pty.write                                  │
+│   control-bridge.js  (NEW, Phase 2) control frame → \x03 / SIGTERM /  │
+│                      \e\e mapping                                      │
+│   session-store.js   extended: persists per-session byte-offset       │
+│                      cursor across daemon restart                      │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,63 +72,60 @@ Replace the fleet web-SPA's terminal-emulator view (xterm.js + PTY-relay frames)
 
 ```js
 // One per jsonl line of UI interest.
-// seq = byte-offset in jsonl (durable across daemon restart).
+// IMPORTANT: pass-through by default. The `raw` field carries the full
+// jsonl line so the SPA never silently drops fields. `extracted` is a
+// convenience normalized view for the common case.
 {
   type: "claude_msg",
-  session_id: "<fleet uuid>",
-  jsonl_sid: "<claude session uuid>",  // differs after /clear or compact
-  seq: 12450,                           // jsonl byte-offset
+  session_id: "<fleet uuid>",       // stable across compact
+  jsonl_sid: "<claude session uuid>",
+  seq: 12450,                        // byte-offset in jsonl (durable)
   ts: "2026-05-18T12:00:00.000Z",
-  role: "assistant" | "user" | "system",
-  // Assistant fields:
-  model: "claude-opus-4-7",
-  content: [
-    { type: "text", text: "..." },
-    { type: "tool_use", id, name, input },
-    { type: "thinking", text: "..." },     // gated UI render
-  ],
-  usage: { input_tokens, output_tokens, cache_read, cache_creation_5m },
-  stop_reason: "end_turn" | "tool_use" | "max_tokens" | null,
-  // User fields:
-  content: [
-    { type: "text", text: "..." },
-    { type: "tool_result", tool_use_id, content, truncated_at? },
-  ],
-  // System (mode change / error / lifecycle echo):
-  text: "Permission mode set to plan",
+  raw: { /* full parsed jsonl line, every field preserved */ },
+  extracted: {
+    role: "assistant" | "user" | "system",
+    is_sidechain: false,             // true for Task-tool subagent turns
+    parent_uuid: "<uuid>" | null,    // for tool_use → tool_result threading
+    uuid: "<uuid>",
+    // Assistant-only:
+    model: "claude-opus-4-7",
+    text_blocks: [{ type: "text", text: "..." }],
+    tool_uses: [{ id, name, input }],
+    thinking_blocks: [{ text: "..." }],
+    usage: { input_tokens, output_tokens, cache_read,
+             cache_creation_5m, cache_creation_1h },
+    stop_reason: "end_turn" | "tool_use" | "stop_sequence" | "max_tokens"
+                 | null,
+    // User-only:
+    tool_results: [{ tool_use_id, content, truncated_at?, is_error? }],
+    text_in: "...",                  // top-level user text (if any)
+    // System-only:
+    subtype: "compact_boundary" | "hook_event" | null,
+    text: "..."
+  }
 }
 
-// Per-tool approval, Phase 3 only.
+// Compact event — same jsonl, different shape. Spec'd separately
+// so the SPA can render a clear visual boundary.
 {
-  type: "permission_request",
-  session_id, request_id,                  // idempotent
-  tool: "Bash",
-  args: { command: "rm -rf /tmp/foo" },
-  options: ["allow_once", "allow_always", "deny"]
-}
-
-// Broadcast resolution so multi-viewer stays coherent.
-{
-  type: "permission_resolved",
-  session_id, request_id,
-  decision: "allow_once" | "allow_always" | "deny",
-  by_viewer_id
-}
-
-// /clear or compact starts a new jsonl file in same project dir
-// while PTY pid is unchanged.
-{
-  type: "session_rotated",
-  session_id,                              // fleet sid stays stable
-  old_jsonl_sid, new_jsonl_sid,
-  pid
+  type: "compact_boundary",
+  session_id, jsonl_sid,
+  seq, ts,
+  metadata: { trigger, preTokens, postTokens, durationMs }
 }
 
 {
   type: "session_lifecycle",
   session_id,
   state: "spawn" | "ready" | "exit" | "crash",
-  code?, signal?
+  code?, signal?,
+  jsonl_path?  // included on `ready`
+}
+
+// One-shot on first daemon connect or claude_version change.
+{
+  type: "slash_inventory",
+  commands: [{ name, description }]
 }
 
 {
@@ -129,97 +133,150 @@ Replace the fleet web-SPA's terminal-emulator view (xterm.js + PTY-relay frames)
   session_id,
   from_offset, to_offset,
   is_last: bool,
-  lines: [ <claude_msg payloads> ]
+  lines: [ <claude_msg payloads, possibly compact_boundary too> ]
 }
 ```
 
 ### Viewer → daemon (via hub)
 
 ```js
-{ type: "send_text", session_id, text, as: "prompt" | "permission_reply" }
-// "prompt"            → paste-mode wrap + \n     → PTY stdin
-// "permission_reply"  → single char (y/n/...)    → PTY stdin (Phase 2 fallback)
-//                       OR MCP response          (Phase 3)
+{ type: "send_text", session_id, text }
+// Always bracketed-paste wrapped + \n appended on daemon side.
 
 { type: "control", session_id, action: "stop" | "cancel" | "interrupt" }
 // stop      → SIGTERM (kill session)
-// cancel    → write "\e\e" (double ESC, Ink cancel)
-// interrupt → write "\x03" (Ctrl-C, kill current tool)
+// cancel    → write "\e\e" (Ink cancel)
+// interrupt → write "\x03" (Ctrl-C)
 
-{ type: "replay_request", session_id, from_offset: 0 }
+{ type: "replay_request", session_id, from_offset: 0, max_messages: 500 }
+// Pagination by message count, not bytes (avoids the case where one
+// 4 MB tool_result blows the budget). Daemon scans jsonl backwards
+// from current_tailer_offset, collects up to max_messages claude_msg
+// payloads, emits replay_batch(es).
 ```
 
 ## Phased delivery
 
-Hard-found by architect review: **permission prompts are NOT in jsonl** — `permission-mode` events only record current-mode breadcrumbs, not per-tool "Allow Bash? [y/n]" prompts. Those are rendered by Ink on PTY stdout. Implementing Allow/Deny requires either ANSI parsing (rejected) or Claude's `--permission-prompt-tool` MCP hook (added in Phase 3). Phased plan keeps xterm.js alive until that hook is wired.
+The original draft proposed Phase 3 (MCP-driven permission UX → drop xterm). Architect review confirmed `--permission-prompt-tool` is `-p`-only in Claude Code 2.1.143, so Phase 3 is **not a delivery phase**. It is moved to "Future work" pending upstream support. The spec's deliverable scope is **Phase 1 + Phase 2 only**.
 
-### Phase 1 — Read-only chat (xterm.js kept as secondary tab)
+### Phase 1 — Read-only chat (xterm.js kept as "Raw terminal" tab)
 
-- Daemon: `jsonl-tailer.js`. Tail one jsonl per spawned session, emit `claude_msg` + `session_lifecycle` + `session_rotated` frames.
-- Hub: dispatch new frames, broadcast via existing `viewersBySession` bus.
-- SPA: `chat-view.js`. Chat tab default; "Raw terminal" toggle reveals existing xterm.
-- No stdin path yet — keystrokes still go through existing PTY bridge to xterm tab.
-- Acceptance: spawn a session, see assistant / user / tool cards live; reconnect replays full transcript; daemon restart restores correct cursor.
+Daemon work:
+- `agent-fleet/daemon/src/jsonl-path.js` (~40 LOC): pure function `encodeProjectDir(cwd)` — applies `/` → `-` with leading `-`, after `fs.realpathSync` resolution. Exposes `expectedJsonlPath(cwd, sessionId)`.
+- `agent-fleet/daemon/src/jsonl-tailer.js` (~250 LOC): per-session `JsonlTailer` class.
+  - On construction: `fs.watch` on the encoded project dir; ready state = `waiting_for_file`.
+  - On file-create event matching `<sessionId>.jsonl`: open with `fs.createReadStream` from offset 0, switch to `tailing` state.
+  - On EOF: register `fs.watch` on the file itself (or fall back to 1s polling on platforms without inotify) → resume read on change.
+  - Each complete line → `parseJsonlLine(line, byteOffset)` → emit `claude_msg` or `compact_boundary` frame via supplied `emit` callback.
+  - Tracks `currentOffset` (bytes), persisted to session-store every 5s and on graceful shutdown.
+- `agent-fleet/daemon/src/subagent-tailer.js` (~120 LOC): watches `<sid>/subagents/` sidecar dir, spawns sub-tailers, tags `is_sidechain: true` on each emitted frame.
+- `agent-fleet/daemon/src/parsers/jsonl-parser.js` (~180 LOC): pure function. Takes one parsed JSON line, returns `{type:"claude_msg", raw, extracted}` or `{type:"compact_boundary", metadata}` or `null` (pass over `permission-mode` no-op repeats — only emit on actual mode change).
+- `session-store.js` extended: `getOffset(sid)`, `setOffset(sid, offset)`.
+
+Hub work:
+- `scripts/lib/fleet-routes.js`: dispatch cases for `replay_request`, broadcast `claude_msg`, `compact_boundary`, `session_lifecycle`, `slash_inventory` to viewers attached to the session.
+- No DB schema changes. Hub does not persist any new content.
+
+SPA work:
+- `agent-fleet/web/chat-view.js` (~500 LOC): chat renderer.
+- `agent-fleet/web/app.js`: add chat tab (default), keep xterm as "Raw terminal" tab. Tab-gated subscription: chat tab consumes `claude_msg` / `compact_boundary` and ignores `pty_data`; raw tab consumes `pty_data` and ignores `claude_msg`. On tab switch, no re-request; both tabs receive frames in parallel, the inactive one buffers up to 1000 frames then drops oldest.
+
+Acceptance (Phase 1):
+- Spawn session via Dispatch → chat tab populates with assistant / user / tool cards within 2s of first jsonl line written.
+- Reload page → `replay_request {from_offset:0, max_messages:500}` returns full transcript (or last 500 messages on very long sessions); chat re-renders.
+- Daemon restart → tailer resumes from persisted offset; no double-emission, no skipped lines (verified by unit test using fixture jsonl).
+- `/compact` event → chat shows a horizontal CompactBoundary divider with token-delta info; assistant turns before and after are still both visible.
+- Task tool spawns subagent → SubagentBlock appears under the originating assistant message, collapsible.
 
 ### Phase 2 — Interactive composer (bracketed paste)
 
-- Daemon: `stdin-bridge.js`. `send_text {as:"prompt"}` wraps text in `\e[200~ … \e[201~ \n` and writes to PTY stdin.
-- Daemon: busy-state derivation. Tracks last `claude_msg.stop_reason` per session — emits a `session_busy {session_id, busy: bool}` frame (or piggybacks on `session_lifecycle`).
-- SPA: composer enabled when `busy=false`. Stop / Cancel / Interrupt toolbar buttons send `control`.
-- SPA: slash-command autocomplete — list seeded by daemon on first connect via `slash_inventory` frame (one-shot `claude /help` or hardcoded with version stamp + drift warning).
-- Permission prompts still routed via xterm tab (user presses y/n there). Banner in chat-view: "Awaiting approval — switch to Raw terminal".
-- Acceptance: send multi-line markdown blob with code fence, claude receives it as single prompt; Stop / Interrupt work; busy-state correctly disables composer.
+Daemon work:
+- `agent-fleet/daemon/src/stdin-bridge.js` (~60 LOC): `writePrompt(text)` wraps `\e[200~` + text + `\e[201~` + `\n`, calls `pty.write`. Bracketed-paste prevents Ink's line editor from submitting on embedded `\n`.
+- `agent-fleet/daemon/src/control-bridge.js` (~50 LOC): maps `control` frame action → `pty.write("\x03")` / `pty.kill("SIGTERM")` / `pty.write("\e\e")`.
+- `agent-fleet/daemon/src/busy-state.js` (~80 LOC): per-session state machine. Inputs = parsed jsonl lines. Outputs `busy: true | false`.
+  - Rule: `busy = true` unless the most recent claude_msg satisfies BOTH `role:"assistant"` AND `stop_reason ∈ {"end_turn", "stop_sequence", "max_tokens"}` AND no subsequent user/tool_result line has been seen.
+  - Emits `session_busy {session_id, busy}` frame on transitions only (no spam).
+  - Initial state on new session = `busy: true` (claude is starting up).
+- `agent-fleet/daemon/src/slash-inventory.js` (~70 LOC): on first daemon WS connect, runs `claude /help --print` once, parses, caches; emits `slash_inventory` frame to hub. Cached output keyed by `claude_version`; refresh if version changes. Fallback hardcoded list of ~12 common slash commands if exec fails.
 
-### Phase 3 — MCP permission tool, xterm dropped
+Hub work:
+- Forward `send_text` / `control` from viewer to the daemon owning the session.
+- No new schema.
 
-- Daemon: `permission-mcp.js` — small local MCP server, registered in claude spawn via `--permission-prompt-tool=mcp__fleet-permission`.
-- When claude wants to use a tool, MCP receives request → daemon emits `permission_request` → SPA renders inline card → user clicks → SPA sends `send_text {as:"permission_reply"}` → daemon MCP responds → claude proceeds. Daemon also broadcasts `permission_resolved` so other viewers update.
-- xterm.js and PTY relay frames (`pty_data`, `reconciliation`, `pty_gap`) removed from daemon, hub, and SPA. Ring buffer, drop counters, replay machinery in `ws-client.js` deleted.
-- Acceptance: spawn session, click Allow on a Bash tool-use card, claude runs the command, second viewer sees `permission_resolved`; full transcript still replays correctly on reconnect.
+SPA work:
+- Composer textbox in `chat-view.js`. Disabled when `busy=true` with banner "Claude is working — Stop / Interrupt to break in".
+- Slash autocomplete: type `/` → dropdown shows entries from latest `slash_inventory`.
+- Toolbar buttons: Stop / Cancel / Interrupt → `control` frame.
+- Echo: viewer A sends `send_text` → daemon writes to PTY → Claude Code writes the user turn to jsonl → daemon emits `claude_msg {role:"user"}` → all viewers (including A) render it. No optimistic-echo before the jsonl confirms (avoids divergent state on send failures).
+
+Acceptance (Phase 2):
+- Multi-line markdown prompt with code fence pasted into composer → claude receives it as a single message.
+- During tool execution, composer is disabled; clicking Stop kills session; Interrupt cancels current tool.
+- Viewer A types → Viewer B sees the user turn appear synchronously (within Claude's jsonl write latency, typically <100ms).
+- Slash dropdown surfaces all of claude's slash commands. Typing `/me` filters to `/memory` etc.
+- Permission prompt scenarios (e.g. `Bash` without `--dangerously-skip-permissions`): chat tab shows a SystemNotice "Permission required — switch to Raw terminal to approve". xterm tab handles approval via Ink's normal `y/n`.
+
+### Future (not in this spec) — MCP-driven permission UX
+
+Blocked on Claude Code adding `--permission-prompt-tool` support to interactive mode, OR fleet adopting a `claude -p`-driven backend (would be a separate design). When that path opens, a follow-up spec can add the MCP server and drop xterm. Until then, the raw-terminal tab is the steady-state permission UX.
 
 ## Cross-phase invariants
 
-- **seq = jsonl byte-offset.** Durable across daemon restart, deterministic replay. Viewer keeps `last_offset`; on reconnect sends `replay_request {from_offset: last_offset}`.
-- **jsonl path discovery.** `fs.watch` on `~/.claude/projects/<enc(cwd)>/` (encoding: `/` → `-` with leading `-`, confirmed against `/root/.claude/projects/-root/`). Open + tail on file-create event; `tail -f` style polling forbidden.
-- **session-id rotation.** When a new `<uuid>.jsonl` file appears in the project dir while a spawned session is still alive, daemon emits `session_rotated`, switches tailer to new file, viewers rebind. Old offsets become invalid but transcripts remain queryable via `/fleet/hosts/<id>/file?path=...`.
-- **Replay/live cutover.** Single tailer owns the byte-offset cursor. `replay_request` causes a synchronous read from `from_offset` to `current_tailer_offset`, batched into 256 KB WS frames with `is_last` flag. After the last batch, live `claude_msg` frames resume seamlessly. No second reader.
-- **Multi-viewer.** `permission_request` is broadcast; `permission_resolved` confirms; UI dedupes by `request_id`. `send_text {as:"prompt"}` is echoed back to all viewers as a `claude_msg {role:"user"}` synthesized from jsonl (Claude Code writes the user turn to jsonl shortly after stdin write).
-- **Size caps.** `tool_result.content` truncated at 16 KB; tail replaced with `{type:"truncated", original_bytes, jsonl_offset}`. Full content available via existing `/fleet/hosts/<id>/file` proxy. Replay paginated at 5 MB total per request; "load older" button thereafter.
+- **seq = jsonl byte-offset.** Durable across daemon restart, deterministic replay. Viewer keeps `last_offset` per session; on reconnect sends `replay_request {from_offset: last_offset, max_messages: 500}`.
+- **jsonl path discovery.** `jsonl-path.js#expectedJsonlPath(cwd, sessionId)` is computed from the same cwd value passed to `pty.spawn` (after symlink resolution). `fs.watch` on the parent project dir; the jsonl file is created by Claude Code only on first user message or hook event, so tailer starts in `waiting_for_file` state — a `replay_request` arriving before file create returns `replay_batch {lines:[], is_last:true}` (not an error).
+- **No `session_rotated`.** `/compact` and `/clear` stay in the same jsonl. They emit `system / subtype:"compact_boundary"` events with `compactMetadata`. Daemon converts those into `compact_boundary` frames and keeps tailing the same file. Byte-offset cursor remains monotonic.
+- **Replay/live cutover.** Single tailer owns the byte-offset cursor. On `replay_request`, the tailer pauses live emission, reads from `from_offset` to `currentOffset`, emits `replay_batch`(es) until `is_last:true`, then resumes live emission. A sequence guard rejects any incoming jsonl-line append that arrives during the replay window (those bytes are captured by the post-replay tail read, not double-emitted).
+- **`permission-mode` filter.** The sample has ~1,368 `permission-mode` lines, almost all `default→default`. Daemon emits a frame only on actual mode change.
+- **Multi-viewer send echo.** No client-side optimistic echo. The authoritative echo is the `claude_msg {role:"user"}` produced from jsonl after `pty.write` succeeds. Latency expected <100ms (jsonl flush + tailer roundtrip); spec allows up to 1s before showing a "send pending" indicator.
+- **Sidechain rendering.** `extracted.is_sidechain:true` → SPA renders inside a nested SubagentBlock keyed by `extracted.parent_uuid`. The main thread shows a collapsed "Task subagent (N turns)" placeholder; expanding it reveals the subagent's chat in-line.
+- **Size caps.** `tool_result.content` truncated at 16 KB inside `extracted`; the `raw` field always carries the full untruncated value (raw is what goes over the wire so size cap is on the entire frame body, not per-field). Replay paginated by message count (default 500) — "load older" button hits `replay_request {from_offset: oldest_visible_offset, max_messages: 500}`.
 
 ## File boundaries (estimated)
 
-| New / changed file | LOC | Purpose |
-|---|---|---|
-| `agent-fleet/daemon/src/jsonl-tailer.js` | ~200 | fs.watch + open + tail + parse + emit |
-| `agent-fleet/daemon/src/stdin-bridge.js` | ~50 | paste-mode wrap, write to PTY |
-| `agent-fleet/daemon/src/control-bridge.js` | ~40 | stop / cancel / interrupt mapping |
-| `agent-fleet/daemon/src/permission-mcp.js` | ~150 (Phase 3) | local MCP server for `--permission-prompt-tool` |
-| `agent-fleet/daemon/src/ws-client.js` | -120 / +60 | wire new bridges, eventually drop PTY relay |
-| `agent-fleet/web/chat-view.js` | ~400 | chat renderer + composer + cards |
-| `agent-fleet/web/app.js` | -250 / +30 | drop xterm wiring (Phase 3), keep raw-tab toggle (Phase 1-2) |
-| `scripts/lib/fleet-routes.js` | -40 / +80 | new frame dispatchers, drop pty_data after Phase 3 |
-| `scripts/lib/fleet-db.js` | -30 (Phase 3) | drop fleet_events PTY content rows |
+| File | Status | LOC | Purpose |
+|---|---|---|---|
+| `agent-fleet/daemon/src/jsonl-path.js` | NEW | ~40 | cwd → jsonl path encoder |
+| `agent-fleet/daemon/src/jsonl-tailer.js` | NEW | ~250 | per-session tailer with offset cursor |
+| `agent-fleet/daemon/src/subagent-tailer.js` | NEW | ~120 | sidecar subagent jsonl tailers |
+| `agent-fleet/daemon/src/parsers/jsonl-parser.js` | NEW | ~180 | line → claude_msg / compact_boundary / null |
+| `agent-fleet/daemon/src/stdin-bridge.js` | NEW (Phase 2) | ~60 | bracketed-paste stdin |
+| `agent-fleet/daemon/src/control-bridge.js` | NEW (Phase 2) | ~50 | control frame → PTY signals |
+| `agent-fleet/daemon/src/busy-state.js` | NEW (Phase 2) | ~80 | composer enable/disable derivation |
+| `agent-fleet/daemon/src/slash-inventory.js` | NEW (Phase 2) | ~70 | `/help` parse + cache |
+| `agent-fleet/daemon/src/session-store.js` | EDIT | +20 | persist offset cursor |
+| `agent-fleet/daemon/src/ws-client.js` | EDIT | +60 | wire tailers + bridges |
+| `agent-fleet/web/chat-view.js` | NEW | ~500 | chat renderer + cards + composer |
+| `agent-fleet/web/app.js` | EDIT | +80 | new tab, tab-gated subscription |
+| `scripts/lib/fleet-routes.js` | EDIT | +60 | dispatch new frames |
+
+Net new LOC (both phases): ~1,500. No deletions in this spec's scope (xterm + PTY relay stay).
 
 ## Testing strategy
 
-- **Unit (daemon):** mocked jsonl directory, fake events, verify tailer emits correct `claude_msg` schemas; byte-offset cursor across simulated restart; session_rotated on new file; truncation at 16 KB; paste-mode wrap round-trip; control mapping.
-- **Unit (hub):** new frame types dispatch + broadcast; permission_resolved idempotent.
-- **E2E:** Playwright spec `tests/e2e/specs/chat-view.spec.js`. Phase 1: spawn → assert message bubbles appear → reload → assert full replay. Phase 2: composer → multi-line input → assert claude receives single prompt; busy-state disables composer. Phase 3: tool-use card → click Allow → assert command runs and second viewer's UI updates.
-- **Manual:** full session walk-through of /compact, /clear, mid-tool ESC, long tool_result, network drop + reconnect.
+- **Unit (daemon):** Fixture jsonl files under `tests/fixtures/jsonl/`: `simple-session.jsonl`, `with-tool-uses.jsonl`, `with-subagent.jsonl`, `compact-mid-session.jsonl`, `large-tool-result.jsonl`. Parser tests assert correct `extracted` shape for each. Tailer tests cover: empty file, partial-line tail, offset cursor durability across simulated restart, compact_boundary emission, subagent sidecar discovery.
+- **Unit (hub):** New frame types dispatch + broadcast; replay_request invokes daemon and forwards `replay_batch` to requesting viewer only.
+- **E2E:** `tests/e2e/specs/chat-view.spec.js`.
+  - Phase 1: spawn a session via Dispatch → assert at least one MessageBubble appears within 5s; reload page → assert chat content restored.
+  - Phase 2: type multi-line composer prompt with code fence → assert single user-turn bubble appears (not many short ones); Stop button kills session.
+- **Manual:** real session walk-through covering /compact, /clear, Task subagent, network drop + reconnect, very-long tool_result.
 
 ## Risks & open questions
 
-- **Claude Code jsonl schema is undocumented and version-pinned.** Sample has `version:"2.1.141"`; future minor releases may change line shapes. Mitigation: daemon parser is permissive (unknown line types → `{type:"raw"}` passthrough); SPA degrades to "unsupported event" placeholder.
-- **MCP permission tool reliability (Phase 3).** Unverified whether `--permission-prompt-tool` honours all tool callouts in 2.1.x. If unreliable, Phase 3 stays optional and Phase 2 ships as the steady state with xterm-for-permissions.
-- **`thinking` blocks.** Default render: collapsed icon with token count. Opt-in expand via per-session toggle. Spec does not gate beyond that.
-- **Slash-command list drift.** Daemon runs `claude /help` once on startup, caches output, refreshes if claude_version changes. Frame: `slash_inventory {commands: [{name, description}]}`. Falls back to a small hardcoded list if exec fails.
+- **Claude Code jsonl schema is undocumented and version-pinned.** Sample uses `version:"2.1.141"`. Future minor releases may add or rename fields. Mitigation: `raw` pass-through preserves everything; SPA's `extracted` consumer falls back to "unsupported" placeholder on unknown subtypes.
+- **`fs.watch` reliability.** Linux inotify is solid; macOS FSEvents has known latency / coalescing quirks. Mitigation: fallback to 1s polling if `fs.watch` does not fire within 10s of an expected event (e.g. PTY produces output but no jsonl line emitted). Polling never replaces the watch — both run, deduped by offset.
+- **`fs.watch` on a 25 MB file with active append.** Node's watcher fires on every write; we read incrementally from `currentOffset`. Expected fine but worth a benchmark in Phase 1 acceptance.
+- **`claude /help --print` reliability.** If claude requires login interactivity or fails the first time, `slash_inventory` falls back to a hardcoded list with `staleness: true` flag in the frame; SPA shows a non-blocking warning.
+- **Backwards compatibility with non-Claude backends.** The new frames are claude-specific. For codex/opencode/hermes sessions, daemon does not start a jsonl-tailer — those sessions remain xterm-only on the raw-terminal tab. The chat-view checks `extracted` presence and shows "This backend does not support chat view" placeholder when absent. Backend detection: daemon emits `session_lifecycle {state:"ready", chat_supported: bool}`.
 
-## Open tasks (to be filed)
+## Open tasks (to file after spec approval)
 
-- vt-NNN1 (epic): fleet chat-UI replacement
-- vt-NNN2 (P1, Phase 1): jsonl-tailer + chat-view read-only
-- vt-NNN3 (P1, Phase 2): stdin-bridge + bracketed paste + composer
-- vt-NNN4 (P2, Phase 3): permission-mcp + drop xterm
-- vt-NNN5 (P3): drop fleet_events PTY rows + ring buffer code after Phase 3 lands
+- vt-EPIC: fleet chat-UI replacement (chat default, xterm fallback)
+- vt-P1A: jsonl-path + jsonl-parser + jsonl-tailer + session-store offset cursor (Phase 1 daemon foundation)
+- vt-P1B: chat-view + app.js tab wiring + new frame dispatchers in hub (Phase 1 hub + SPA)
+- vt-P1C: subagent-tailer + SubagentBlock rendering (Phase 1 subagent support)
+- vt-P1D: replay_request + replay_batch end-to-end with pagination (Phase 1 history)
+- vt-P2A: stdin-bridge + bracketed-paste + control-bridge (Phase 2 daemon)
+- vt-P2B: busy-state + composer disable + slash-inventory (Phase 2 UX)
+- vt-FUTURE: MCP permission tool when upstream lands interactive support
 
-These will be filed under the existing `vt-0385` epic (Fleet daemon hardening) or a new sibling epic once user approves this spec.
+Each P1*/P2* gets its own implementation plan via `superpowers:writing-plans`.
