@@ -74,7 +74,10 @@ test('applySpawnFrame writes backend stdin to PTY after spawn (structured path)'
   assert.equal(calls[0].binOverride, '/usr/local/bin/hermes-wrapper.sh');
   assert.equal(calls[1].k, 'write');
   assert.equal(calls[1].id, 's1');
-  assert.equal(calls[1].d, '<<USER>>\nHELLO\n');
+  // vt-0392 Phase 2: multi-line stdin is bracketed-paste-wrapped and
+  // terminated with \r (CR) so Ink line-editor treats embedded \n as
+  // paste and the final \r as Enter (was: plain text + \n).
+  assert.equal(calls[1].d, '\x1b[200~<<USER>>\nHELLO\x1b[201~\r');
 });
 
 test('applySpawnFrame skips writeInput when backend returns null stdin', () => {
@@ -112,7 +115,10 @@ test('applySpawnFrame legacy path: no backend lookup when no structured fields',
   assert.deepEqual(calls[0].args, ['-p', 'hi']);
 });
 
-test('applySpawnFrame does NOT double the newline when stdin already ends with \\n', () => {
+test('applySpawnFrame: trailing newline stripped before submit (single-line case)', () => {
+  // vt-0392 Phase 2: submitTextToPty strips trailing \n then appends \r
+  // (Ink Enter). Single-line content takes the plain-text path; no
+  // bracketed-paste markers needed.
   const calls = [];
   const ptyMgr = {
     spawn: () => {},
@@ -126,5 +132,5 @@ test('applySpawnFrame does NOT double the newline when stdin already ends with \
     { type: 'spawn', session_id: 'sN', agent: 'x', prompt: 'p' },
     { ptyMgr, backends, defaultBackend: 'x', baseBin: '/bin/claude' },
   );
-  assert.deepEqual(calls, ['already-newlined\n']);
+  assert.deepEqual(calls, ['already-newlined\r']);
 });

@@ -132,6 +132,22 @@ function validateSpawnFrame(f) {
   }
 }
 
+// vt-0392 Phase 2: shared "submit text into an interactive PTY" helper.
+// Terminal Enter is \r (CR), not \n. Ink line-editor treats \n as a
+// literal newline that stays in the buffer; only \r triggers submit.
+// Multi-line text uses bracketed-paste so embedded newlines are
+// inserted-not-submitted, then a single \r outside the markers
+// triggers the actual submit.
+function submitTextToPty(ptyMgr, sessionId, text) {
+  if (typeof text !== 'string' || text.length === 0) return;
+  const norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/, '');
+  if (norm.length === 0) return;
+  const payload = norm.includes('\n')
+    ? `\x1b[200~${norm}\x1b[201~\r`
+    : `${norm}\r`;
+  ptyMgr.writeInput(sessionId, payload);
+}
+
 function applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin }) {
   // vt-0200: validate before touching pty.
   validateSpawnFrame(f);
@@ -162,7 +178,11 @@ function applySpawnFrame(f, { ptyMgr, backends, defaultBackend, baseBin }) {
     sessionId: f.session_id, cwd: f.cwd,
     args: argv, env, binOverride: bin,
   });
-  if (stdin) ptyMgr.writeInput(f.session_id, stdin.endsWith('\n') ? stdin : stdin + '\n');
+  // vt-0392 Phase 2: route initial backend stdin through the shared
+  // submit helper so the initial prompt actually submits (was using \n
+  // which Ink treats as literal newline, leaving the prompt unsubmitted
+  // and later composer text concatenated onto it as one turn).
+  if (stdin) submitTextToPty(ptyMgr, f.session_id, stdin);
 }
 
 function collectHostInfo() {
@@ -615,23 +635,15 @@ async function runDaemon(opts) {
           } else if (f.type === 'kill') {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
           } else if (f.type === 'send_text') {
-            // vt-0392 Phase 2: chat-view composer → PTY stdin.
-            // Submit key on terminals is \r (CR), NOT \n (LF). Ink's raw-
-            // mode reader maps \r to Enter; \n alone is a literal newline
-            // and stays in the buffer without submitting. Bracketed-paste
-            // is used for multi-line content so embedded newlines are
-            // treated as paste rather than Enter; final \r outside the
-            // markers triggers the actual submit.
+            // vt-0392 Phase 2: chat-view composer → PTY stdin via shared
+            // submitTextToPty helper. See helper docstring for the \r vs
+            // \n + bracketed-paste rationale.
             if (typeof f.text !== 'string') {
               console.warn(`[daemon] send_text ${f.session_id}: text must be string`);
             } else if (f.text.length > 65536) {
               console.warn(`[daemon] send_text ${f.session_id} dropped: ${f.text.length} bytes > 65536`);
             } else {
-              const txt = f.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/, '');
-              const payload = txt.includes('\n')
-                ? `\x1b[200~${txt}\x1b[201~\r`
-                : `${txt}\r`;
-              ptyMgr.writeInput(f.session_id, payload);
+              submitTextToPty(ptyMgr, f.session_id, f.text);
             }
           } else if (f.type === 'control') {
             // vt-0392 Phase 2: chat-view toolbar buttons → PTY signals.

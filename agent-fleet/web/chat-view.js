@@ -282,9 +282,13 @@
             || ex.text_in.includes(STATE._pendingUserText.trim()))) {
       clearOptimisticUser();
     }
-    // Clear thinking indicator when assistant turn arrives.
+    // Belt-and-braces: if claude responded with an assistant turn, the
+    // user's message has been ingested even if Ink concatenated it with
+    // an earlier prompt (single turn instead of two). Clear any leftover
+    // pending bubble so it doesn't bleed forever.
     if (ex && ex.role === 'assistant') {
       clearThinkingIndicator();
+      clearOptimisticUser();
     }
     const node = renderFrame(frame);
     if (node) {
