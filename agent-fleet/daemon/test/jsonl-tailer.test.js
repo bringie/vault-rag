@@ -128,6 +128,60 @@ test('JsonlTailer: persists byte-offset, resumes without double-emit', async () 
   await t2.stop();
 });
 
+test('JsonlTailer: incremental appends produce one frame per line', async () => {
+  const home = newTmpHome();
+  const projDir = path.join(home, '.claude', 'projects', '-root');
+  fs.mkdirSync(projDir, { recursive: true });
+  const store = new SessionStore(fs.mkdtempSync(
+    path.join(os.tmpdir(), 'jt-store-')));
+  store.put('sess-i', { pid: 1234, last_seq: 0 });
+  const events = [];
+  const t = new JsonlTailer({
+    sessionId: 'sess-i', cwd: '/root', home, store,
+    emit: (f) => events.push(f)
+  });
+  await t.start();
+
+  const file = path.join(projDir, 'sess-i.jsonl');
+  const fixture = fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'jsonl', 'simple-session.jsonl'),
+    'utf8'
+  );
+  const lines = fixture.split('\n').filter(Boolean);
+  // Write lines one at a time, give the watcher time per line.
+  for (const line of lines) {
+    fs.appendFileSync(file, line + '\n');
+    await new Promise(r => setTimeout(r, 150));
+  }
+  await new Promise(r => setTimeout(r, 200));
+  assert.strictEqual(events.length, lines.length);
+  await t.stop();
+});
+
+test('JsonlTailer: permission-mode dedupe end-to-end', async () => {
+  const home = newTmpHome();
+  const projDir = path.join(home, '.claude', 'projects', '-root');
+  fs.mkdirSync(projDir, { recursive: true });
+  const store = new SessionStore(fs.mkdtempSync(
+    path.join(os.tmpdir(), 'jt-store-')));
+  store.put('sess-pm', { pid: 1234, last_seq: 0 });
+  const events = [];
+  const t = new JsonlTailer({
+    sessionId: 'sess-pm', cwd: '/root', home, store,
+    emit: (f) => events.push(f)
+  });
+  await t.start();
+  copyFixture('permission-mode-spam.jsonl',
+    path.join(projDir, 'sess-pm.jsonl'));
+  await new Promise(r => setTimeout(r, 500));
+  // 5 input lines, 3 emitted (default, plan, default).
+  assert.strictEqual(events.length, 3);
+  assert.strictEqual(events[0].payload.raw.permissionMode, 'default');
+  assert.strictEqual(events[1].payload.raw.permissionMode, 'plan');
+  assert.strictEqual(events[2].payload.raw.permissionMode, 'default');
+  await t.stop();
+});
+
 test('JsonlTailer: compact_boundary emitted as separate frame', async () => {
   const home = newTmpHome();
   const projDir = path.join(home, '.claude', 'projects', '-root');
