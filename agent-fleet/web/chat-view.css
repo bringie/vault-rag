@@ -64,6 +64,30 @@
 
 .cv-list { display: flex; flex-direction: column; gap: 4px; }
 
+/* vt-0397 DOM virtualization affordance: tiny invisible anchor at the top
+   of the list; IntersectionObserver fires loadOlder when it re-enters.
+   Fallback button is shown only when there are evicted (unmounted) nodes. */
+.cv-load-older-sentinel { min-height: 1px; }
+
+.cv-load-older-btn {
+  align-self: center;
+  margin: 6px auto 4px;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--cv-fg-faint);
+  border: 1px dashed var(--cv-line-bright);
+  border-radius: 2px;
+  font: inherit; font-size: 11px; letter-spacing: 0.04em;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 120ms, border-color 120ms, color 120ms;
+}
+.cv-load-older-btn:hover {
+  opacity: 1;
+  border-color: var(--cv-accent);
+  color: var(--cv-accent);
+}
+
 .cv-msg {
   position: relative;
   display: grid;

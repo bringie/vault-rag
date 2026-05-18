@@ -35,9 +35,20 @@
     _slashFiltered: [],
     _slashIndex: 0,
     _slashRafPending: false,
+    // vt-0397 virtualization: mounted = nodes currently in DOM (ordered
+    // oldest→newest, claude_msg/compact only). unmounted = detached
+    // nodes after eviction; the DOM tree stays alive in memory so we
+    // re-attach instead of re-render on scroll-up. Top sentinel +
+    // IntersectionObserver triggers the re-mount.
+    _mountedMsgNodes: [],
+    _unmountedMsgNodes: [],
+    _topSentinel: null,
+    _topObserver: null,
+    _loadOlderBtn: null,
   };
 
-  const MAX_MOUNTED_NODES = 2000;
+  const MAX_MOUNTED_NODES = 500;
+  const LOAD_OLDER_BATCH = 200;
   const PENDING_TIMEOUT_MS = 30_000;
 
   const SYSTEM_SUBTYPES_VISIBLE = new Set([
@@ -159,15 +170,118 @@
       node.classList.add('cv-fresh');
       requestAnimationFrame(() => applyCascade(node));
     }
-    while (STATE.list.childElementCount > MAX_MOUNTED_NODES) {
-      const first = STATE.list.firstElementChild;
-      if (!first || first === before) break;
-      for (const [k, v] of STATE.nodeBySeq) {
-        if (v === first) { STATE.nodeBySeq.delete(k); break; }
-      }
-      STATE.list.removeChild(first);
+    // vt-0397 virtualization: track this node in the mounted-msgs array
+    // when it's a real conversation node (msg/compact/system/lifecycle).
+    // The thinking + perm + empty + sentinel nodes are managed outside
+    // and never enter the virtualization arrays.
+    if (opts.virtualize !== false && isVirtualizableNode(node)) {
+      STATE._mountedMsgNodes.push(node);
+      evictExcess();
     }
     if (stick) scrollToBottom();
+  }
+
+  function isVirtualizableNode(node) {
+    if (!node || !node.classList) return false;
+    return node.classList.contains('cv-msg')
+        || node.classList.contains('cv-compact')
+        || node.classList.contains('cv-system-line')
+        || node.classList.contains('cv-lifecycle');
+  }
+
+  function evictExcess() {
+    // vt-0397 perf: skip O(n) eviction during replay — ingestReplayBatch
+    // calls flushEvictionAfterReplay() once when the batch is fully drained.
+    if (STATE.replayInFlight) return;
+    while (STATE._mountedMsgNodes.length > MAX_MOUNTED_NODES) {
+      const oldest = STATE._mountedMsgNodes.shift();
+      if (oldest.parentNode) oldest.parentNode.removeChild(oldest);
+      // vt-0397 MED fix: drop the nodeBySeq mapping for evicted nodes so
+      // the map can't grow unboundedly across long sessions.
+      for (const [k, v] of STATE.nodeBySeq) {
+        if (v === oldest) { STATE.nodeBySeq.delete(k); break; }
+      }
+      STATE._unmountedMsgNodes.push(oldest);
+    }
+    updateLoadOlderUi();
+  }
+
+  // Called once after replay drained so we don't shift _mountedMsgNodes
+  // 1500× during a 2000-frame initial load.
+  function flushEvictionAfterReplay() {
+    const wasFlying = STATE.replayInFlight;
+    STATE.replayInFlight = false;
+    try { evictExcess(); }
+    finally { STATE.replayInFlight = wasFlying; }
+  }
+
+  // vt-0397: re-attach the most-recently-evicted batch on scroll-up.
+  // Preserves scroll position by anchoring on the previously-top node's
+  // bounding rect (avoids viewport jump).
+  function loadOlderBatch() {
+    if (!STATE.list || !STATE._unmountedMsgNodes.length) return;
+    const scroller = STATE.list.parentElement;
+    if (!scroller) return;
+    const oldFirst = STATE._mountedMsgNodes[0] || null;
+    const anchorRect = oldFirst ? oldFirst.getBoundingClientRect() : null;
+    const batch = STATE._unmountedMsgNodes.splice(
+      Math.max(0, STATE._unmountedMsgNodes.length - LOAD_OLDER_BATCH));
+    // Insert in chronological order before the current oldest mounted.
+    const insertBeforeRef = oldFirst || pinnedBottomNode();
+    for (const node of batch) {
+      if (insertBeforeRef) STATE.list.insertBefore(node, insertBeforeRef);
+      else STATE.list.appendChild(node);
+    }
+    STATE._mountedMsgNodes = batch.concat(STATE._mountedMsgNodes);
+    if (anchorRect) {
+      // vt-0397 CRIT fix: temporarily disable smooth-scroll so the
+      // scrollTop assignment is instantaneous. Otherwise the smooth-
+      // scroll animation interpolates and the BCR delta is measured
+      // against a half-completed scroll position → viewport jumps.
+      const prevBehavior = scroller.style.scrollBehavior;
+      scroller.style.scrollBehavior = 'auto';
+      // Re-measure after layout and shift scrollTop by the delta so the
+      // anchor stays at the same screen-Y.
+      const newRect = oldFirst.getBoundingClientRect();
+      scroller.scrollTop += (newRect.top - anchorRect.top);
+      scroller.style.scrollBehavior = prevBehavior;
+    }
+    updateLoadOlderUi();
+  }
+
+  function setupTopSentinel() {
+    if (!STATE.list || STATE._topSentinel) return;
+    const sentinel = el('div', 'cv-load-older-sentinel');
+    sentinel.style.minHeight = '1px';
+    STATE.list.insertBefore(sentinel, STATE.list.firstChild);
+    STATE._topSentinel = sentinel;
+    if (typeof IntersectionObserver === 'function') {
+      const scroller = STATE.list.parentElement;
+      STATE._topObserver = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) loadOlderBatch();
+        }
+      }, { root: scroller || null, rootMargin: '300px 0px 0px 0px' });
+      STATE._topObserver.observe(sentinel);
+    }
+  }
+
+  function teardownTopSentinel() {
+    if (STATE._topObserver) {
+      try { STATE._topObserver.disconnect(); } catch {}
+      STATE._topObserver = null;
+    }
+    STATE._topSentinel = null;
+  }
+
+  function updateLoadOlderUi() {
+    if (!STATE._loadOlderBtn) return;
+    const has = STATE._unmountedMsgNodes.length > 0;
+    STATE._loadOlderBtn.style.display = has ? '' : 'none';
+    if (has) {
+      STATE._loadOlderBtn.textContent =
+        `↑ load ${Math.min(LOAD_OLDER_BATCH, STATE._unmountedMsgNodes.length)} older messages`;
+    }
   }
 
   function renderAssistant(payload) {
@@ -392,6 +506,8 @@
     } finally {
       STATE.replayInFlight = false;
     }
+    // vt-0397 perf: batch-evict once per replay tranche.
+    flushEvictionAfterReplay();
   }
 
   function requestReplay(fromOffset) {
@@ -605,6 +721,17 @@
     scroller.appendChild(list);
     wrap.appendChild(scroller);
 
+    // vt-0397: explicit fallback button for browsers without IntersectionObserver
+    // or when fast-scroll skips past the sentinel before it can fire.
+    const loadOlder = document.createElement('button');
+    loadOlder.type = 'button';
+    loadOlder.className = 'cv-load-older-btn';
+    loadOlder.textContent = '↑ load older messages';
+    loadOlder.style.display = 'none';
+    loadOlder.addEventListener('click', loadOlderBatch);
+    scroller.insertBefore(loadOlder, list);
+    STATE._loadOlderBtn = loadOlder;
+
     const status = el('div', 'cv-status');
     status.appendChild(el('span', 'cv-status-dot'));
     status.appendChild(el('span', 'cv-status-label', 'idle'));
@@ -793,7 +920,12 @@
     STATE.lastOffset = 0;
     STATE._emptyNode = null;
     STATE._busy = false;
+    teardownTopSentinel();
+    STATE._mountedMsgNodes = [];
+    STATE._unmountedMsgNodes = [];
     if (STATE.list) STATE.list.innerHTML = '';
+    setupTopSentinel();
+    updateLoadOlderUi();
     setStatus('replaying', 'loading');
     setComposerEnabled(false);
     setBusy(false);
@@ -815,7 +947,11 @@
     clearOptimisticUser();
     clearThinkingIndicator();
     clearPermissionCard();
+    teardownTopSentinel();
+    STATE._mountedMsgNodes = [];
+    STATE._unmountedMsgNodes = [];
     if (STATE.list) STATE.list.innerHTML = '';
+    updateLoadOlderUi();
     setStatus('idle', '');
     setComposerEnabled(false);
     setBusy(false);
