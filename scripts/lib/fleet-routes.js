@@ -956,7 +956,7 @@ async function handleDaemonWs(ws, params, ctx) {
       // legitimate jsonl line sizes (real samples top out ~200 KB for
       // big tool_result.content) and well under the WS maxPayload.
       if (f.type === 'claude_msg' || f.type === 'compact_boundary'
-          || f.type === 'session_lifecycle') {
+          || f.type === 'session_lifecycle' || f.type === 'replay_batch') {
         if (!f.session_id) return;
         try {
           const serialised = JSON.stringify(f);
@@ -1026,6 +1026,20 @@ async function handleViewerWs(ws, params, ctx) {
     else if (f.type === 'resize') {
       const d = ctx.bus.getDaemon(session.host_id);
       if (d) try { d.send(JSON.stringify({ type: 'resize', session_id: session.id, cols: f.cols, rows: f.rows })); } catch {}
+    }
+    else if (f.type === 'replay_request') {
+      // vt-chat-1b: forward chat-UI history request to the daemon that
+      // owns the session. Daemon emits a single replay_batch back; hub
+      // broadcasts it to all viewers (other viewers ignore if their
+      // local cursor is ahead). Per-viewer routing is Phase 1C scope.
+      const d = ctx.bus.getDaemon(session.host_id);
+      if (d) try {
+        d.send(JSON.stringify({
+          type: 'replay_request', session_id: session.id,
+          from_offset: Math.max(0, Number(f.from_offset) || 0),
+          max_messages: Math.min(Number(f.max_messages) || 500, 2000),
+        }));
+      } catch {}
     }
   };
   ws.on('message', processFrame);

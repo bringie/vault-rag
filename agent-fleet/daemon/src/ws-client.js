@@ -626,6 +626,64 @@ async function runDaemon(opts) {
               ws.send(JSON.stringify({ type: 'pty_data', session_id: sid, seq: r.seq, data: r.data, replayed: true }));
             }
             ws.send(JSON.stringify({ type: 'replay_end', session_id: sid, since_seq: sinceSeq, count: frames.length }));
+          } else if (f.type === 'replay_request') {
+            // vt-chat-1b: chat-UI history replay. Read jsonl from
+            // from_offset, parse up to max_messages claude_msg /
+            // compact_boundary lines, emit one replay_batch with the
+            // results. is_last=true means caller has reached current
+            // EOF; live tail continues afterwards on the existing
+            // jsonl-tailer's own channel.
+            const sid = f.session_id;
+            const fromOffset = Math.max(0, Number(f.from_offset) || 0);
+            const maxMessages = Math.min(Number(f.max_messages) || 500, 2000);
+            const entry = store.get(sid);
+            const emptyBatch = () => safeSend(ws, {
+              type: 'replay_batch', session_id: sid,
+              from_offset: fromOffset, to_offset: fromOffset,
+              is_last: true, lines: [],
+            });
+            if (!entry || !entry.cwd) { emptyBatch(); }
+            else {
+              try {
+                const { expectedJsonlPath } = require('./jsonl-path');
+                const { parseJsonlLine } = require('./parsers/jsonl-parser');
+                const jsonlPath = expectedJsonlPath(entry.cwd, sid, _daemonHome);
+                let stat;
+                try { stat = fs.statSync(jsonlPath); }
+                catch { emptyBatch(); return; }
+                if (stat.size <= fromOffset) { emptyBatch(); }
+                else {
+                  const content = fs.readFileSync(jsonlPath, 'utf8');
+                  // Backtrack to last newline before fromOffset to avoid
+                  // splitting a line.
+                  let pos = fromOffset;
+                  while (pos > 0 && content[pos - 1] !== '\n') pos--;
+                  const lines = [];
+                  let cursor = pos;
+                  while (cursor < content.length && lines.length < maxMessages) {
+                    const nl = content.indexOf('\n', cursor);
+                    if (nl === -1) break;
+                    const line = content.slice(cursor, nl);
+                    if (line.length > 0) {
+                      const parsed = parseJsonlLine(line, cursor);
+                      if (parsed && (parsed.type === 'claude_msg' || parsed.type === 'compact_boundary')) {
+                        lines.push({ type: parsed.type, session_id: sid, ...parsed.payload });
+                      }
+                    }
+                    cursor = nl + 1;
+                  }
+                  safeSend(ws, {
+                    type: 'replay_batch', session_id: sid,
+                    from_offset: fromOffset, to_offset: cursor,
+                    is_last: cursor >= stat.size,
+                    lines,
+                  });
+                }
+              } catch (e) {
+                console.error(`[ws] replay_request ${sid}: ${e.message}`);
+                emptyBatch();
+              }
+            }
           } else if (f.type === 'resize') {
             ptyMgr.resize(f.session_id, f.cols, f.rows);
           } else if (f.type === 'read_file') {
