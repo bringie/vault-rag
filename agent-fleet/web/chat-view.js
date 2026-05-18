@@ -34,6 +34,7 @@
     _slashDropdown: null,
     _slashFiltered: [],
     _slashIndex: 0,
+    _slashRafPending: false,
   };
 
   const MAX_MOUNTED_NODES = 2000;
