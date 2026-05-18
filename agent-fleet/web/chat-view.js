@@ -89,6 +89,22 @@
       .replace(/\n/g, '<br>');
   }
 
+  // vt-0396 NIT fix: code-point-aware slice. .slice(0, N) splits surrogate
+  // pairs (emoji, supplementary CJK) and renders a U+FFFD lozenge, which
+  // looks broken in tool-arg previews. Iterate the string by code point
+  // (for..of) and stop once we'd emit > maxCp graphemes.
+  function truncateCp(s, maxCp) {
+    if (typeof s !== 'string') return '';
+    let out = '';
+    let count = 0;
+    for (const ch of s) {
+      if (count >= maxCp) return out + '…';
+      out += ch;
+      count++;
+    }
+    return out;
+  }
+
   function fmtTokens(u) {
     if (!u) return '';
     const i = u.input_tokens || 0;
@@ -374,7 +390,7 @@
     const preview = Object.entries(input)
       .map(([k, v]) => {
         const sv = typeof v === 'string' ? v : JSON.stringify(v);
-        return `${k}:${sv.length > 60 ? sv.slice(0, 60) + '…' : sv}`;
+        return `${k}:${truncateCp(sv, 60)}`;
       })
       .join(' ');
     sum.appendChild(el('span', 'cv-tool-args', preview || '∅'));
@@ -398,7 +414,7 @@
       : (Array.isArray(tr.content)
         ? tr.content.map(c => c.text || JSON.stringify(c)).join('\n')
         : JSON.stringify(tr.content));
-    const truncated = content.length > 140 ? content.slice(0, 140) + '…' : content;
+    const truncated = truncateCp(content, 140);
     sum.appendChild(el('span', 'cv-tool-args', truncated.replace(/\n/g, ' ')));
     sum.appendChild(el('span', 'cv-tool-bracket-close', ']'));
     card.appendChild(sum);
