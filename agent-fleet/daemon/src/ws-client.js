@@ -8,6 +8,7 @@ const { collectInventory, inventoryChanged, resetInventoryCache } = require('./i
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
 const backendsLib = require('./backends');
+
 // True when the spawn frame uses the new generic schema rather than legacy
 // {args:[...]} passthrough. Any of these fields means we should consult a
 // backend.buildSpawnArgs() rather than ptyMgr.spawn(args) directly.
