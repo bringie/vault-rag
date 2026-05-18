@@ -323,9 +323,81 @@
     wrap.appendChild(scroller);
     const status = el('div', 'chat-status', 'idle');
     wrap.appendChild(status);
+    // vt-0392 Phase 2: composer for sending prompts back to claude.
+    const composer = el('div', 'chat-composer');
+    const ta = document.createElement('textarea');
+    ta.className = 'chat-composer-input';
+    ta.rows = 3;
+    ta.placeholder = 'message claude… (Enter = send · Shift+Enter = newline)';
+    ta.disabled = true;
+    composer.appendChild(ta);
+    const actions = el('div', 'chat-composer-actions');
+    const sendBtn = document.createElement('button');
+    sendBtn.className = 'chat-btn chat-btn-send';
+    sendBtn.textContent = 'send →';
+    sendBtn.type = 'button';
+    sendBtn.disabled = true;
+    const stopBtn = document.createElement('button');
+    stopBtn.className = 'chat-btn chat-btn-stop';
+    stopBtn.textContent = 'stop';
+    stopBtn.type = 'button';
+    stopBtn.title = 'interrupt (Ctrl-C)';
+    const escBtn = document.createElement('button');
+    escBtn.className = 'chat-btn chat-btn-cancel';
+    escBtn.textContent = 'esc';
+    escBtn.type = 'button';
+    escBtn.title = 'cancel current Ink prompt';
+    actions.appendChild(sendBtn);
+    actions.appendChild(stopBtn);
+    actions.appendChild(escBtn);
+    composer.appendChild(actions);
+    wrap.appendChild(composer);
     containerEl.appendChild(wrap);
     STATE.list = list;
     STATE.statusBar = status;
+    STATE.composer = composer;
+    STATE.composerInput = ta;
+    STATE.composerSend = sendBtn;
+    STATE.composerStop = stopBtn;
+    STATE.composerEsc = escBtn;
+
+    sendBtn.addEventListener('click', sendCurrentText);
+    stopBtn.addEventListener('click', () => sendControl('interrupt'));
+    escBtn.addEventListener('click', () => sendControl('cancel'));
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        sendCurrentText();
+      }
+    });
+  }
+
+  function sendCurrentText() {
+    if (!STATE.ws || STATE.ws.readyState !== 1 || !STATE.composerInput) return;
+    const text = STATE.composerInput.value;
+    if (!text || !text.trim()) return;
+    try {
+      STATE.ws.send(JSON.stringify({
+        type: 'send_text', session_id: STATE.sessionId, text,
+      }));
+      STATE.composerInput.value = '';
+    } catch (e) { console.warn('chatView.send_text failed', e); }
+  }
+
+  function sendControl(action) {
+    if (!STATE.ws || STATE.ws.readyState !== 1) return;
+    try {
+      STATE.ws.send(JSON.stringify({
+        type: 'control', session_id: STATE.sessionId, action,
+      }));
+    } catch {}
+  }
+
+  function setComposerEnabled(enabled) {
+    if (!STATE.composerInput) return;
+    STATE.composerInput.disabled = !enabled;
+    if (STATE.composerSend) STATE.composerSend.disabled = !enabled;
+    if (enabled) STATE.composerInput.focus();
   }
 
   function showEmpty() {
@@ -356,8 +428,16 @@
     STATE._emptyNode = null;
     if (STATE.list) STATE.list.innerHTML = '';
     setStatus('replaying…', 'chat-status-loading');
+    setComposerEnabled(false);
     // Wait for ws open if not ready, then request initial replay.
-    const fire = () => requestReplay(STATE.lastOffset);
+    const fire = () => {
+      requestReplay(STATE.lastOffset);
+      // vt-0392 Phase 2 v1: enable composer once WS open. Busy-state
+      // gating (disable while claude is mid-tool) is a follow-up; users
+      // typing during a tool_use turn will see their text sit in the
+      // PTY's line buffer and submit when claude is ready for input.
+      setComposerEnabled(true);
+    };
     if (ws.readyState === 1) fire();
     else ws.addEventListener('open', fire, { once: true });
   }
@@ -370,6 +450,7 @@
     STATE.nodeBySeq.clear();
     if (STATE.list) STATE.list.innerHTML = '';
     setStatus('idle', '');
+    setComposerEnabled(false);
   }
 
   function handleFrame(frame) {

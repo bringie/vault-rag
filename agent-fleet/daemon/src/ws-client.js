@@ -614,6 +614,35 @@ async function runDaemon(opts) {
             }
           } else if (f.type === 'kill') {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
+          } else if (f.type === 'send_text') {
+            // vt-0392 Phase 2: chat-view composer → PTY stdin.
+            // Wraps text in bracketed-paste markers (ESC[200~ ... ESC[201~)
+            // so claude's Ink line editor accepts embedded \n as paste
+            // rather than submitting on the first newline. Appends a
+            // final \n to actually submit the message.
+            if (typeof f.text !== 'string') {
+              console.warn(`[daemon] send_text ${f.session_id}: text must be string`);
+            } else if (f.text.length > 65536) {
+              console.warn(`[daemon] send_text ${f.session_id} dropped: ${f.text.length} bytes > 65536`);
+            } else {
+              const wrapped = `\x1b[200~${f.text}\x1b[201~\n`;
+              ptyMgr.writeInput(f.session_id, wrapped);
+            }
+          } else if (f.type === 'control') {
+            // vt-0392 Phase 2: chat-view toolbar buttons → PTY signals.
+            const sid = f.session_id;
+            const action = String(f.action || '');
+            if (action === 'stop') {
+              ptyMgr.kill(sid, 'SIGTERM');
+            } else if (action === 'interrupt') {
+              ptyMgr.writeInput(sid, '\x03');
+            } else if (action === 'cancel') {
+              // Double-ESC: Ink interprets first as cancel-prompt, second as
+              // close-modal. Most chat-flow cases want both.
+              ptyMgr.writeInput(sid, '\x1b\x1b');
+            } else {
+              console.warn(`[daemon] control ${sid}: unknown action ${action}`);
+            }
           } else if (f.type === 'replay') {
             // vt-0304: hub asks to replay pty_data since the given seq.
             // We send the buffered frames in order; anything that fell

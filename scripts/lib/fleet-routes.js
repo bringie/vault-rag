@@ -1041,6 +1041,29 @@ async function handleViewerWs(ws, params, ctx) {
         }));
       } catch {}
     }
+    else if (f.type === 'send_text') {
+      // vt-0392 Phase 2: composer prompt → daemon bracketed-paste write.
+      const d = ctx.bus.getDaemon(session.host_id);
+      if (d && typeof f.text === 'string' && f.text.length <= 65536) {
+        try {
+          d.send(JSON.stringify({
+            type: 'send_text', session_id: session.id, text: f.text,
+          }));
+        } catch {}
+      }
+    }
+    else if (f.type === 'control') {
+      // vt-0392 Phase 2: toolbar buttons → daemon PTY signal/keystroke.
+      const d = ctx.bus.getDaemon(session.host_id);
+      const allowed = new Set(['stop', 'cancel', 'interrupt']);
+      if (d && allowed.has(String(f.action))) {
+        try {
+          d.send(JSON.stringify({
+            type: 'control', session_id: session.id, action: String(f.action),
+          }));
+        } catch {}
+      }
+    }
   };
   ws.on('message', processFrame);
 

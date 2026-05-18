@@ -1347,3 +1347,36 @@ dialog#wf-tpl-picker::backdrop { background:rgba(0,0,0,.7); }
 .chat-lifecycle-ready { color: var(--ok, #5cf08c); }
 .chat-lifecycle-exit { color: var(--danger, #ff4d5e); }
 .chat-lifecycle-crash { color: var(--danger, #ff4d5e); font-weight: 600; }
+
+/* vt-0392 Phase 2: composer */
+.chat-composer {
+  border-top: 1px solid var(--line, #222);
+  background: var(--bg-warm, #131316);
+  padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.chat-composer-input {
+  width: 100%; resize: vertical; box-sizing: border-box;
+  background: var(--bg, #0a0a0c); color: var(--text, #e8e6e1);
+  border: 1px solid var(--border, #333); border-radius: 3px;
+  padding: 8px 10px;
+  font: 13px/1.45 "JetBrains Mono", ui-monospace, monospace;
+  min-height: 48px; max-height: 240px;
+}
+.chat-composer-input:focus { outline: none; border-color: var(--accent, #6cf); }
+.chat-composer-input:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-composer-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.chat-btn {
+  background: transparent; color: var(--text, #ccc);
+  border: 1px solid var(--border, #333); border-radius: 2px;
+  padding: 5px 14px; cursor: pointer;
+  font: 11px/1 "JetBrains Mono", monospace;
+  letter-spacing: 0.06em; text-transform: lowercase;
+}
+.chat-btn:hover:not(:disabled) { border-color: var(--accent, #6cf); color: var(--accent, #6cf); }
+.chat-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.chat-btn-send { color: var(--ok, #5cf08c); border-color: var(--ok, #5cf08c); }
+.chat-btn-send:hover:not(:disabled) { background: var(--ok, #5cf08c); color: var(--bg, #0a0a0c); }
+.chat-btn-stop { color: var(--danger, #ff4d5e); border-color: var(--danger, #ff4d5e); }
+.chat-btn-stop:hover:not(:disabled) { background: var(--danger, #ff4d5e); color: var(--bg, #0a0a0c); }
+.chat-btn-cancel { color: var(--warn, #ffb547); border-color: var(--warn, #ffb547); }
