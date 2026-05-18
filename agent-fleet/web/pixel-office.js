@@ -34,9 +34,11 @@
   // Cubicle footprint in tile coords (2×2 + walkway).
   const CUBICLE_TW = 3;
   const CUBICLE_TH = 3;
-  // Avatar block-sprite size (still primitives in phase a).
-  const AV_W = 18;
-  const AV_H = 28;
+  // Avatar block-sprite footprint. Phase b: full pixel-art body (24×34),
+  // 1px dark outline, 2-tone shading per surface, distinct head/hair/torso/
+  // limbs. Detail level matches early Stardew Valley / Pokemon-Crystal NPCs.
+  const AV_W = 22;
+  const AV_H = 34;
 
   // --- Module state -------------------------------------------------------
   let _canvas = null;        // <canvas>
@@ -269,17 +271,42 @@
     }
     return h >>> 0;
   }
+  // 16-bit palette ramps: each base color has a dark + light shade derived
+  // by tweaking HSL. Keeps the office coherent (no neon clashes) and gives
+  // every sprite proper 2-tone shading.
+  function shade(hex, dPct) {
+    // dPct: -30 (darker) to +30 (lighter). Naive RGB nudge, plenty for pixel art.
+    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+    const f = (c) => Math.max(0, Math.min(255, Math.round(c + (dPct/100) * 255)));
+    const toHex = (c) => f(c).toString(16).padStart(2,'0');
+    return '#' + toHex(r) + toHex(g) + toHex(b);
+  }
   function paletteFor(hostId) {
     const h = hash32(hostId);
-    const hats   = ['#e74c3c','#f39c12','#27ae60','#2980b9','#8e44ad','#d35400','#16a085','#c0392b','#7f8c8d','#34495e'];
-    const shirts = ['#3498db','#2ecc71','#e67e22','#9b59b6','#1abc9c','#e91e63','#ff5722','#607d8b','#795548','#009688'];
-    const skins  = ['#fce4c4','#f1c27d','#e0ac69','#c68642','#8d5524'];
+    // Curated 16-bit-friendly hues: muted, slightly desaturated, no neon.
+    const hairs  = ['#4a3520','#2b1d12','#6b4a2a','#8b5a3c','#a87333','#3d2c1f','#c9a679','#5a3b25','#241914','#7a5c3e'];
+    const shirts = ['#3a7ad9','#2c8c63','#c45f3a','#8e57b2','#1aa39a','#c43c6e','#d97548','#5a6c80','#7a5641','#3aa288'];
+    const pants  = ['#28324a','#3a2a4c','#2a3a3a','#4a3a28','#2c2c38'];
+    const skins  = ['#f5d4a8','#e8c096','#d39872','#a87049','#6e4628'];
     return {
-      hat:    hats   [(h >>>  0) % hats.length],
-      shirt:  shirts [(h >>>  4) % shirts.length],
-      skin:   skins  [(h >>>  8) % skins.length],
-      hasHat: ((h >>> 16) & 0x07) > 1,
+      hair:    hairs[(h >>> 0) % hairs.length],
+      hairStyle: (h >>> 8) & 0x07,  // 0..7 — 4 unique silhouettes (mod 4 used below)
+      shirt:   shirts[(h >>> 4) % shirts.length],
+      pants:   pants[(h >>> 12) % pants.length],
+      skin:    skins[(h >>> 16) % skins.length],
+      hasGlasses: ((h >>> 20) & 0x07) > 4,
     };
+  }
+
+  // Pixel set helper — fills a 1×1 "pixel" at integer coords. All avatar/
+  // furniture draws compose from these so everything stays grid-aligned.
+  function px(ctx, x, y, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x | 0, y | 0, 1, 1);
+  }
+  function rect(ctx, x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x | 0, y | 0, w | 0, h | 0);
   }
 
   // Draw a single iso floor tile (diamond) at tile coords.
@@ -331,42 +358,211 @@
     ctx.fillRect(mx + 6, my + 12, 4, 3);
   }
 
-  // Iso-draw the avatar block. (tx, ty) is the chair tile; we offset the
-  // block up so the feet land on the tile center.
-  function drawAvatar(ctx, sx, sy, palette, alpha = 1) {
+  // Detailed pixel-art avatar (22×34). Front-facing 16-bit style:
+  // 1-px dark-violet outline, 2-tone skin (light + shadow), 2-tone shirt,
+  // hair silhouettes per palette.hairStyle, optional glasses.
+  // Working state adds a 1-px typing-bob to forearms.
+  //
+  // The (sx, sy) passed in is the feet position. Draw upward from there.
+  function drawAvatar(ctx, sx, sy, palette, opts) {
+    const { alpha = 1, working = false, walkPhase = 0, idleBob = 0 } = opts || {};
     ctx.save();
     ctx.globalAlpha = alpha;
-    const x = Math.round(sx - AV_W / 2);
-    const y = Math.round(sy - AV_H);
-    // Shadow.
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    const x0 = Math.round(sx - AV_W / 2);
+    const y0 = Math.round(sy - AV_H) + idleBob;
+    // Drop shadow at feet.
+    ctx.fillStyle = 'rgba(0,0,0,0.32)';
     ctx.beginPath();
-    ctx.ellipse(sx, sy + 1, AV_W / 2, 3, 0, 0, Math.PI * 2);
+    ctx.ellipse(sx, sy + 1, AV_W / 2 - 2, 2.5, 0, 0, Math.PI * 2);
     ctx.fill();
-    // Head.
-    ctx.fillStyle = palette.skin;
-    ctx.fillRect(x + 5, y + 0, 8, 8);
+
+    const OUTLINE = '#0e1018';
+    const SKIN = palette.skin;
+    const SKIN_S = shade(SKIN, -10);
+    const HAIR = palette.hair;
+    const HAIR_H = shade(HAIR, +6);
+    const SHIRT = palette.shirt;
+    const SHIRT_H = shade(SHIRT, +6);
+    const SHIRT_S = shade(SHIRT, -10);
+    const PANTS = palette.pants;
+    const PANTS_S = shade(PANTS, -8);
+
+    // Coords are RELATIVE to (x0, y0); whole sprite fits 0..22 × 0..34.
+    // Hair silhouette (top of head, includes mohawk/short/long variants).
+    // Outer outline.
+    const X = (n) => x0 + n;
+    const Y = (n) => y0 + n;
+
+    // === HEAD (8 wide, 9 tall, centered) ===
+    // Hair styles 0..3:
+    //   0: short cap
+    //   1: parted with cowlick
+    //   2: bun on top
+    //   3: long sides
+    const hs = palette.hairStyle & 0x03;
+
+    // Head outline.
+    rect(ctx, X(7), Y(2), 8, 1, OUTLINE);          // top
+    rect(ctx, X(6), Y(3), 1, 6, OUTLINE);          // left
+    rect(ctx, X(15), Y(3), 1, 6, OUTLINE);         // right
+    rect(ctx, X(7), Y(9), 8, 1, OUTLINE);          // bottom (chin)
+    // Skin fill.
+    rect(ctx, X(7), Y(3), 8, 6, SKIN);
+    // Skin shading on right side.
+    rect(ctx, X(13), Y(4), 2, 5, SKIN_S);
     // Eyes.
-    ctx.fillStyle = '#000';
-    ctx.fillRect(x + 7, y + 4, 1, 1);
-    ctx.fillRect(x + 10, y + 4, 1, 1);
-    // Hat.
-    if (palette.hasHat) {
-      ctx.fillStyle = palette.hat;
-      ctx.fillRect(x + 4, y - 2, 10, 3);
-      ctx.fillRect(x + 6, y - 4, 6, 2);
+    rect(ctx, X(8), Y(6), 2, 1, OUTLINE);
+    rect(ctx, X(12), Y(6), 2, 1, OUTLINE);
+    // Glasses.
+    if (palette.hasGlasses) {
+      rect(ctx, X(8), Y(5), 2, 2, '#cdd6f5');
+      rect(ctx, X(12), Y(5), 2, 2, '#cdd6f5');
+      rect(ctx, X(10), Y(6), 2, 1, '#cdd6f5');
+      rect(ctx, X(8), Y(6), 2, 1, OUTLINE);
+      rect(ctx, X(12), Y(6), 2, 1, OUTLINE);
     }
-    // Torso.
-    ctx.fillStyle = palette.shirt;
-    ctx.fillRect(x + 3, y + 8, 12, 12);
-    // Arms.
-    ctx.fillRect(x + 1, y + 9, 2, 8);
-    ctx.fillRect(x + 15, y + 9, 2, 8);
-    // Legs.
-    ctx.fillStyle = '#1a1f2c';
-    ctx.fillRect(x + 5, y + 20, 3, 8);
-    ctx.fillRect(x + 10, y + 20, 3, 8);
+    // Mouth.
+    rect(ctx, X(10), Y(8), 2, 1, shade(SKIN, -25));
+    // Hair on top of head.
+    if (hs === 0) {       // short cap
+      rect(ctx, X(7), Y(1), 8, 2, HAIR);
+      rect(ctx, X(6), Y(2), 10, 1, HAIR);
+      rect(ctx, X(7), Y(0), 8, 1, OUTLINE);
+    } else if (hs === 1) { // parted
+      rect(ctx, X(6), Y(1), 10, 2, HAIR);
+      rect(ctx, X(7), Y(0), 8, 1, OUTLINE);
+      rect(ctx, X(12), Y(3), 3, 1, HAIR);
+      rect(ctx, X(9), Y(3), 2, 1, HAIR_H);
+    } else if (hs === 2) { // bun on top
+      rect(ctx, X(7), Y(1), 8, 2, HAIR);
+      rect(ctx, X(9), Y(-1), 4, 2, HAIR);
+      rect(ctx, X(9), Y(-2), 4, 1, OUTLINE);
+      rect(ctx, X(7), Y(0), 8, 1, OUTLINE);
+    } else {              // long sides
+      rect(ctx, X(7), Y(1), 8, 2, HAIR);
+      rect(ctx, X(6), Y(3), 1, 5, HAIR);
+      rect(ctx, X(15), Y(3), 1, 5, HAIR);
+      rect(ctx, X(7), Y(0), 8, 1, OUTLINE);
+    }
+
+    // === NECK ===
+    rect(ctx, X(10), Y(10), 2, 1, SKIN_S);
+
+    // === TORSO (12 wide, 9 tall) ===
+    // Shoulders/torso outline.
+    rect(ctx, X(5), Y(11), 12, 1, OUTLINE);
+    rect(ctx, X(5), Y(12), 1, 8, OUTLINE);
+    rect(ctx, X(16), Y(12), 1, 8, OUTLINE);
+    rect(ctx, X(5), Y(20), 12, 1, OUTLINE);
+    // Shirt fill.
+    rect(ctx, X(6), Y(12), 11, 8, SHIRT);
+    // Shoulder highlight (top-left).
+    rect(ctx, X(6), Y(12), 5, 1, SHIRT_H);
+    // Right-side shading.
+    rect(ctx, X(14), Y(12), 2, 8, SHIRT_S);
+    // Chest accent stripe (subtle).
+    rect(ctx, X(7), Y(15), 9, 1, SHIRT_S);
+
+    // === ARMS ===
+    // Typing wiggle: when working, raise both arms 1 px on alternating beats.
+    const armDy = working ? (Math.floor(walkPhase * 4) % 2) : 0;
+    // Left arm.
+    rect(ctx, X(4), Y(12 - armDy), 1, 1, OUTLINE);
+    rect(ctx, X(3), Y(13 - armDy), 1, 6, OUTLINE);
+    rect(ctx, X(4), Y(13 - armDy), 1, 6, SHIRT);
+    rect(ctx, X(3), Y(19 - armDy), 2, 1, OUTLINE);
+    // Hand (left).
+    rect(ctx, X(3), Y(19 - armDy), 2, 1, SKIN_S);
+    rect(ctx, X(2), Y(20 - armDy), 1, 1, OUTLINE);
+    // Right arm.
+    rect(ctx, X(17), Y(12 - armDy), 1, 1, OUTLINE);
+    rect(ctx, X(18), Y(13 - armDy), 1, 6, OUTLINE);
+    rect(ctx, X(17), Y(13 - armDy), 1, 6, SHIRT);
+    rect(ctx, X(17), Y(19 - armDy), 2, 1, OUTLINE);
+    // Hand (right).
+    rect(ctx, X(17), Y(19 - armDy), 2, 1, SKIN_S);
+    rect(ctx, X(19), Y(20 - armDy), 1, 1, OUTLINE);
+
+    // === LEGS (6 wide × 11 tall, split into two pant legs) ===
+    rect(ctx, X(5), Y(21), 12, 1, OUTLINE);
+    rect(ctx, X(5), Y(22), 1, 9, OUTLINE);
+    rect(ctx, X(16), Y(22), 1, 9, OUTLINE);
+    rect(ctx, X(11), Y(22), 1, 9, OUTLINE);     // crotch divider
+    rect(ctx, X(6), Y(22), 5, 9, PANTS);
+    rect(ctx, X(12), Y(22), 4, 9, PANTS);
+    rect(ctx, X(13), Y(22), 3, 9, PANTS_S);     // right-leg shading
+    rect(ctx, X(5), Y(31), 12, 1, OUTLINE);
+    // Walk cycle: shift one foot fwd/back by 1px per phase. walkPhase ∈ [0,1).
+    const walking = walkPhase > 0;
+    const off = walking ? (Math.floor(walkPhase * 4) % 2) * 2 - 1 : 0; // -1 or +1
+    // Shoes.
+    rect(ctx, X(5), Y(32 + (walking ? off : 0)), 6, 2, OUTLINE);
+    rect(ctx, X(11), Y(32 - (walking ? off : 0)), 6, 2, OUTLINE);
+    rect(ctx, X(6), Y(32 + (walking ? off : 0)), 4, 1, '#222');
+    rect(ctx, X(12), Y(32 - (walking ? off : 0)), 4, 1, '#222');
+
     ctx.restore();
+  }
+
+  // Office chair behind the avatar — simple iso block in tile.
+  // Drawn AFTER desk but BEFORE avatar so the avatar sits "in" the chair.
+  function drawChair(ctx, tx, ty) {
+    const { x, y } = isoToScreen(tx, ty);
+    // Seat (diamond top).
+    ctx.fillStyle = '#1a1f2c';
+    ctx.beginPath();
+    ctx.moveTo(x,            y + 4);
+    ctx.lineTo(x + TILE_W/2 - 8, y + TILE_H/2);
+    ctx.lineTo(x,            y + TILE_H - 4);
+    ctx.lineTo(x - TILE_W/2 + 8, y + TILE_H/2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#0e1018'; ctx.lineWidth = 1; ctx.stroke();
+    // Backrest (small bar behind).
+    rect(ctx, x - 4, y + 0, 8, 8, '#0e1320');
+    rect(ctx, x - 4, y + 0, 8, 1, '#1a1f2c');
+  }
+
+  // Decorative potted plant. Placed in cubicle corner.
+  function drawPlant(ctx, tx, ty) {
+    const { x, y } = isoToScreen(tx, ty);
+    const cx = x | 0, cy = (y + TILE_H/2) | 0;
+    // Pot.
+    rect(ctx, cx - 4, cy - 2, 8, 6, '#5a3a1d');
+    rect(ctx, cx - 4, cy - 2, 8, 1, '#7a5530');
+    rect(ctx, cx - 4, cy + 3, 8, 1, '#3a2410');
+    // Leaves cluster.
+    const leaf = '#2f6b3a';
+    const leafH = '#52955d';
+    rect(ctx, cx - 5, cy - 8, 10, 3, leaf);
+    rect(ctx, cx - 3, cy - 11, 6, 3, leaf);
+    rect(ctx, cx - 5, cy - 8, 2, 2, leafH);
+    rect(ctx, cx - 1, cy - 11, 2, 2, leafH);
+  }
+
+  // Server rack — the "fleet" totem. Sits at the back of the office.
+  // Blinking LEDs animate from rAF time so we never recompute geometry.
+  function drawServerRack(ctx, tx, ty, t) {
+    const { x, y } = isoToScreen(tx, ty);
+    const cx = x | 0, cy = (y - 14) | 0;
+    // Outline body.
+    rect(ctx, cx - 9, cy, 18, 32, '#0e1018');
+    rect(ctx, cx - 8, cy + 1, 16, 30, '#1d2230');
+    // U-slot horizontal stripes.
+    for (let i = 0; i < 6; i++) {
+      const sy = cy + 3 + i * 5;
+      rect(ctx, cx - 7, sy, 14, 3, '#11141c');
+      rect(ctx, cx - 7, sy, 14, 1, '#272c3a');
+      // LED dots — blink at different rates per slot, deterministic from i.
+      const phase = (t / (300 + i * 70)) + i;
+      const onA = (Math.floor(phase) & 1) === 0;
+      const onB = (Math.floor(phase / 1.7) & 1) === 0;
+      rect(ctx, cx - 5, sy + 1, 1, 1, onA ? '#3affb0' : '#0a1d18');
+      rect(ctx, cx - 3, sy + 1, 1, 1, onB ? '#ffb13a' : '#1d1a08');
+      rect(ctx, cx + 5, sy + 1, 1, 1, onA ? '#6fd5ff' : '#0a1820');
+    }
+    // Cable tray on top.
+    rect(ctx, cx - 9, cy - 2, 18, 2, '#0e1018');
   }
 
   function drawNameTag(ctx, sx, sy, name, badge, emoji) {
@@ -449,18 +645,31 @@
       const isOnline = h.status === 'online';
       const isWorking = isOnline && running > 0;
 
-      // Desk on (tx, ty); chair/avatar one tile in.
+      // Layer order back→front in iso z: desk → plant → chair → avatar.
       drawDesk(ctx, cub.tx, cub.ty, isWorking);
+      // Plant in cubicle far corner (one tile diagonally back).
+      if ((hash32(h.id) >>> 24) & 0x01) {
+        drawPlant(ctx, cub.tx + CUBICLE_TW, cub.ty - 1);
+      }
+      drawChair(ctx, cub.tx + 1, cub.ty + 1);
 
       // Idle bob: small ±1 px y offset, per-host phase so they're not synced.
       const phase = (hash32(h.id) % 1000) / 1000;
-      let dy = 0;
+      let idleBob = 0;
       if (isOnline) {
-        if (isWorking) dy = Math.round(Math.sin(now / 90 + phase * 6.28) * 1.2);
-        else dy = Math.round(Math.sin(now / 700 + phase * 6.28));
+        if (isWorking) idleBob = Math.round(Math.sin(now / 90 + phase * 6.28) * 1.2);
+        else           idleBob = Math.round(Math.sin(now / 700 + phase * 6.28));
       }
+      // Walk phase: 4-step cycle over 600ms. Phase b only animates "working"
+      // hands; Phase c will add legs when actors move.
+      const walkPhase = isWorking ? ((now / 600 + phase) % 1) : 0;
       const palette = paletteFor(h.id);
-      drawAvatar(ctx, dt.x, dt.y + dy, palette, isOnline ? 1.0 : 0.35);
+      drawAvatar(ctx, dt.x, dt.y + 1, palette, {
+        alpha: isOnline ? 1.0 : 0.4,
+        working: isWorking,
+        walkPhase,
+        idleBob,
+      });
 
       // Status emoji bubble.
       const st = _animState[h.id];
@@ -468,8 +677,13 @@
       if (st && st.emoji && st.emojiUntil > now) emoji = st.emoji;
       else if (isWorking && running >= 3) emoji = '🔥';
       const badge = isWorking ? `${running} session${running > 1 ? 's' : ''}` : '';
-      drawNameTag(ctx, dt.x, dt.y + 4, h.display_name || h.name, badge, emoji);
+      drawNameTag(ctx, dt.x, dt.y + 6, h.display_name || h.name, badge, emoji);
     }
+
+    // Server rack — sits at the back-right of the floor bbox.
+    const rackTx = _layout.floorMaxTx + 1;
+    const rackTy = _layout.floorMinTy - 1;
+    drawServerRack(ctx, rackTx, rackTy, now);
 
     drawHeaderBand(ctx);
 
