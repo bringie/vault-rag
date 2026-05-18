@@ -255,18 +255,17 @@
         </div>
         <div class="viewer-tabs">
           <button id="tab-chat" class="tab-btn active" data-tab="chat">CHAT</button>
-          <button id="tab-raw" class="tab-btn" data-tab="raw">RAW TERMINAL</button>
+          <button id="tab-raw" class="tab-btn" data-tab="raw">RAW TRANSCRIPT</button>
         </div>
-        <div id="chat-view"></div>
-        <div class="term-frame" hidden>
-          <div class="term-corner tl"></div><div class="term-corner tr"></div>
-          <div class="term-corner bl"></div><div class="term-corner br"></div>
-          <div id="term"></div>
-          <div id="term-overlay" hidden>
-            <div class="ovl-body">
-              <span id="ovl-msg" data-i18n="viewer.no_session">NO SESSION SELECTED</span>
-              <span class="ovl-sub" data-i18n="viewer.no_session_sub">// select a session from the rail or spawn one</span>
+        <div class="viewer-body">
+          <div id="chat-view"></div>
+          <div id="static-transcript" hidden>
+            <div class="static-transcript-toolbar">
+              <span>raw transcript (post-hoc view)</span>
+              <button id="static-transcript-reload">↻ reload</button>
+              <span id="static-transcript-meta"></span>
             </div>
+            <pre id="static-transcript-content" class="static-transcript-empty">// select a session and switch to this tab to view captured output</pre>
           </div>
         </div>
       </section>

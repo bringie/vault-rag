@@ -275,7 +275,10 @@
       STATE.lastOffset = frame.seq;
     }
     const node = renderFrame(frame);
-    if (node) appendNode(node, frame.seq);
+    if (node) {
+      clearEmpty();
+      appendNode(node, frame.seq);
+    }
   }
 
   function ingestReplayBatch(frame) {
@@ -288,6 +291,7 @@
     if (frame.is_last) {
       STATE.replayDone = true;
       setStatus('live', 'chat-status-live');
+      if (STATE.list && STATE.list.childElementCount === 0) showEmpty();
     } else {
       // Request next batch from where we left off.
       requestReplay(STATE.lastOffset);
@@ -324,6 +328,24 @@
     STATE.statusBar = status;
   }
 
+  function showEmpty() {
+    if (!STATE.list || STATE.list.childElementCount > 0) return;
+    const empty = el('div', 'empty-chat-state');
+    empty.textContent = 'waiting for first message…';
+    const hint = el('div', 'hint',
+      'session attached. Claude will start writing here once it has output.');
+    empty.appendChild(hint);
+    STATE.list.appendChild(empty);
+    STATE._emptyNode = empty;
+  }
+
+  function clearEmpty() {
+    if (STATE._emptyNode && STATE._emptyNode.parentNode === STATE.list) {
+      STATE.list.removeChild(STATE._emptyNode);
+    }
+    STATE._emptyNode = null;
+  }
+
   function attach(sessionId, ws, opts = {}) {
     STATE.sessionId = sessionId;
     STATE.ws = ws;
@@ -331,6 +353,7 @@
     STATE.seenUuids.clear();
     STATE.nodeBySeq.clear();
     STATE.lastOffset = Math.max(0, Number(opts.fromOffset) || 0);
+    STATE._emptyNode = null;
     if (STATE.list) STATE.list.innerHTML = '';
     setStatus('replaying…', 'chat-status-loading');
     // Wait for ws open if not ready, then request initial replay.

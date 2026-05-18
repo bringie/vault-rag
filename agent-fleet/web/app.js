@@ -520,14 +520,10 @@
     const tf = document.querySelector('.term-frame');
     if (tf) tf.classList.toggle('term-reconnecting', s === 'reconnecting');
   }
-  function setOverlay(visible, msg, sub) {
-    const o = $('term-overlay');
-    if (visible) {
-      $('ovl-msg').textContent = msg || '—';
-      o.hidden = false;
-    } else {
-      o.hidden = true;
-    }
+  function setOverlay(_visible, _msg, _sub) {
+    // vt-0392 v2: live xterm dropped → no term-overlay in DOM. Empty
+    // state is rendered inside chat-view itself (waiting for first msg)
+    // and the raw transcript pre carries its own placeholder text.
   }
 
   function setViewMode(mode) {
@@ -551,6 +547,10 @@
     // session so in-flight frames for the previous session don't render into
     // the new view between ws close and ws open.
     try { window.chatView?.detach(); } catch {}
+    // Reset static-transcript so it re-fetches when raw tab is opened.
+    _lastTranscriptSid = null;
+    const pre = $('static-transcript-content');
+    if (pre) { pre.textContent = '// switch to RAW TRANSCRIPT tab to view captured output'; pre.dataset.loaded = ''; pre.classList.add('static-transcript-empty'); }
     state.selected = id;
     state.selectedHost = null;
     setViewMode('session');
@@ -590,116 +590,13 @@
       try { await api('POST', `/sessions/${id}/kill`, {}); } catch (e) { alert(e.message); }
     };
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      scrollback: 5000,
-      // batch terminal writes for throughput; default is too eager for fast claude output
-      windowsMode: false,
-      convertEol: false,
-      theme: {
-        background: '#0a0a0c',
-        foreground: '#e8e6e1',
-        cursor: '#5cf08c',
-        cursorAccent: '#0a0a0c',
-        black: '#0a0a0c',     brightBlack:   '#5a5550',
-        red:   '#ff4d5e',     brightRed:     '#ff7d8b',
-        green: '#5cf08c',     brightGreen:   '#86ffac',
-        yellow:'#ffb547',     brightYellow:  '#ffd07a',
-        blue:  '#6fd5ff',     brightBlue:    '#9be4ff',
-        magenta:'#ff79c6',    brightMagenta: '#ffaae0',
-        cyan:  '#8be9fd',     brightCyan:    '#bbf3ff',
-        white: '#e8e6e1',     brightWhite:   '#ffffff',
-      },
-      allowProposedApi: true,
-    });
-    const fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open($('term'));
-    // vt-0392 (MED fix): expose fit addon so the tab-toggle can re-run
-    // fit() when the raw-terminal tab first becomes visible.
-    state.fitAddon = fit;
-    // Canvas renderer: ~5-10× faster than DOM for bursty TUI output (claude).
-    try {
-      if (window.CanvasAddon && CanvasAddon.CanvasAddon) {
-        term.loadAddon(new CanvasAddon.CanvasAddon());
-      }
-    } catch (e) { console.warn('canvas addon failed, falling back to DOM:', e); }
-    // Unicode 11 widths: correct emoji + CJK + box-drawing column counts
-    // (xterm default is unicode 6, which mis-widths modern emoji).
-    try {
-      if (window.Unicode11Addon && Unicode11Addon.Unicode11Addon) {
-        term.loadAddon(new Unicode11Addon.Unicode11Addon());
-        term.unicode.activeVersion = '11';
-      }
-    } catch (e) { console.warn('unicode11 addon failed:', e); }
-    state.term = term; state.fit = fit;
-    // Defer fit until the container has real dimensions (layout flush after
-    // viewer became visible). Otherwise FitAddon falls back to cols=1, which
-    // resizes the PTY → claude renders ultra-narrow. Retry until container
-    // is at least 40 cols wide or we give up.
-    function attemptFit(retries = 12) {
-      const el = $('term');
-      if (!el || el.clientWidth < 50 || el.clientHeight < 40) {
-        if (retries > 0) return requestAnimationFrame(() => attemptFit(retries - 1));
-        return;
-      }
-      try {
-        fit.fit();
-        if (term.cols >= 40) { sendResize(); return; }
-      } catch {}
-      if (retries > 0) requestAnimationFrame(() => attemptFit(retries - 1));
-    }
-    requestAnimationFrame(() => attemptFit());
-
-    // Debounce resize observer; rapid fires were causing layout thrash.
-    let resizeT = null;
-    const ro = new ResizeObserver(() => {
-      clearTimeout(resizeT);
-      resizeT = setTimeout(() => {
-        try {
-          fit.fit();
-          if (term.cols >= 40) sendResize();
-        } catch {}
-      }, 120);
-    });
-    ro.observe($('term'));
-    state.ro = ro;
-
-    term.onData(d => {
-      if (state.ws && state.ws.readyState === 1) {
-        state.ws.send(JSON.stringify({ type: 'input', data: d }));
-      }
-    });
-    // Intercept browser-stealing shortcuts (Ctrl+O = Open File, Ctrl+S = Save,
-    // Ctrl+R = Reload). Forward them to PTY as the corresponding ASCII control
-    // characters so claude's TUI (expand tool output, etc.) actually receives them.
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== 'keydown') return true;
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return true;
-      const key = e.key.toLowerCase();
-      const map = { o: '\x0f', s: '\x13', r: '\x12', q: '\x11', p: '\x10' };
-      const code = map[key];
-      if (!code) return true;
-      e.preventDefault();
-      e.stopPropagation();
-      if (state.ws && state.ws.readyState === 1) {
-        state.ws.send(JSON.stringify({ type: 'input', data: code }));
-      }
-      return false;
-    });
-
+    // vt-0392 v2: live xterm dropped — fleet attaches via chat-view only.
+    // Raw transcript is a static post-hoc view fetched on demand (see
+    // refreshStaticTranscript). connectWs still opens the WS for chat
+    // frames + control + lifecycle.
+    state.term = null;
+    state.fitAddon = null;
     connectWs(id);
-  }
-  function sendResize() {
-    if (!state.term || !state.ws || state.ws.readyState !== 1) return;
-    // Guard against undersized fit results (eg container was 0px during attach).
-    // Refuse to send a PTY size that would make claude wrap to one char per line.
-    const cols = Math.max(state.term.cols || 0, 80);
-    const rows = Math.max(state.term.rows || 0, 24);
-    state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   }
 
   // vt-0136: short-lived signed ticket replaces bearer-in-subprotocol so the
@@ -740,31 +637,6 @@
         window.chatView?.attach(id, ws, { fromOffset: stored ? Number(stored) : 0 });
       } catch {}
     };
-    // Coalesce rapid pty_data frames into one term.write per animation frame.
-    // The default per-frame write was the bottleneck on bursty claude output.
-    let pendingChunks = [];
-    let rafScheduled = false;
-    let receivedAnyData = false;
-    const flushPending = () => {
-      rafScheduled = false;
-      if (!pendingChunks.length || !state.term) return;
-      let total = 0;
-      for (const c of pendingChunks) total += c.length;
-      const merged = new Uint8Array(total);
-      let o = 0;
-      for (const c of pendingChunks) { merged.set(c, o); o += c.length; }
-      pendingChunks = [];
-      try { state.term.write(merged); } catch (e) { console.warn('term.write failed', e); }
-    };
-    const writeChunk = (u8) => {
-      if (u8.length > 0) receivedAnyData = true;
-      pendingChunks.push(u8);
-      if (!rafScheduled) {
-        rafScheduled = true;
-        requestAnimationFrame(flushPending);
-      }
-    };
-
     ws.onmessage = (e) => {
       let f;
       try { f = JSON.parse(e.data); } catch { return; }
@@ -773,31 +645,6 @@
         $('v-host').textContent = host?.display_name || host?.name || short(f.host_id);
         $('v-cwd').textContent = f.cwd || '—';
         setViewerStatus(f.status);
-      } else if (f.type === 'backfill') {
-        try { state.term.reset?.(); } catch {}
-        writeChunk(b64ToBytes(f.data));
-        // Force claude (Ink) to redraw at the viewer's actual dimensions by
-        // sending two resize events: cols+1, then cols. SIGWINCH twice
-        // typically causes Ink to do a full screen re-render, which paints
-        // over any mis-positioned content from the historical backfill.
-        if (state.viewerStatusValue === 'running' || state.viewerStatusValue === 'pending') {
-          setTimeout(() => {
-            try {
-              if (!state.term || !state.ws || state.ws.readyState !== 1) return;
-              const cols = Math.max(state.term.cols || 80, 80);
-              const rows = Math.max(state.term.rows || 24, 24);
-              state.ws.send(JSON.stringify({ type: 'resize', cols: cols + 1, rows }));
-              setTimeout(() => {
-                try {
-                  state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-                  state.ws.send(JSON.stringify({ type: 'input', data: '\x0c' }));
-                } catch {}
-              }, 80);
-            } catch {}
-          }, 100);
-        }
-      } else if (f.type === 'pty_data') {
-        writeChunk(b64ToBytes(f.data));
       } else if (f.type === 'claude_msg' || f.type === 'compact_boundary'
                  || f.type === 'replay_batch' || f.type === 'session_lifecycle') {
         // vt-0392 (Phase 1C): route structured frames to chat-view.
@@ -805,17 +652,12 @@
       } else if (f.type === 'session_exit') {
         document.querySelector('.viewer').classList.add('exited');
         setViewerStatus(f.exit_code === 0 ? 'exited' : 'killed');
-        // Flush any pending writes before adding the exit marker so order is right.
-        try { flushPending(); } catch {}
-        try {
-          if (!receivedAnyData) {
-            state.term.write('\x1b[2m─── (no transcript captured for this session — likely a legacy run before persisted-flush) ───\x1b[0m\r\n');
-          }
-          state.term.write(`\r\n\x1b[2m─── session exit code=${f.exit_code} ───\x1b[0m\r\n`);
-        } catch {}
       } else if (f.type === 'session_started') {
         setViewerStatus('running');
       }
+      // pty_data / backfill / pty_gap intentionally ignored: live xterm
+      // was retired (vt-0392 v2). Raw output is viewable via the
+      // RAW TRANSCRIPT tab which fetches /sessions/:id/transcript.txt.
     };
     ws.onclose = (ev) => {
       if (ev.code === 4001) {
@@ -838,6 +680,43 @@
     };
     ws.onerror = () => { /* let close handler retry */ };
   }
+  // vt-0392 v2: raw transcript view = static fetch of
+  // /api/fleet/sessions/<sid>/transcript.txt. Live xterm dropped; raw tab
+  // is now a post-hoc "what did claude actually output" peek.
+  let _lastTranscriptSid = null;
+  async function refreshStaticTranscript(sid, opts = {}) {
+    const pre = $('static-transcript-content');
+    const meta = $('static-transcript-meta');
+    if (!pre) return;
+    if (!opts.force && _lastTranscriptSid === sid && pre.dataset.loaded === '1') return;
+    _lastTranscriptSid = sid;
+    pre.classList.add('static-transcript-empty');
+    pre.textContent = 'loading transcript…';
+    if (meta) meta.textContent = '';
+    try {
+      const res = await fetch(`/api/fleet/sessions/${encodeURIComponent(sid)}/transcript.txt`, {
+        headers: { 'authorization': 'Bearer ' + state.token },
+      });
+      if (!res.ok) {
+        pre.textContent = `// transcript fetch failed: HTTP ${res.status}`;
+        return;
+      }
+      const text = await res.text();
+      pre.classList.remove('static-transcript-empty');
+      if (text.length === 0) {
+        pre.classList.add('static-transcript-empty');
+        pre.textContent = '// no transcript captured yet (raw PTY relay was disabled in this build — only the CHAT tab is live)';
+        if (meta) meta.textContent = '';
+      } else {
+        pre.textContent = text;
+        if (meta) meta.textContent = `${text.length.toLocaleString()} bytes`;
+      }
+      pre.dataset.loaded = '1';
+    } catch (e) {
+      pre.textContent = `// transcript fetch error: ${e.message}`;
+    }
+  }
+
   function b64ToBytes(b64) {
     const bin = atob(b64);
     const u = new Uint8Array(bin.length);
@@ -2244,24 +2123,19 @@
         btn.classList.add('active');
         const t = btn.dataset.tab;
         const chat = $('chat-view');
-        const termFrame = document.querySelector('.term-frame');
+        const raw = $('static-transcript');
         if (chat) chat.hidden = (t !== 'chat');
-        if (termFrame) termFrame.hidden = (t !== 'raw');
-        // vt-0392 (MED fix): xterm starts hidden → clientWidth 0 → initial
-        // fit never runs. Kick it on first reveal so the terminal lays out
-        // at the viewer's actual dimensions instead of the default 80x24.
-        if (t === 'raw' && state.fitAddon && state.term) {
-          requestAnimationFrame(() => {
-            try {
-              state.fitAddon.fit();
-              const cols = state.term.cols, rows = state.term.rows;
-              if (state.ws && state.ws.readyState === 1) {
-                state.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-              }
-            } catch {}
-          });
+        if (raw) raw.hidden = (t !== 'raw');
+        // vt-0392 v2: raw tab = static post-hoc transcript. Lazy fetch on
+        // first reveal per session; reload button re-fetches.
+        if (t === 'raw' && state.selected) {
+          refreshStaticTranscript(state.selected);
         }
       });
+    });
+    const reloadBtn = $('static-transcript-reload');
+    if (reloadBtn) reloadBtn.addEventListener('click', () => {
+      if (state.selected) refreshStaticTranscript(state.selected, { force: true });
     });
     startPolling();
     applyRoute();

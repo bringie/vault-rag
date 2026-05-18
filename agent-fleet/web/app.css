@@ -314,7 +314,10 @@ body::after {
 .btn-row + .btn-row { margin-left: .3em; }
 
 /* ============ VIEWER ============ */
-.viewer { display: grid; grid-template-rows: auto 1fr; min-width: 0; }
+.viewer { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.viewer-body { flex: 1; min-height: 0; display: flex; flex-direction: column;
+               position: relative; background: var(--bg); }
+.viewer-body > * { width: 100%; }
 .viewer-head {
   display: grid; grid-template-columns: auto 1fr auto;
   gap: 1.4em; align-items: center;
@@ -1210,6 +1213,38 @@ dialog#wf-tpl-picker::backdrop { background:rgba(0,0,0,.7); }
 
 #chat-view { background: var(--bg, #0a0a0c); flex: 1; min-height: 0;
              display: flex; flex-direction: column; overflow: hidden; }
+#chat-view[hidden] { display: none; }
+#static-transcript {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: var(--bg, #0a0a0c); overflow: hidden;
+}
+#static-transcript[hidden] { display: none; }
+.static-transcript-toolbar {
+  padding: 6px 14px; border-bottom: 1px solid var(--line, #222);
+  font: 10px/1.6 "JetBrains Mono", monospace;
+  color: var(--text-dim, #888); display: flex; gap: 12px; align-items: center;
+}
+.static-transcript-toolbar button {
+  background: transparent; color: var(--accent, #6cf);
+  border: 1px solid var(--border, #333); padding: 3px 10px;
+  font: 10px/1 "JetBrains Mono", monospace; cursor: pointer;
+}
+.static-transcript-toolbar button:hover { background: var(--bg-hover, #131316); }
+#static-transcript-content {
+  flex: 1; min-height: 0; overflow: auto; padding: 12px 14px;
+  margin: 0; background: #000; color: #e8e6e1;
+  font: 12px/1.4 "JetBrains Mono", monospace;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.static-transcript-empty {
+  padding: 20px; text-align: center; color: var(--text-dim, #888);
+  font: 11px/1.6 "JetBrains Mono", monospace;
+}
+.empty-chat-state {
+  padding: 40px 20px; text-align: center; color: var(--text-dim, #888);
+  font: 11px/1.6 "JetBrains Mono", monospace;
+}
+.empty-chat-state .hint { color: var(--text-faint, #555); font-size: 10px; margin-top: 6px; }
 .chat-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .chat-scroller { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px 14px; }
 .chat-list { display: flex; flex-direction: column; gap: 14px; }
