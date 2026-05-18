@@ -193,45 +193,62 @@
 
   // --- Iso projection -----------------------------------------------------
 
-  // Tile coords (tx, ty) → screen coords. Origin at canvas top-center +
-  // an offset so the floor sits nicely under the header band.
+  // Tile coords (tx, ty) → screen coords. Origin is recomputed at layout
+  // time to center the office bounding-box in the canvas under the header.
+  let _isoOx = 0, _isoOy = 0;
   function isoToScreen(tx, ty) {
-    const ox = _w / 2;
-    const oy = 72;  // header band below status line
     return {
-      x: ox + (tx - ty) * (TILE_W / 2),
-      y: oy + (tx + ty) * (TILE_H / 2),
+      x: _isoOx + (tx - ty) * (TILE_W / 2),
+      y: _isoOy + (tx + ty) * (TILE_H / 2),
     };
   }
 
   // --- Layout (cubicle grid) ----------------------------------------------
 
-  // Compute a square-ish tile grid sized to fit the current canvas.
-  // Each cubicle is 3×3 tiles (desk + chair + walkway). We want host count
-  // to fit on screen — so cubiclesPerRow scales with canvas width.
+  // Compute cubicle tile-coords per host. Cubicles tile down in BOTH tx
+  // and ty for new rows, so iso projection lays rows as visible horizontal
+  // bands (not a single diagonal). Then derive the bounding box of the
+  // whole office and re-center the iso origin so it fits under the header.
   function computeLayout() {
     const n = Math.max(_hosts.length, 1);
-    // Diamond projection width per cubicle: cubicle is 3 tiles wide,
-    // iso-projected horizontal span ≈ CUBICLE_TW * TILE_W. Add 1 tile gap.
-    const cubScreenW = (CUBICLE_TW + 1) * TILE_W;
-    const cubScreenH = (CUBICLE_TH + 1) * TILE_H;
-    // How many fit horizontally? Use canvas width with margin.
-    const perRow = Math.max(2, Math.min(8,
+    // Diamond projection width per cubicle: iso span = (CUBICLE_TW+CUBICLE_TH)
+    // tiles wide and tall, so each cubicle visually occupies that much.
+    const cubScreenW = (CUBICLE_TW + 1) * (TILE_W / 2);
+    // Cubicles per row scales with canvas width — leave 80 px margin.
+    const perRow = Math.max(1, Math.min(8,
       Math.floor((_w - 80) / cubScreenW)));
     const rows = Math.ceil(n / perRow);
-    // Build a list of cubicle tile-origin (tx, ty) per host index.
+
     const cubicles = [];
+    let minTx = Infinity, maxTx = -Infinity, minTy = Infinity, maxTy = -Infinity;
     for (let i = 0; i < n; i++) {
       const row = Math.floor(i / perRow);
       const col = i % perRow;
-      // Stagger rows so iso projection lays them in a grid (not a diamond).
-      // Each row drops by CUBICLE_TH tiles in BOTH tx and ty so the rows
-      // visually march down-right.
-      const tx = col * CUBICLE_TW + row * CUBICLE_TH;
-      const ty = col * CUBICLE_TW - row * 0;  // keep ty aligned per col for now
+      // Within a row: walk +tx. Between rows: drop +ty. That makes each
+      // row a diagonal "wave" of cubicles going down-right; multi-row
+      // layouts then stack one below the other in screen-y.
+      const tx = col * (CUBICLE_TW + 1) + row * 0;
+      const ty = row * (CUBICLE_TH + 1);
       cubicles.push({ tx, ty });
+      // Cubicle occupies (tx..tx+CUBICLE_TW-1, ty..ty+CUBICLE_TH-1).
+      if (tx < minTx) minTx = tx;
+      if (ty < minTy) minTy = ty;
+      if (tx + CUBICLE_TW > maxTx) maxTx = tx + CUBICLE_TW;
+      if (ty + CUBICLE_TH > maxTy) maxTy = ty + CUBICLE_TH;
     }
-    return { cubicles, perRow, rows, cubScreenW, cubScreenH };
+    // Floor pad: extend bounds by 1 tile on each side so cubicles sit on
+    // a rug, not the bare wall.
+    const floorMinTx = minTx - 1, floorMinTy = minTy - 1;
+    const floorMaxTx = maxTx + 1, floorMaxTy = maxTy + 1;
+
+    // Center the floor bbox in the canvas under the 56 px header band.
+    const headerH = 64;
+    const bboxCenterScreenX = ((floorMinTx + floorMaxTx) / 2 - (floorMinTy + floorMaxTy) / 2) * (TILE_W / 2);
+    const bboxCenterScreenY = ((floorMinTx + floorMaxTx) / 2 + (floorMinTy + floorMaxTy) / 2) * (TILE_H / 2);
+    _isoOx = Math.round(_w / 2 - bboxCenterScreenX);
+    _isoOy = Math.round(headerH + (_h - headerH) / 2 - bboxCenterScreenY);
+
+    return { cubicles, perRow, rows, floorMinTx, floorMinTy, floorMaxTx, floorMaxTy };
   }
 
   // Avatar screen position for host index i.
@@ -408,17 +425,12 @@
 
     if (!_layout) _layout = computeLayout();
 
-    // Draw floor for the bounding region.
-    const { perRow, rows } = _layout;
-    const maxCol = perRow * CUBICLE_TW + rows * CUBICLE_TH + 2;
-    const maxRow = perRow * CUBICLE_TW + rows * CUBICLE_TH + 2;
-    for (let tx = -1; tx < maxCol; tx++) {
-      for (let ty = -1; ty < maxRow; ty++) {
-        // Alternate tile shades for a checker hint.
+    // Draw floor for the cubicle bounding box. Tight bounds = cubicles
+    // sit on a rug-sized floor, not a huge meaningless diamond.
+    const { floorMinTx, floorMinTy, floorMaxTx, floorMaxTy } = _layout;
+    for (let tx = floorMinTx; tx < floorMaxTx; tx++) {
+      for (let ty = floorMinTy; ty < floorMaxTy; ty++) {
         const fill = ((tx + ty) & 1) ? '#252b3a' : '#2a3144';
-        const { x, y } = isoToScreen(tx, ty);
-        // Cull tiles outside the visible viewport (cheap).
-        if (x < -TILE_W || x > _w + TILE_W || y < -TILE_H || y > _h + TILE_H) continue;
         drawFloorTile(ctx, tx, ty, fill);
       }
     }
