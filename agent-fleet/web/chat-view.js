@@ -95,7 +95,13 @@
   function appendNode(node, seq) {
     if (!STATE.list) return;
     const stick = STATE.stickToBottom && isAtBottom();
-    STATE.list.appendChild(node);
+    // Keep the thinking indicator pinned to the bottom of the list:
+    // insert real messages BEFORE it so the indicator stays last.
+    if (STATE._thinkingNode && STATE._thinkingNode.parentNode === STATE.list) {
+      STATE.list.insertBefore(node, STATE._thinkingNode);
+    } else {
+      STATE.list.appendChild(node);
+    }
     if (seq != null) STATE.nodeBySeq.set(seq, node);
     // Trim oldest when over cap.
     while (STATE.list.childElementCount > MAX_MOUNTED_NODES) {
@@ -444,7 +450,14 @@
     root.appendChild(body);
     STATE._pendingUserNode = root;
     STATE._pendingUserText = text;
-    STATE.list.appendChild(root);
+    // Optimistic bubble also goes ABOVE the thinking indicator if it's
+    // already mounted (sendCurrentText calls show-optimistic then show-
+    // thinking, so this branch is rarely hit, but keep the invariant).
+    if (STATE._thinkingNode && STATE._thinkingNode.parentNode === STATE.list) {
+      STATE.list.insertBefore(root, STATE._thinkingNode);
+    } else {
+      STATE.list.appendChild(root);
+    }
     scrollToBottom();
   }
 
