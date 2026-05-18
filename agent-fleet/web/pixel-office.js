@@ -53,6 +53,15 @@
   let _hosts = [];
   let _runningById = {};
   let _animState = {};       // host_id → { emoji?, emojiUntil? }
+  // vt-0381 Phase c: per-host actor state — position in fractional tile
+  // coords, current target, walk phase, etc. Persists across polls so an
+  // avatar mid-stroll doesn't snap back to its chair on every 5 s refresh.
+  let _actors = {};          // host_id → Actor
+  let _lastTickMs = 0;
+  // Walk speed in tile-units / second (1 tile/s ≈ 32 px/s in screen iso).
+  const WALK_SPEED = 1.4;
+  const IDLE_MIN_S = 2.5;
+  const IDLE_MAX_S = 7;
   let _inFlight = false;
   let _pollAbort = null;
   let _lastSuccess = 0;
@@ -93,9 +102,16 @@
 
     startPolling();
     _running = true;
+    _lastTickMs = NOW();
     const tick = () => {
       if (!_running) return;
-      if (!document.hidden) render();
+      const now = NOW();
+      const dt = Math.min(0.1, (now - _lastTickMs) / 1000);  // cap dt at 100ms
+      _lastTickMs = now;
+      if (!document.hidden) {
+        tickActors(dt);
+        render();
+      }
       _rafId = requestAnimationFrame(tick);
     };
     _rafId = requestAnimationFrame(tick);
@@ -175,6 +191,11 @@
       for (const id of Object.keys(_animState)) {
         if (!liveIds.has(id)) delete _animState[id];
       }
+      // vt-0381: reap actors for vanished hosts; new hosts get an actor
+      // seeded at their chair tile when the next layout passes through.
+      for (const id of Object.keys(_actors)) {
+        if (!liveIds.has(id)) delete _actors[id];
+      }
       _runningById = newRunning;
       _lastSuccess = now;
       _layout = null;  // host-count may have changed → re-layout
@@ -253,12 +274,101 @@
     return { cubicles, perRow, rows, floorMinTx, floorMinTy, floorMaxTx, floorMaxTy };
   }
 
-  // Avatar screen position for host index i.
+  // Avatar screen position for host index i. Uses the actor's current
+  // fractional tile coords if one exists (so walking animation moves the
+  // avatar between tiles); otherwise falls back to the chair tile.
   function avatarPos(i) {
     if (!_layout) _layout = computeLayout();
     const c = _layout.cubicles[i];
-    // Place avatar 1 tile in from the cubicle corner (the "chair" spot).
+    const host = _hosts[i];
+    const actor = host && _actors[host.id];
+    if (actor) return isoToScreen(actor.px, actor.py);
     return isoToScreen(c.tx + 1, c.ty + 1);
+  }
+
+  // Re-seed actor pos at chair tile for hosts that just appeared. Called
+  // each frame after layout is rebuilt.
+  function syncActors() {
+    if (!_layout) return;
+    for (let i = 0; i < _hosts.length; i++) {
+      const h = _hosts[i];
+      if (_actors[h.id]) continue;
+      const c = _layout.cubicles[i];
+      _actors[h.id] = {
+        px: c.tx + 1, py: c.ty + 1,                 // chair tile
+        chairTx: c.tx + 1, chairTy: c.ty + 1,
+        cubBounds: {
+          minTx: c.tx + 0.2, maxTx: c.tx + CUBICLE_TW - 0.6,
+          minTy: c.ty + 0.2, maxTy: c.ty + CUBICLE_TH - 0.6,
+        },
+        targetTx: null, targetTy: null,
+        state: 'idle',                              // idle | walk | sit
+        facing: 's',
+        idleUntil: NOW() + (Math.random() * 1000),
+        walkPhase: 0,
+      };
+    }
+  }
+
+  // Per-frame actor update. dt = seconds since last tick.
+  function tickActors(dt) {
+    syncActors();
+    const now = NOW();
+    for (let i = 0; i < _hosts.length; i++) {
+      const h = _hosts[i];
+      const a = _actors[h.id]; if (!a) continue;
+      const running = _runningById[h.id] || 0;
+      const isOnline = h.status === 'online';
+      const isWorking = isOnline && running > 0;
+
+      // OFFLINE — stand still at chair, dim alpha drawn elsewhere.
+      if (!isOnline) {
+        a.state = 'offline';
+        a.px = a.chairTx; a.py = a.chairTy; a.facing = 's';
+        continue;
+      }
+      // WORKING — sit at chair facing north (toward monitor).
+      if (isWorking) {
+        a.state = 'sit';
+        a.px = a.chairTx; a.py = a.chairTy; a.facing = 'n';
+        a.walkPhase = (a.walkPhase + dt * 1.6) % 1;  // typing wiggle
+        continue;
+      }
+      // IDLE / WALK loop within cubicle bounds.
+      if (a.targetTx == null) {
+        if (now >= a.idleUntil) {
+          // Pick a new wander target inside cubicle.
+          const b = a.cubBounds;
+          a.targetTx = b.minTx + Math.random() * (b.maxTx - b.minTx);
+          a.targetTy = b.minTy + Math.random() * (b.maxTy - b.minTy);
+          a.state = 'walk';
+        } else {
+          a.state = 'idle';
+        }
+        continue;
+      }
+      // Walk: move toward target in tile-space.
+      const dx = a.targetTx - a.px;
+      const dy = a.targetTy - a.py;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.04) {
+        // Arrived — pick a new idle delay.
+        a.px = a.targetTx; a.py = a.targetTy;
+        a.targetTx = null; a.targetTy = null;
+        a.idleUntil = now + (IDLE_MIN_S + Math.random() * (IDLE_MAX_S - IDLE_MIN_S)) * 1000;
+        a.state = 'idle';
+        a.walkPhase = 0;
+        continue;
+      }
+      // Direction-of-motion → facing.
+      if (Math.abs(dx) > Math.abs(dy)) a.facing = dx > 0 ? 'e' : 'w';
+      else                              a.facing = dy > 0 ? 's' : 'n';
+      const step = WALK_SPEED * dt;
+      a.px += (dx / dist) * step;
+      a.py += (dy / dist) * step;
+      a.walkPhase = (a.walkPhase + dt * 4) % 1;  // 4-frame cycle / sec
+      a.state = 'walk';
+    }
   }
 
   // --- Drawing ------------------------------------------------------------
@@ -365,7 +475,7 @@
   //
   // The (sx, sy) passed in is the feet position. Draw upward from there.
   function drawAvatar(ctx, sx, sy, palette, opts) {
-    const { alpha = 1, working = false, walkPhase = 0, idleBob = 0 } = opts || {};
+    const { alpha = 1, working = false, walkPhase = 0, idleBob = 0, walking = false, facing = 's' } = opts || {};
     ctx.save();
     ctx.globalAlpha = alpha;
     const x0 = Math.round(sx - AV_W / 2);
@@ -410,19 +520,30 @@
     rect(ctx, X(7), Y(3), 8, 6, SKIN);
     // Skin shading on right side.
     rect(ctx, X(13), Y(4), 2, 5, SKIN_S);
-    // Eyes.
-    rect(ctx, X(8), Y(6), 2, 1, OUTLINE);
-    rect(ctx, X(12), Y(6), 2, 1, OUTLINE);
-    // Glasses.
-    if (palette.hasGlasses) {
-      rect(ctx, X(8), Y(5), 2, 2, '#cdd6f5');
-      rect(ctx, X(12), Y(5), 2, 2, '#cdd6f5');
-      rect(ctx, X(10), Y(6), 2, 1, '#cdd6f5');
-      rect(ctx, X(8), Y(6), 2, 1, OUTLINE);
-      rect(ctx, X(12), Y(6), 2, 1, OUTLINE);
+    // Eyes — placement varies by facing direction (4-dir hint).
+    //   n: back of head, no eyes visible.
+    //   s: full front (default), eyes centered.
+    //   e: eyes shifted right (look that way).
+    //   w: eyes shifted left.
+    if (facing !== 'n') {
+      const eyeOffset = facing === 'e' ? 1 : (facing === 'w' ? -1 : 0);
+      rect(ctx, X(8 + eyeOffset), Y(6), 2, 1, OUTLINE);
+      rect(ctx, X(12 + eyeOffset), Y(6), 2, 1, OUTLINE);
+      // Glasses (only when face visible).
+      if (palette.hasGlasses) {
+        rect(ctx, X(8 + eyeOffset), Y(5), 2, 2, '#cdd6f5');
+        rect(ctx, X(12 + eyeOffset), Y(5), 2, 2, '#cdd6f5');
+        rect(ctx, X(10 + eyeOffset), Y(6), 2, 1, '#cdd6f5');
+        rect(ctx, X(8 + eyeOffset), Y(6), 2, 1, OUTLINE);
+        rect(ctx, X(12 + eyeOffset), Y(6), 2, 1, OUTLINE);
+      }
+      // Mouth (only front-facing).
+      if (facing === 's') rect(ctx, X(10), Y(8), 2, 1, shade(SKIN, -25));
+    } else {
+      // Back of head — fill more of the head with hair color to hint
+      // the avatar is facing away.
+      rect(ctx, X(7), Y(3), 8, 4, HAIR);
     }
-    // Mouth.
-    rect(ctx, X(10), Y(8), 2, 1, shade(SKIN, -25));
     // Hair on top of head.
     if (hs === 0) {       // short cap
       rect(ctx, X(7), Y(1), 8, 2, HAIR);
@@ -492,14 +613,19 @@
     rect(ctx, X(12), Y(22), 4, 9, PANTS);
     rect(ctx, X(13), Y(22), 3, 9, PANTS_S);     // right-leg shading
     rect(ctx, X(5), Y(31), 12, 1, OUTLINE);
-    // Walk cycle: shift one foot fwd/back by 1px per phase. walkPhase ∈ [0,1).
-    const walking = walkPhase > 0;
-    const off = walking ? (Math.floor(walkPhase * 4) % 2) * 2 - 1 : 0; // -1 or +1
-    // Shoes.
-    rect(ctx, X(5), Y(32 + (walking ? off : 0)), 6, 2, OUTLINE);
-    rect(ctx, X(11), Y(32 - (walking ? off : 0)), 6, 2, OUTLINE);
-    rect(ctx, X(6), Y(32 + (walking ? off : 0)), 4, 1, '#222');
-    rect(ctx, X(12), Y(32 - (walking ? off : 0)), 4, 1, '#222');
+    // Walk cycle: shift one foot fwd/back by 1px per phase. 4-step cycle.
+    // Frames 0,2 → both feet centered (legs together); 1 → left fwd; 3 → right fwd.
+    let leftDy = 0, rightDy = 0;
+    if (walking) {
+      const f = Math.floor(walkPhase * 4) % 4;
+      if (f === 1) { leftDy = -1; rightDy = 1; }
+      else if (f === 3) { leftDy = 1; rightDy = -1; }
+    }
+    // Shoes (with walk offset).
+    rect(ctx, X(5), Y(32 + leftDy), 6, 2, OUTLINE);
+    rect(ctx, X(11), Y(32 + rightDy), 6, 2, OUTLINE);
+    rect(ctx, X(6), Y(32 + leftDy), 4, 1, '#222');
+    rect(ctx, X(12), Y(32 + rightDy), 4, 1, '#222');
 
     ctx.restore();
   }
@@ -632,22 +758,22 @@
     }
 
     // Build a draw list of (host index, screen-y) for y-sort so avatars in
-    // back rows draw behind desks in front rows.
+    // back rows draw behind desks in front rows. Use actor's CURRENT
+    // position (post-tick) so walking avatars sort correctly as they move.
     const drawList = _hosts.map((h, i) => {
       const cub = _layout.cubicles[i];
-      const dt = isoToScreen(cub.tx + 1, cub.ty + 1);
-      return { i, h, dt };
-    }).sort((a, b) => a.dt.y - b.dt.y);
+      const sp = avatarPos(i);
+      return { i, h, cub, sp };
+    }).sort((a, b) => a.sp.y - b.sp.y);
 
-    for (const { i, h, dt } of drawList) {
-      const cub = _layout.cubicles[i];
+    for (const { i, h, cub, sp } of drawList) {
       const running = _runningById[h.id] || 0;
       const isOnline = h.status === 'online';
       const isWorking = isOnline && running > 0;
+      const actor = _actors[h.id];
 
-      // Layer order back→front in iso z: desk → plant → chair → avatar.
+      // Layer order: desk → plant → chair → avatar.
       drawDesk(ctx, cub.tx, cub.ty, isWorking);
-      // Plant in cubicle far corner (one tile diagonally back).
       if ((hash32(h.id) >>> 24) & 0x01) {
         drawPlant(ctx, cub.tx + CUBICLE_TW, cub.ty - 1);
       }
@@ -656,19 +782,18 @@
       // Idle bob: small ±1 px y offset, per-host phase so they're not synced.
       const phase = (hash32(h.id) % 1000) / 1000;
       let idleBob = 0;
-      if (isOnline) {
+      if (isOnline && (!actor || actor.state !== 'walk')) {
         if (isWorking) idleBob = Math.round(Math.sin(now / 90 + phase * 6.28) * 1.2);
         else           idleBob = Math.round(Math.sin(now / 700 + phase * 6.28));
       }
-      // Walk phase: 4-step cycle over 600ms. Phase b only animates "working"
-      // hands; Phase c will add legs when actors move.
-      const walkPhase = isWorking ? ((now / 600 + phase) % 1) : 0;
       const palette = paletteFor(h.id);
-      drawAvatar(ctx, dt.x, dt.y + 1, palette, {
+      drawAvatar(ctx, sp.x, sp.y + 1, palette, {
         alpha: isOnline ? 1.0 : 0.4,
         working: isWorking,
-        walkPhase,
+        walkPhase: actor ? actor.walkPhase : 0,
         idleBob,
+        walking: actor ? actor.state === 'walk' : false,
+        facing: actor ? actor.facing : 's',
       });
 
       // Status emoji bubble.
@@ -677,7 +802,10 @@
       if (st && st.emoji && st.emojiUntil > now) emoji = st.emoji;
       else if (isWorking && running >= 3) emoji = '🔥';
       const badge = isWorking ? `${running} session${running > 1 ? 's' : ''}` : '';
-      drawNameTag(ctx, dt.x, dt.y + 6, h.display_name || h.name, badge, emoji);
+      // Name tag goes UNDER the chair (fixed position) so it doesn't move
+      // around with the avatar walking.
+      const tagAnchor = isoToScreen(cub.tx + 1, cub.ty + 1);
+      drawNameTag(ctx, tagAnchor.x, tagAnchor.y + 6, h.display_name || h.name, badge, emoji);
     }
 
     // Server rack — sits at the back-right of the floor bbox.
