@@ -1289,6 +1289,17 @@
 
   function setPage(name, arg) {
     const p = PAGES[name] || PAGES.dashboard;
+    // vt-0377: feature-flag deep-link race. If the operator hits
+    // /#/pixel-office (or any other feature-gated route) before
+    // loadFeatures() has resolved, the route would mount + fire its
+    // API calls before applyFeatureGates() could redirect. If the flag
+    // is known-false now, refuse the route synchronously and send the
+    // operator back to /dashboard. Unknown features (entry absent) and
+    // flag-on stay through unchanged.
+    const featureKey = NAV_FEATURE[name];
+    if (featureKey && _featureMap[featureKey] === false) {
+      if (name !== 'dashboard') return setPage('dashboard', arg);
+    }
     ALL_PANELS.forEach(id => { const el = $(id); if (el) el.hidden = true; });
     const panels = typeof p.panels === 'function' ? p.panels(arg) : p.panels;
     panels.forEach(id => { const el = $(id); if (el) el.hidden = false; });

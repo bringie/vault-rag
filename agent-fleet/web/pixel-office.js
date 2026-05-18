@@ -244,15 +244,21 @@
     };
   }
 
-  // Desk + avatar position for host at index i.
+  // Desk + avatar position for host at index i. vt-0377: when host count
+  // exceeds ~16 (4 rows × 4 cols), compress ROW_GAP_Y so everything stays
+  // inside the 540 px canvas height instead of clipping below.
   function deskPos(i) {
+    const total = Math.max(_hosts.length, 1);
+    const rows = Math.ceil(total / DESKS_PER_ROW);
+    const available = CANVAS_H - OFFICE_TOP - 24;   // 24 px footer breathing room
+    const rowGap = Math.min(ROW_GAP_Y, Math.floor(available / Math.max(rows, 1)));
     const row = Math.floor(i / DESKS_PER_ROW);
     const col = i % DESKS_PER_ROW;
     const totalWidthForRow = (DESKS_PER_ROW - 1) * COL_GAP_X + DESK_W;
     const startX = Math.floor((CANVAS_W - totalWidthForRow) / 2);
     return {
       x: startX + col * COL_GAP_X,
-      y: OFFICE_TOP + row * ROW_GAP_Y,
+      y: OFFICE_TOP + row * rowGap,
     };
   }
 
@@ -276,6 +282,29 @@
     ctx.font = '11px "JetBrains Mono", "Courier New", monospace';
     ctx.fillText('— FLEET OFFICE —', 16, 24);
     ctx.fillText('avatars per host · darker = offline · monitor lit = working', 16, 42);
+    // vt-0377: empty-state banner so an operator with 0 hosts or all-offline
+    // hosts doesn't see what looks like an "empty grid bug". This sits below
+    // the header so the avatar row (if any) still renders on top.
+    if (_hosts.length === 0) {
+      ctx.fillStyle = '#8ab4f8';
+      ctx.font = 'bold 20px "JetBrains Mono", "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('no hosts registered', CANVAS_W / 2, CANVAS_H / 2 - 12);
+      ctx.fillStyle = '#506075';
+      ctx.font = '13px "JetBrains Mono", "Courier New", monospace';
+      ctx.fillText('install agent-fleet daemon on a host to populate the office', CANVAS_W / 2, CANVAS_H / 2 + 16);
+      ctx.textAlign = 'left';
+    } else {
+      const online = _hosts.filter(h => h.status === 'online').length;
+      if (online === 0) {
+        ctx.fillStyle = '#f6a96a';
+        ctx.font = 'bold 16px "JetBrains Mono", "Courier New", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`all ${_hosts.length} host(s) offline — avatars greyed out below`,
+          CANVAS_W / 2, 80);
+        ctx.textAlign = 'left';
+      }
+    }
   }
 
   function drawDesk(ctx, x, y, working) {
@@ -516,14 +545,20 @@
     await renderRolePickerBody(host, bubble);
   }
 
+  // vt-0377: /agent-roles seldom changes mid-picker-session — cache it
+  // on the bubble itself so re-render after a checkbox toggle only refetches
+  // the two host-scoped endpoints (1/3 of the original traffic).
   async function renderRolePickerBody(host, bubble) {
     const body = bubble.querySelector('#po-roles-body');
     try {
-      const [all, assigned, effective] = await Promise.all([
-        api('/agent-roles'),
+      let all = bubble._cachedAllRoles;
+      const allPromise = all ? Promise.resolve(all) : api('/agent-roles');
+      const [allFresh, assigned, effective] = await Promise.all([
+        allPromise,
         api(`/hosts/${host.id}/roles`),
         api(`/hosts/${host.id}/roles/effective`),
       ]);
+      bubble._cachedAllRoles = all = allFresh;
       const assignedIds = new Set((assigned || []).map(r => r.id));
       const effectiveIds = new Set((effective || []).map(r => r.id));
       const groupOverrides = effective.length && assigned.length && (effective[0].id !== (assigned[0] && assigned[0].id));
