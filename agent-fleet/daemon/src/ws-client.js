@@ -721,6 +721,20 @@ async function runDaemon(opts) {
         backends: backendVersions,
         host_info: hostInfo,
       }));
+      // vt-0398: ship slash-command inventory once per WS connect.
+      // Built-ins + per-plugin commands discovered from
+      // ~/.claude/plugins/. Hub broadcasts to viewers as-is.
+      try {
+        const { buildInventory } = require('./slash-inventory');
+        const inv = buildInventory(_daemonHome);
+        ws.send(JSON.stringify({
+          type: 'slash_inventory',
+          commands: inv.commands,
+          claude_version: backendVersions.claude || null,
+        }));
+      } catch (e) {
+        console.error(`[daemon] slash-inventory build failed: ${e.message}`);
+      }
       const local = store.list();
       const recon = local.map(([id, info]) => {
         const alive = ptyMgr.sessions.has(id);

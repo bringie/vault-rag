@@ -30,6 +30,10 @@
     _emptyNode: null,
     _permCards: new Set(),
     _busy: false,
+    _slashCommands: [],
+    _slashDropdown: null,
+    _slashFiltered: [],
+    _slashIndex: 0,
   };
 
   const MAX_MOUNTED_NODES = 2000;
@@ -650,13 +654,111 @@
     sendBtn.addEventListener('click', sendCurrentText);
     stopBtn.addEventListener('click', () => sendControl('interrupt'));
     escBtn.addEventListener('click', () => sendControl('cancel'));
-    ta.addEventListener('input', autosizeComposer);
+    ta.addEventListener('input', () => { autosizeComposer(); updateSlashDropdown(); });
+    ta.addEventListener('blur', () => setTimeout(closeSlashDropdown, 120));
     ta.addEventListener('keydown', (e) => {
+      // Slash autocomplete navigation
+      if (STATE._slashDropdown) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault(); moveSlashCursor(1); return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault(); moveSlashCursor(-1); return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+          e.preventDefault(); acceptSlashCompletion(); return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault(); closeSlashDropdown(); return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         sendCurrentText();
       }
     });
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // slash autocomplete
+  // ────────────────────────────────────────────────────────────────────
+  function getSlashQueryAtCursor() {
+    const ta = STATE.composerInput;
+    if (!ta) return null;
+    const val = ta.value;
+    const pos = ta.selectionStart || 0;
+    // Look back for `/` at start of line or after whitespace.
+    let i = pos - 1;
+    while (i >= 0 && /[\w\-]/.test(val[i])) i--;
+    if (i < 0) return null;
+    if (val[i] !== '/') return null;
+    if (i > 0 && !/\s/.test(val[i - 1])) return null;
+    const query = val.slice(i + 1, pos);
+    return { start: i, end: pos, query };
+  }
+
+  function updateSlashDropdown() {
+    const q = getSlashQueryAtCursor();
+    if (!q || !STATE._slashCommands.length) { closeSlashDropdown(); return; }
+    const needle = q.query.toLowerCase();
+    const filtered = STATE._slashCommands.filter(c =>
+      c.name.toLowerCase().includes('/' + needle) || c.name.toLowerCase().slice(1).startsWith(needle)
+    ).slice(0, 8);
+    if (!filtered.length) { closeSlashDropdown(); return; }
+    STATE._slashFiltered = filtered;
+    STATE._slashIndex = 0;
+    renderSlashDropdown();
+  }
+
+  function renderSlashDropdown() {
+    closeSlashDropdown(true);
+    const drop = el('div', 'cv-slash-dropdown');
+    STATE._slashFiltered.forEach((c, i) => {
+      const item = el('div', 'cv-slash-item');
+      if (i === STATE._slashIndex) item.classList.add('cv-slash-active');
+      item.appendChild(el('span', 'cv-slash-name', c.name));
+      if (c.description) item.appendChild(el('span', 'cv-slash-desc', c.description));
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        STATE._slashIndex = i;
+        acceptSlashCompletion();
+      });
+      drop.appendChild(item);
+    });
+    if (STATE.composer) STATE.composer.appendChild(drop);
+    STATE._slashDropdown = drop;
+  }
+
+  function moveSlashCursor(delta) {
+    if (!STATE._slashFiltered.length) return;
+    STATE._slashIndex = (STATE._slashIndex + delta + STATE._slashFiltered.length)
+      % STATE._slashFiltered.length;
+    renderSlashDropdown();
+  }
+
+  function acceptSlashCompletion() {
+    const q = getSlashQueryAtCursor();
+    const cmd = STATE._slashFiltered[STATE._slashIndex];
+    if (!q || !cmd || !STATE.composerInput) { closeSlashDropdown(); return; }
+    const ta = STATE.composerInput;
+    const before = ta.value.slice(0, q.start);
+    const after = ta.value.slice(q.end);
+    ta.value = before + cmd.name + ' ' + after;
+    const caret = (before + cmd.name + ' ').length;
+    ta.setSelectionRange(caret, caret);
+    closeSlashDropdown();
+    autosizeComposer();
+  }
+
+  function closeSlashDropdown(silent) {
+    if (STATE._slashDropdown && STATE._slashDropdown.parentNode) {
+      STATE._slashDropdown.parentNode.removeChild(STATE._slashDropdown);
+    }
+    STATE._slashDropdown = null;
+    if (!silent) {
+      STATE._slashFiltered = [];
+      STATE._slashIndex = 0;
+    }
   }
 
   function attach(sessionId, ws, opts = {}) {
@@ -712,6 +814,11 @@
       setBusy(!!frame.busy);
       if (frame.busy && !STATE._thinkingNode) showThinkingIndicator();
       else if (!frame.busy) clearThinkingIndicator();
+    }
+    else if (frame.type === 'slash_inventory') {
+      if (Array.isArray(frame.commands)) {
+        STATE._slashCommands = frame.commands.slice();
+      }
     }
     else if (frame.type === 'session_lifecycle') {
       appendNode(renderLifecycle(frame.state, frame));

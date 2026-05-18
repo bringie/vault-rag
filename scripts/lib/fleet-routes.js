@@ -295,6 +295,16 @@ function makeBus() {
       ws.on('close', () => { if (daemonsByHost.get(hostId) === ws) daemonsByHost.delete(hostId); });
     },
     getDaemon(hostId) { return daemonsByHost.get(hostId); },
+    // vt-0398: per-host cache of latest slash_inventory frame. Daemon
+    // emits once on (re)connect; we stash by host_id + push to every
+    // viewer currently attached to any session on that host.
+    _slashByHost: new Map(),
+    cacheSlashInventory(hostId, frame) {
+      this._slashByHost.set(hostId, frame);
+    },
+    getSlashInventory(hostId) {
+      return this._slashByHost.get(hostId) || null;
+    },
     // vt-0392 v6: per-viewer routing for replay_batch. Viewer's
     // replay_request includes request_id; hub maps id→viewer ws here.
     // Daemon echoes the id on its replay_batch; hub looks up and sends
@@ -984,6 +994,19 @@ async function handleDaemonWs(ws, params, ctx) {
         log.info('replay_completed', { session_id: f.session_id, since_seq: f.since_seq, count: f.count });
         return;
       }
+      if (f.type === 'slash_inventory') {
+        // vt-0398: cache by host, push to viewers of any session on this host.
+        if (host && host.id) {
+          ctx.bus.cacheSlashInventory(host.id, f);
+          // Best-effort broadcast — iterate all known sessions of this host.
+          try {
+            const r = await ctx.db.query(
+              `SELECT id FROM fleet_sessions WHERE host_id = $1 AND status = 'running'`, [host.id]);
+            for (const row of r.rows) ctx.bus.broadcastViewers(row.id, f);
+          } catch {}
+        }
+        return;
+      }
       // vt-chat-1b: structured frames from daemon's jsonl-tailer.
       // Hub does not persist (jsonl on daemon host is authoritative);
       // we just fan out to attached viewers. SPA chat-view subscribes
@@ -1137,6 +1160,13 @@ async function handleViewerWs(ws, params, ctx) {
   // over HTTP. Backfill was only there to feed the now-removed live
   // xterm. Saves up to ~64 KB on every viewer attach.
   ctx.bus.addViewer(s.id, ws);
+  // vt-0398: send cached slash_inventory for this host (if any) so the
+  // composer autocomplete is populated immediately, not after a
+  // daemon-WS reconnect.
+  try {
+    const inv = ctx.bus.getSlashInventory(s.host_id);
+    if (inv) ws.send(JSON.stringify(inv));
+  } catch {}
 
   // Race recovery: session may have transitioned during our async setup above.
   // Re-fetch status; if terminal, replay any missed transcript + session_exit so the

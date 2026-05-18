@@ -581,3 +581,38 @@
   color: var(--cv-phos, #5cf08c);
 }
 .viewer-raw-toggle .icon { font-size: 11px; }
+
+/* vt-0398: slash-command autocomplete */
+.cv-slash-dropdown {
+  position: absolute;
+  bottom: calc(100% + 4px); left: 12px; right: 12px;
+  max-height: 220px; overflow-y: auto;
+  background: var(--cv-bg-soft);
+  border: 1px solid var(--cv-phos);
+  box-shadow: 0 0 24px -8px var(--cv-phos-glow);
+  z-index: 50;
+  font: 11px/1 var(--cv-mono);
+}
+.cv-composer { position: relative; }
+.cv-slash-item {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--cv-fg);
+  border-bottom: 1px solid var(--cv-line);
+}
+.cv-slash-item:last-child { border-bottom: 0; }
+.cv-slash-item:hover, .cv-slash-active {
+  background: color-mix(in srgb, var(--cv-phos) 12%, transparent);
+  color: var(--cv-phos);
+}
+.cv-slash-name {
+  font-weight: 600; color: var(--cv-phos);
+  text-shadow: 0 0 6px var(--cv-phos-glow);
+  min-width: 12ch;
+}
+.cv-slash-active .cv-slash-name { color: var(--cv-bg); text-shadow: none; background: var(--cv-phos); padding: 0 4px; }
+.cv-slash-desc {
+  color: var(--cv-fg-dim); font-size: 10px;
+  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
