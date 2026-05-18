@@ -274,6 +274,18 @@
     if (typeof frame.seq === 'number' && frame.seq > STATE.lastOffset) {
       STATE.lastOffset = frame.seq;
     }
+    // Replace optimistic pending bubble when the real user turn lands.
+    const ex = frame.extracted;
+    if (ex && ex.role === 'user' && STATE._pendingUserNode
+        && ex.text_in && STATE._pendingUserText
+        && (ex.text_in.trim() === STATE._pendingUserText.trim()
+            || ex.text_in.includes(STATE._pendingUserText.trim()))) {
+      clearOptimisticUser();
+    }
+    // Clear thinking indicator when assistant turn arrives.
+    if (ex && ex.role === 'assistant') {
+      clearThinkingIndicator();
+    }
     const node = renderFrame(frame);
     if (node) {
       clearEmpty();
@@ -381,7 +393,68 @@
         type: 'send_text', session_id: STATE.sessionId, text,
       }));
       STATE.composerInput.value = '';
+      // Optimistic user bubble — jsonl confirmation may arrive seconds
+      // later (claude has to finish a turn before flushing). Mark the
+      // bubble pending so the confirmed claude_msg can replace it.
+      showOptimisticUser(text);
+      showThinkingIndicator();
     } catch (e) { console.warn('chatView.send_text failed', e); }
+  }
+
+  function showOptimisticUser(text) {
+    if (!STATE.list) return;
+    clearEmpty();
+    const root = el('div', 'chat-msg chat-msg-user chat-msg-pending');
+    const head = el('div', 'chat-msg-head');
+    head.appendChild(el('span', 'chat-msg-role', 'you'));
+    head.appendChild(el('span', 'chat-msg-pending-tag', 'sending…'));
+    root.appendChild(head);
+    const body = el('div', 'chat-text');
+    body.innerHTML = renderMarkdown(text);
+    root.appendChild(body);
+    STATE._pendingUserNode = root;
+    STATE._pendingUserText = text;
+    STATE.list.appendChild(root);
+    scrollToBottom();
+  }
+
+  function clearOptimisticUser() {
+    if (STATE._pendingUserNode && STATE._pendingUserNode.parentNode === STATE.list) {
+      STATE.list.removeChild(STATE._pendingUserNode);
+    }
+    STATE._pendingUserNode = null;
+    STATE._pendingUserText = null;
+  }
+
+  function showThinkingIndicator() {
+    if (!STATE.list) return;
+    if (STATE._thinkingNode) return;  // already shown
+    const root = el('div', 'chat-thinking-indicator');
+    const dots = el('span', 'chat-thinking-dots');
+    dots.innerHTML = '<span></span><span></span><span></span>';
+    root.appendChild(el('span', null, 'claude is working'));
+    root.appendChild(dots);
+    const tStart = Date.now();
+    const timer = el('span', 'chat-thinking-timer', '0s');
+    root.appendChild(timer);
+    STATE._thinkingNode = root;
+    STATE._thinkingTimerId = setInterval(() => {
+      const sec = Math.floor((Date.now() - tStart) / 1000);
+      timer.textContent = sec >= 60 ? `${Math.floor(sec/60)}m ${sec%60}s` : `${sec}s`;
+    }, 1000);
+    STATE.list.appendChild(root);
+    scrollToBottom();
+  }
+
+  function clearThinkingIndicator() {
+    if (STATE._thinkingTimerId) {
+      clearInterval(STATE._thinkingTimerId);
+      STATE._thinkingTimerId = null;
+    }
+    if (STATE._thinkingNode && STATE._thinkingNode.parentNode === STATE.list) {
+      STATE.list.removeChild(STATE._thinkingNode);
+    }
+    STATE._thinkingNode = null;
   }
 
   function sendControl(action) {
@@ -448,6 +521,8 @@
     STATE.replayDone = false;
     STATE.seenUuids.clear();
     STATE.nodeBySeq.clear();
+    clearOptimisticUser();
+    clearThinkingIndicator();
     if (STATE.list) STATE.list.innerHTML = '';
     setStatus('idle', '');
     setComposerEnabled(false);

@@ -616,20 +616,21 @@ async function runDaemon(opts) {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
           } else if (f.type === 'send_text') {
             // vt-0392 Phase 2: chat-view composer → PTY stdin.
-            // Single-line text: send as-is + \n (Ink line editor reads
-            // each char, then submits on \n). Multi-line text: wrap
-            // in bracketed-paste markers (ESC[200~ ... ESC[201~) so Ink
-            // treats embedded \n as paste rather than submit; trailing
-            // \n outside the markers is the actual submit.
+            // Submit key on terminals is \r (CR), NOT \n (LF). Ink's raw-
+            // mode reader maps \r to Enter; \n alone is a literal newline
+            // and stays in the buffer without submitting. Bracketed-paste
+            // is used for multi-line content so embedded newlines are
+            // treated as paste rather than Enter; final \r outside the
+            // markers triggers the actual submit.
             if (typeof f.text !== 'string') {
               console.warn(`[daemon] send_text ${f.session_id}: text must be string`);
             } else if (f.text.length > 65536) {
               console.warn(`[daemon] send_text ${f.session_id} dropped: ${f.text.length} bytes > 65536`);
             } else {
-              const txt = f.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+              const txt = f.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/, '');
               const payload = txt.includes('\n')
-                ? `\x1b[200~${txt.replace(/\n$/, '')}\x1b[201~\n`
-                : `${txt}\n`;
+                ? `\x1b[200~${txt}\x1b[201~\r`
+                : `${txt}\r`;
               ptyMgr.writeInput(f.session_id, payload);
             }
           } else if (f.type === 'control') {

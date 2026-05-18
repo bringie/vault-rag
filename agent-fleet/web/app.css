@@ -1380,3 +1380,32 @@ dialog#wf-tpl-picker::backdrop { background:rgba(0,0,0,.7); }
 .chat-btn-stop { color: var(--danger, #ff4d5e); border-color: var(--danger, #ff4d5e); }
 .chat-btn-stop:hover:not(:disabled) { background: var(--danger, #ff4d5e); color: var(--bg, #0a0a0c); }
 .chat-btn-cancel { color: var(--warn, #ffb547); border-color: var(--warn, #ffb547); }
+
+/* vt-0392 Phase 2 v2: optimistic bubble + thinking indicator */
+.chat-msg-pending { opacity: 0.7; border-left-style: dashed; }
+.chat-msg-pending-tag {
+  color: var(--text-faint, #666); font-size: 9px;
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.chat-thinking-indicator {
+  display: flex; gap: 8px; align-items: center;
+  padding: 8px 12px; color: var(--text-dim, #888);
+  font: 11px/1.4 "JetBrains Mono", monospace;
+  font-style: italic;
+}
+.chat-thinking-dots { display: inline-flex; gap: 3px; }
+.chat-thinking-dots span {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent, #6cf);
+  animation: chat-think-pulse 1.3s infinite ease-in-out;
+}
+.chat-thinking-dots span:nth-child(2) { animation-delay: 0.18s; }
+.chat-thinking-dots span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes chat-think-pulse {
+  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+  30%           { opacity: 1;   transform: scale(1.2); }
+}
+.chat-thinking-timer {
+  margin-left: auto; color: var(--text-faint, #555);
+  font-size: 10px;
+}
