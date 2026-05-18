@@ -68,6 +68,12 @@
   let _visHandler = null;
   // Cached layout (recomputed on resize / host-count change).
   let _layout = null;
+  // vt-0382 Phase d: pre-baked background (floor + walls + kitchen +
+  // whiteboard frame). Re-baked when layout or canvas size changes; blitted
+  // as a single drawImage() per frame. Big perf win for 50 hosts.
+  let _bgCanvas = null;
+  let _bgCtx = null;
+  let _bgValidForLayoutKey = null;
   const NOW = () => performance.now();
 
   // -------------------------------------------------------------------------
@@ -666,6 +672,176 @@
     rect(ctx, cx - 1, cy - 11, 2, 2, leafH);
   }
 
+  // vt-0382 Phase d — walls + kitchen + whiteboard.
+
+  // Iso wall along the NORTH side (tiles ty = topRow, varying tx).
+  // Drawn as a vertical strip following the iso diamond's top edge.
+  function drawNorthWall(ctx, fromTx, toTx, ty) {
+    const wallH = 32;          // wall sprite height in screen px
+    for (let tx = fromTx; tx < toTx; tx++) {
+      const { x, y } = isoToScreen(tx, ty);
+      // The wall panel sits ON the line of tile-top diamond.
+      // Top face (sloping iso surface).
+      ctx.fillStyle = '#3a4258';
+      ctx.beginPath();
+      ctx.moveTo(x,            y - wallH);
+      ctx.lineTo(x + TILE_W/2, y - wallH + TILE_H/2);
+      ctx.lineTo(x + TILE_W/2, y + TILE_H/2);
+      ctx.lineTo(x,            y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#0e1018'; ctx.lineWidth = 1; ctx.stroke();
+      // Highlight along the top edge (light from above).
+      rect(ctx, (x | 0) + 1, (y - wallH) | 0, Math.floor(TILE_W/2) - 1, 1, '#525c78');
+    }
+  }
+
+  // West wall (tiles tx = leftCol, varying ty).
+  function drawWestWall(ctx, fromTy, toTy, tx) {
+    const wallH = 32;
+    for (let ty = fromTy; ty < toTy; ty++) {
+      const { x, y } = isoToScreen(tx, ty);
+      ctx.fillStyle = '#2f3548';
+      ctx.beginPath();
+      ctx.moveTo(x,            y - wallH);
+      ctx.lineTo(x - TILE_W/2, y - wallH + TILE_H/2);
+      ctx.lineTo(x - TILE_W/2, y + TILE_H/2);
+      ctx.lineTo(x,            y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#0e1018'; ctx.lineWidth = 1; ctx.stroke();
+      rect(ctx, (x - TILE_W/2) | 0, (y - wallH) | 0, 1, wallH, '#1a1f2c');
+    }
+  }
+
+  // Whiteboard mounted on the north wall, somewhere mid-span.
+  function drawWhiteboard(ctx, tx, ty) {
+    const { x, y } = isoToScreen(tx, ty);
+    const cx = x | 0, cy = (y - 22) | 0;
+    // Frame.
+    rect(ctx, cx - 16, cy - 8, 32, 14, '#3a2a14');
+    rect(ctx, cx - 15, cy - 7, 30, 12, '#d9e2ec');
+    // Two text lines (static — animated content drawn separately on top).
+    rect(ctx, cx - 13, cy - 4, 22, 1, '#4f6b8a');
+    rect(ctx, cx - 13, cy - 1, 18, 1, '#5a7aa0');
+    rect(ctx, cx - 13, cy + 2, 12, 1, '#5a7aa0');
+    // Marker tray.
+    rect(ctx, cx - 14, cy + 6, 28, 1, '#5a3a1d');
+    rect(ctx, cx - 8, cy + 6, 4, 1, '#e74c3c');
+    rect(ctx, cx - 2, cy + 6, 4, 1, '#2980b9');
+  }
+
+  // Kitchen counter (2×2 tiles) + fridge in the far corner.
+  function drawKitchen(ctx, tx, ty) {
+    // Counter spans (tx..tx+1, ty..ty+1) — draw 4 floor tiles with a
+    // wood-top stripe overlaid.
+    for (let dx = 0; dx < 2; dx++) {
+      for (let dy = 0; dy < 2; dy++) {
+        const { x, y } = isoToScreen(tx + dx, ty + dy);
+        // Counter top (lighter than floor).
+        ctx.fillStyle = '#a08660';
+        ctx.beginPath();
+        ctx.moveTo(x,            y - 4);
+        ctx.lineTo(x + TILE_W/2, y - 4 + TILE_H/2);
+        ctx.lineTo(x,            y - 4 + TILE_H);
+        ctx.lineTo(x - TILE_W/2, y - 4 + TILE_H/2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#5a3a1d'; ctx.lineWidth = 1; ctx.stroke();
+        // Front face slab.
+        ctx.fillStyle = '#7a5530';
+        ctx.beginPath();
+        ctx.moveTo(x + TILE_W/2, y - 4 + TILE_H/2);
+        ctx.lineTo(x + TILE_W/2, y + TILE_H/2);
+        ctx.lineTo(x,            y + TILE_H);
+        ctx.lineTo(x,            y - 4 + TILE_H);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    // Coffee machine on (tx, ty).
+    const cm = isoToScreen(tx, ty);
+    rect(ctx, (cm.x | 0) - 5, (cm.y | 0) - 10, 10, 12, '#1a1f2c');
+    rect(ctx, (cm.x | 0) - 4, (cm.y | 0) - 9, 8, 4, '#3a2410');
+    rect(ctx, (cm.x | 0) - 3, (cm.y | 0) - 3, 6, 4, '#5a3a1d');
+    rect(ctx, (cm.x | 0) - 1, (cm.y | 0) - 4, 2, 1, '#3affb0');  // status LED
+    // Fridge on (tx+1, ty).
+    const fr = isoToScreen(tx + 1, ty);
+    rect(ctx, (fr.x | 0) - 6, (fr.y | 0) - 22, 12, 22, '#c8d4e2');
+    rect(ctx, (fr.x | 0) - 5, (fr.y | 0) - 21, 10, 9, '#dde6f0');
+    rect(ctx, (fr.x | 0) - 5, (fr.y | 0) - 11, 10, 10, '#c8d4e2');
+    rect(ctx, (fr.x | 0) + 3, (fr.y | 0) - 17, 1, 2, '#5a6c80');
+    rect(ctx, (fr.x | 0) + 3, (fr.y | 0) - 5,  1, 2, '#5a6c80');
+  }
+
+  // Bake the static background to an offscreen canvas. Re-runs only when
+  // layout changes (host count, canvas resize, theme). Saves ~200 fillRect
+  // calls per frame across all the floor/wall/kitchen tiles.
+  function bakeBackground() {
+    if (!_w || !_h) return;
+    const key = `${_w}x${_h}|${_hosts.length}|${_isoOx},${_isoOy}`;
+    if (_bgValidForLayoutKey === key && _bgCanvas) return;
+    if (!_bgCanvas) _bgCanvas = document.createElement('canvas');
+    _bgCanvas.width  = Math.floor(_w * _dpr);
+    _bgCanvas.height = Math.floor(_h * _dpr);
+    _bgCtx = _bgCanvas.getContext('2d');
+    _bgCtx.imageSmoothingEnabled = false;
+    _bgCtx.setTransform(_dpr, 0, 0, _dpr, 0, 0);
+    // Floor wash.
+    _bgCtx.fillStyle = '#1a1f2c';
+    _bgCtx.fillRect(0, 0, _w, _h);
+    if (!_hosts.length) {
+      _bgValidForLayoutKey = key;
+      return;  // nothing else to bake — empty-state painted live.
+    }
+    if (!_layout) _layout = computeLayout();
+    const { floorMinTx, floorMinTy, floorMaxTx, floorMaxTy } = _layout;
+    // Pad floor by extra row/col so walls have something to anchor on.
+    const minTx = floorMinTx - 1, minTy = floorMinTy - 1;
+    const maxTx = floorMaxTx + 1, maxTy = floorMaxTy + 1;
+    // Floor tiles.
+    for (let tx = minTx; tx < maxTx; tx++) {
+      for (let ty = minTy; ty < maxTy; ty++) {
+        const fill = ((tx + ty) & 1) ? '#252b3a' : '#2a3144';
+        drawFloorTile(_bgCtx, tx, ty, fill);
+      }
+    }
+    // North wall along (ty = minTy, tx = minTx..maxTx).
+    drawNorthWall(_bgCtx, minTx, maxTx, minTy);
+    // West wall along (tx = minTx, ty = minTy..maxTy).
+    drawWestWall(_bgCtx, minTy, maxTy, minTx);
+    // Whiteboard mounted on north wall around horizontal center.
+    const wbTx = Math.floor((minTx + maxTx) / 2);
+    drawWhiteboard(_bgCtx, wbTx, minTy);
+    // Kitchen in far-right corner past the last cubicle.
+    drawKitchen(_bgCtx, maxTx, minTy);
+    _bgValidForLayoutKey = key;
+  }
+  function invalidateBg() { _bgValidForLayoutKey = null; }
+
+  // Whiteboard live text — rotates "STATS" snippets every 4 seconds. Drawn
+  // on top of the baked whiteboard frame so the office feels alive.
+  function drawWhiteboardLive(ctx, tx, ty, t) {
+    const { x, y } = isoToScreen(tx, ty);
+    const cx = x | 0, cy = (y - 22) | 0;
+    const online = _hosts.filter(h => h.status === 'online').length;
+    const working = _hosts.filter(h => (_runningById[h.id] || 0) > 0).length;
+    const total = _hosts.length;
+    const totalSessions = Object.values(_runningById).reduce((s, n) => s + n, 0);
+    const lines = [
+      `HOSTS  ${total}`,
+      `ONLINE ${online}/${total}`,
+      `WORK   ${working}`,
+      `SESS   ${totalSessions}`,
+    ];
+    const i = Math.floor(t / 3000) % lines.length;
+    ctx.fillStyle = '#1a1f2c';
+    ctx.font = 'bold 7px "JetBrains Mono", "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(lines[i], cx, cy + 2);
+    ctx.textAlign = 'left';
+  }
+
   // Server rack — the "fleet" totem. Sits at the back of the office.
   // Blinking LEDs animate from rAF time so we never recompute geometry.
   function drawServerRack(ctx, tx, ty, t) {
@@ -735,11 +911,9 @@
     const ctx = _ctx;
     const now = NOW();
 
-    // Floor wash.
-    ctx.fillStyle = '#1a1f2c';
-    ctx.fillRect(0, 0, _w, _h);
-
     if (!_hosts.length) {
+      ctx.fillStyle = '#1a1f2c';
+      ctx.fillRect(0, 0, _w, _h);
       drawHeaderBand(ctx);
       drawEmptyState(ctx);
       return;
@@ -747,15 +921,20 @@
 
     if (!_layout) _layout = computeLayout();
 
-    // Draw floor for the cubicle bounding box. Tight bounds = cubicles
-    // sit on a rug-sized floor, not a huge meaningless diamond.
-    const { floorMinTx, floorMinTy, floorMaxTx, floorMaxTy } = _layout;
-    for (let tx = floorMinTx; tx < floorMaxTx; tx++) {
-      for (let ty = floorMinTy; ty < floorMaxTy; ty++) {
-        const fill = ((tx + ty) & 1) ? '#252b3a' : '#2a3144';
-        drawFloorTile(ctx, tx, ty, fill);
-      }
+    // vt-0382: blit pre-baked background (floor + walls + kitchen +
+    // whiteboard frame). Re-bake happens only on layout change so the
+    // per-frame cost is one drawImage.
+    bakeBackground();
+    if (_bgCanvas) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(_bgCanvas, 0, 0);
+      ctx.restore();
     }
+
+    // Animated whiteboard content — drawn live over the baked frame.
+    const wbTx = Math.floor((_layout.floorMinTx - 1 + _layout.floorMaxTx + 1) / 2);
+    drawWhiteboardLive(ctx, wbTx, _layout.floorMinTy - 1, now);
 
     // Build a draw list of (host index, screen-y) for y-sort so avatars in
     // back rows draw behind desks in front rows. Use actor's CURRENT
