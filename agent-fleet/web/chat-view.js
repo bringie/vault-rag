@@ -489,6 +489,56 @@
     scrollToBottom();
   }
 
+  function renderPermissionCard(frame) {
+    if (!STATE.list) return;
+    // Replace any existing card for the same request_id.
+    clearPermissionCard(frame.request_id);
+    const root = el('div', 'chat-permission-card');
+    root.dataset.requestId = frame.request_id || '';
+    const head = el('div', 'chat-permission-head', '⚠ approval needed');
+    root.appendChild(head);
+    if (frame.context) {
+      const ctx = el('pre', 'chat-permission-context');
+      ctx.textContent = frame.context;
+      root.appendChild(ctx);
+    }
+    const actions = el('div', 'chat-permission-actions');
+    const options = frame.options && frame.options.length ? frame.options : ['Yes', 'No'];
+    options.forEach((label, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'chat-btn chat-permission-btn';
+      if (i === 0) btn.classList.add('chat-permission-yes');
+      if (i === options.length - 1) btn.classList.add('chat-permission-deny');
+      btn.type = 'button';
+      btn.textContent = `${i + 1}. ${label}`;
+      btn.addEventListener('click', () => sendPermissionChoice(i + 1));
+      actions.appendChild(btn);
+    });
+    root.appendChild(actions);
+    if (!STATE._permCards) STATE._permCards = new Set();
+    STATE._permCards.add(root);
+    appendNode(root);
+  }
+
+  function clearPermissionCard(requestId) {
+    if (!STATE._permCards) return;
+    for (const node of Array.from(STATE._permCards)) {
+      if (!requestId || node.dataset.requestId === requestId) {
+        if (node.parentNode === STATE.list) STATE.list.removeChild(node);
+        STATE._permCards.delete(node);
+      }
+    }
+  }
+
+  function sendPermissionChoice(digit) {
+    if (!STATE.ws || STATE.ws.readyState !== 1) return;
+    try {
+      STATE.ws.send(JSON.stringify({
+        type: 'send_text', session_id: STATE.sessionId, text: String(digit),
+      }));
+    } catch (e) { console.warn('chatView.permission send failed', e); }
+  }
+
   function clearThinkingIndicator() {
     if (STATE._thinkingTimerId) {
       clearInterval(STATE._thinkingTimerId);
@@ -565,6 +615,7 @@
     STATE.nodeBySeq.clear();
     clearOptimisticUser();
     clearThinkingIndicator();
+    clearPermissionCard();
     if (STATE.list) STATE.list.innerHTML = '';
     setStatus('idle', '');
     setComposerEnabled(false);
@@ -579,6 +630,10 @@
       ingestClaudeMsg(frame);
     } else if (frame.type === 'replay_batch') {
       ingestReplayBatch(frame);
+    } else if (frame.type === 'permission_request') {
+      renderPermissionCard(frame);
+    } else if (frame.type === 'permission_resolved') {
+      clearPermissionCard(frame.request_id);
     } else if (frame.type === 'session_lifecycle') {
       appendNode(renderLifecycle(frame.state, frame));
       if (frame.state === 'exit' || frame.state === 'crash') {

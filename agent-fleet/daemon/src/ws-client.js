@@ -459,6 +459,69 @@ async function runDaemon(opts) {
   // Each entry: { ready: bool, queue: [text], timer: NodeJS.Timeout }.
   const _inkReady = new Map();
 
+  // vt-0392 v5: permission-prompt detector. Claude's interactive TUI
+  // renders a "Do you want to proceed?" dialog ONLY in PTY output —
+  // not in jsonl — so chat-view has no way to surface approve/deny
+  // without scanning PTY bytes. Pattern is distinctive enough to be
+  // safe from false positives in normal assistant text.
+  // PTY data arrives in chunks; we keep a small per-session tail buffer
+  // so the marker isn't split across two writes.
+  const _permState = new Map();
+  // Marker: claude's footer line on the permission dialog.
+  const PERM_FOOTER_RE = /Esc to cancel/i;
+  const PERM_TITLE_RE = /Do you want to proceed\??/i;
+  const PERM_ASK_AGAIN_RE = /don'?t ask again/i;
+
+  function _stripAnsi(s) {
+    // Lightweight strip — for marker detection only, NOT for display.
+    return s.replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '');
+  }
+
+  function _scanPermissionPrompt(sessionId, chunkStr) {
+    let st = _permState.get(sessionId);
+    if (!st) {
+      st = { tail: '', active: false, lastReqId: null };
+      _permState.set(sessionId, st);
+    }
+    // Keep ~4 KB tail so the dialog (~500 bytes) is always wholly visible.
+    st.tail = (st.tail + chunkStr).slice(-4096);
+    const stripped = _stripAnsi(st.tail);
+    const hasTitle = PERM_TITLE_RE.test(stripped);
+    const hasFooter = PERM_FOOTER_RE.test(stripped);
+    const active = hasTitle && hasFooter;
+    if (active && !st.active) {
+      st.active = true;
+      st.lastReqId = `pp-${sessionId}-${Date.now()}`;
+      const askAgain = PERM_ASK_AGAIN_RE.test(stripped);
+      // Try to pull the tool/action context out of the buffer — the
+      // dialog title line usually has the tool name a few lines up.
+      const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
+      const titleIdx = lines.findIndex(l => /Do you want to proceed/i.test(l));
+      const contextLines = lines.slice(Math.max(0, titleIdx - 6), titleIdx);
+      safeSend(ws, {
+        type: 'permission_request',
+        session_id: sessionId,
+        request_id: st.lastReqId,
+        context: contextLines.join('\n').slice(-600),
+        options: askAgain
+          ? ['Yes', 'Yes, don\'t ask again', 'No']
+          : ['Yes', 'No'],
+      });
+    } else if (!active && st.active) {
+      // Dialog disappeared (user responded somehow, or claude moved on).
+      st.active = false;
+      const reqId = st.lastReqId;
+      st.lastReqId = null;
+      if (reqId) {
+        safeSend(ws, {
+          type: 'permission_resolved',
+          session_id: sessionId,
+          request_id: reqId,
+        });
+      }
+    }
+  }
+
   function _queueOrSubmit(sessionId, text) {
     const state = _inkReady.get(sessionId);
     if (state && !state.ready) {
@@ -548,6 +611,8 @@ async function runDaemon(opts) {
         && data.includes(INK_READY_SIGNAL)) {
       _drainInkQueue(sessionId, 'ink-bracketed-paste-on');
     }
+    // vt-0392 v5: scan output for permission-prompt dialog → frame.
+    try { _scanPermissionPrompt(sessionId, data.toString('utf8')); } catch {}
   });
   ptyMgr.on('exit', ({ sessionId, exitCode, signal }) => {
     safeSend(ws, { type: 'session_exit', session_id: sessionId, exit_code: exitCode, signal: signal || undefined });
@@ -558,6 +623,7 @@ async function runDaemon(opts) {
     const state = _inkReady.get(sessionId);
     if (state?.timer) clearTimeout(state.timer);
     _inkReady.delete(sessionId);
+    _permState.delete(sessionId);
   });
 
   // vt-0384: tokmon-watcher removed — duplicated tokmon-shipper.timer

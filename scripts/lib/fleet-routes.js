@@ -963,7 +963,8 @@ async function handleDaemonWs(ws, params, ctx) {
       // legitimate jsonl line sizes (real samples top out ~200 KB for
       // big tool_result.content) and well under the WS maxPayload.
       if (f.type === 'claude_msg' || f.type === 'compact_boundary'
-          || f.type === 'session_lifecycle' || f.type === 'replay_batch') {
+          || f.type === 'session_lifecycle' || f.type === 'replay_batch'
+          || f.type === 'permission_request' || f.type === 'permission_resolved') {
         if (!f.session_id) return;
         try {
           const serialised = JSON.stringify(f);

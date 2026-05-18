@@ -60,7 +60,8 @@ function parseJsonlLine(text, byteOffset) {
         });
       }
       else if (block.type === 'thinking') {
-        extracted.thinking_blocks.push({ text: block.thinking || block.text || '' });
+        const t = (block.thinking || block.text || '').trim();
+        if (t) extracted.thinking_blocks.push({ text: t });
       }
     }
     extracted.usage = msg.usage || null;

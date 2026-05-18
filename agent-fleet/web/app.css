@@ -1439,3 +1439,32 @@ details.chat-msg-meta[open] summary { color: var(--accent, #6cf); }
   font: 10px/1.4 "JetBrains Mono", monospace;
   text-transform: lowercase; letter-spacing: 0.05em;
 }
+
+/* vt-0392 v5: permission-prompt card */
+.chat-permission-card {
+  border: 1px solid var(--warn, #ffb547);
+  background: color-mix(in srgb, var(--warn, #ffb547) 8%, var(--bg, #0a0a0c));
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.chat-permission-head {
+  font: 11px/1.2 "JetBrains Mono", monospace;
+  color: var(--warn, #ffb547);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.chat-permission-context {
+  margin: 0; padding: 8px 10px; background: #000;
+  font: 11px/1.45 "JetBrains Mono", monospace;
+  color: var(--text, #ccc);
+  white-space: pre-wrap; word-wrap: break-word;
+  max-height: 200px; overflow: auto;
+  border-left: 2px solid var(--warn, #ffb547);
+}
+.chat-permission-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.chat-permission-btn { font-size: 11px; }
+.chat-permission-yes { color: var(--ok, #5cf08c); border-color: var(--ok, #5cf08c); }
+.chat-permission-yes:hover:not(:disabled) { background: var(--ok, #5cf08c); color: var(--bg, #0a0a0c); }
+.chat-permission-deny { color: var(--danger, #ff4d5e); border-color: var(--danger, #ff4d5e); }
+.chat-permission-deny:hover:not(:disabled) { background: var(--danger, #ff4d5e); color: var(--bg, #0a0a0c); }
