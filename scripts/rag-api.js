@@ -17,15 +17,16 @@ const fleetRoutes = require('./lib/fleet-routes');
 const fleetDb = require('./lib/fleet-db');
 const { SecretsHandler, NotFound, ConflictRetriesExhausted } = require('./secrets-handler.js');
 const { SecretsClient } = require('./lib/secrets-client.js');
-const tokmonRoutes = require('./lib/tokmon-routes');
-const { tokenEqual: sharedTokenEqual } = require('./lib/shared-auth');
 // vt-0210/vt-0243: structured logger + request-id correlation. Set
 // VAULT_RAG_LOG_FORMAT=json on prod to get parseable lines for log
 // aggregators; default 'text' keeps `docker logs` human-readable.
 const log = require('./lib/log').for('rag-api');
 const { requestId } = require('./lib/log');
-
-const TOKMON_INGEST_TOKEN = process.env.VAULT_RAG_TOKMON_INGEST_TOKEN || null;
+// vt-0388: tokmon ingest at :5679 retired — daemon watcher gone since
+// vt-0384, the only path to /tokmon/ingest is now the standalone
+// :5681 container (scripts/tokmon-ingest.js). The endpoint + helper
+// imports (tokmonRoutes, sharedTokenEqual, TOKMON_INGEST_TOKEN) were
+// stripped from this file with that retirement.
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -820,32 +821,6 @@ async function handleNotesDiff(req, res) {
   });
 }
 
-// vt-0140: ingest path moved from the standalone tokmon-ingest container.
-// Auth is the separate VAULT_RAG_TOKMON_INGEST_TOKEN — shippers don't hold
-// the viewer or admin bearer.
-async function handleTokmonIngest(req, res) {
-  const auth = req.headers['x-tokmon-token']
-    || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (!TOKMON_INGEST_TOKEN || !sharedTokenEqual(auth, TOKMON_INGEST_TOKEN)) {
-    return send(res, 401, { error: 'unauthorized' });
-  }
-  if (!fleetCtx.tokmonDb) {
-    return send(res, 503, { error: 'tokmon db not configured' });
-  }
-  const body = await readBody(req);
-  if (!body || !Array.isArray(body.events)) {
-    return send(res, 422, { error: 'events[] required' });
-  }
-  if (body.events.length > 5000) {
-    return send(res, 413, { error: 'batch too large (max 5000)' });
-  }
-  const filtered = body.events.filter(e => tokmonRoutes.isPlausibleTs(e.ts));
-  const dropped = body.events.length - filtered.length;
-  const result = await tokmonRoutes.ingestBulk(fleetCtx.tokmonDb, filtered);
-  if (dropped) result.dropped_implausible_ts = dropped;
-  send(res, 200, { ok: true, ...result });
-}
-
 async function handleSecretGet(body, req) {
   if (!body.name) throw new Error('name required');
   try {
@@ -1209,7 +1184,7 @@ function routeTemplate(path) {
   // Known top-level prefixes for the hub API.
   const TOP = new Set([
     'healthz', 'readyz', 'metrics', 'search', 'get', 'put', 'backlinks',
-    'secrets', 'task', 'notes', 'fleet', 'audit', 'workflows', 'tokmon', 'mcp',
+    'secrets', 'task', 'notes', 'fleet', 'audit', 'workflows', 'mcp',
   ]);
   if (!TOP.has(parts[0])) return '/:other';
   return '/' + parts.map(p => {
@@ -1428,17 +1403,9 @@ const server = http.createServer(async (req, res) => {
   }
   // fleet routes (HTTP) — own dispatch handles auth + methods
   if (fleetRoutes.tryDispatch(req, res, fleetCtx)) return;
-  // vt-0140: tokmon shipper ingest — uses its OWN token (X-Tokmon-Token header
-  // or Bearer fallback), separate from the API/admin bearer. Lives before the
-  // generic POST-only filter so shippers can hit it without holding the
-  // viewer/admin bearer.
-  if (req.method === 'POST' && req.url === '/tokmon/ingest'
-      && process.env.VAULT_RAG_TOKMON_INGEST_ENABLED !== '0') {
-    return handleTokmonIngest(req, res).catch(e => {
-      log.error('tokmon_ingest_error', { msg: e.stack || e.message });
-      send(res, e.statusCode || 500, { error: scrubError(e.message) });
-    });
-  }
+  // vt-0388: /tokmon/ingest at :5679 retired — shippers now post to the
+  // standalone :5681 vault-rag-tokmon-ingest container (docker-compose
+  // profile tokmon-legacy).
   // vt-0146: GET /api/notes/list — directory listing for the Fleet UI vault
   // tab. Filesystem walk under VAULT (no DB dependency on vault_files which
   // doesn't exist). Optional tag overlay from chunks.

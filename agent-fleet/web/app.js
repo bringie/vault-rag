@@ -1156,13 +1156,17 @@
   // vt-0312: feature-flag map. Nav buttons + page routes are hidden
   // when their feature is `enabled=false`. Map from feature name →
   // nav id(s). `null` means "core, never gated".
+  // vt-0387: tokmon + pixel_office feature rows deleted from DB on
+  // 2026-05-18 (no consumer code after the daemon watcher was ripped out
+  // in vt-0384). cost + prices are now always-visible — the pages
+  // gracefully return 503 if the cost DB is unconfigured.
   const NAV_FEATURE = {
     dashboard: null,
     archive: 'fleet',
-    cost: 'tokmon',
+    cost: null,
     groups: 'fleet',
     workflows: 'workflows',
-    prices: 'tokmon',
+    prices: null,
     vault: 'vault_rag',
     health: null,
     audit: 'audit',
