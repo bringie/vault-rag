@@ -20,6 +20,9 @@ function parseArgs() {
   out.hostName = out.hostName || process.env.AGENT_FLEET_HOST_NAME || require('node:os').hostname();
   out.stateDir = out.stateDir || path.join(require('node:os').homedir(), '.agent-fleet');
   out.claudeBin = out.claudeBin || process.env.AGENT_FLEET_CLAUDE_BIN || 'claude';
+  if (!out.capabilities && process.env.AGENT_FLEET_CAPABILITIES) {
+    out.capabilities = process.env.AGENT_FLEET_CAPABILITIES.split(',').map(s => s.trim()).filter(Boolean);
+  }
   return out;
 }
 
