@@ -187,13 +187,21 @@
         newRunning[s.host_id] = (newRunning[s.host_id] || 0) + 1;
       }
       const now = NOW();
+      const justStarted = [];   // host ids that transitioned 0 → ≥1 this poll
       for (const h of _hosts) {
         const prev = _runningById[h.id] || 0;
         const cur  = newRunning[h.id] || 0;
         const st = _animState[h.id] || (_animState[h.id] = { startedAt: now });
-        if (prev === 0 && cur > 0) { st.emoji = '💭'; st.emojiUntil = now + 4000; }
+        if (prev === 0 && cur > 0) {
+          st.emoji = '💭'; st.emojiUntil = now + 4000;
+          justStarted.push(h.id);
+        }
         else if (prev > 0 && cur === 0) { st.emoji = '✅'; st.emojiUntil = now + 4000; }
       }
+      // vt-0383 Phase e: dispatch-meetup choreography. When ≥2 hosts get
+      // sessions in the same poll (within ~5 s), pull their avatars to the
+      // whiteboard for 3 s so the operator can see the fan-out visually.
+      if (justStarted.length >= 2) triggerMeetup(justStarted, now);
       for (const id of Object.keys(_animState)) {
         if (!liveIds.has(id)) delete _animState[id];
       }
@@ -316,6 +324,25 @@
     }
   }
 
+  // vt-0383: trigger a meetup. Each affected actor gets a choreo target
+  // around the whiteboard tile + a return-to-chair stage. Stays in meetup
+  // state for ~3 s end-to-end.
+  function triggerMeetup(hostIds, now) {
+    if (!_layout) _layout = computeLayout();
+    const wbTx = Math.floor((_layout.floorMinTx - 1 + _layout.floorMaxTx + 1) / 2);
+    const wbTy = _layout.floorMinTy;   // one tile south of the whiteboard wall
+    // Spread the actors in an arc in front of the whiteboard.
+    hostIds.forEach((id, idx) => {
+      const a = _actors[id]; if (!a) return;
+      const ox = (idx - (hostIds.length - 1) / 2) * 1.2;
+      a.meetupStage = 'walk_to';
+      a.meetupGoTx = wbTx + ox;
+      a.meetupGoTy = wbTy;
+      a.meetupHoldUntil = 0;
+      a.meetupUntil = now + 3500;
+    });
+  }
+
   // Per-frame actor update. dt = seconds since last tick.
   function tickActors(dt) {
     syncActors();
@@ -333,6 +360,59 @@
         a.px = a.chairTx; a.py = a.chairTy; a.facing = 's';
         continue;
       }
+
+      // vt-0383: meetup choreography overrides normal state machine until
+      // meetupUntil expires. Three stages: walk_to → hold → walk_back.
+      if (a.meetupStage) {
+        if (now >= a.meetupUntil) {
+          a.meetupStage = null;
+          a.px = a.chairTx; a.py = a.chairTy;
+        } else if (a.meetupStage === 'walk_to') {
+          const dx = a.meetupGoTx - a.px, dy = a.meetupGoTy - a.py;
+          const dist = Math.hypot(dx, dy);
+          if (dist < 0.06) {
+            a.meetupStage = 'hold';
+            a.meetupHoldUntil = now + 1200;
+            a.facing = 'n';
+          } else {
+            if (Math.abs(dx) > Math.abs(dy)) a.facing = dx > 0 ? 'e' : 'w';
+            else                              a.facing = dy > 0 ? 's' : 'n';
+            const step = WALK_SPEED * 1.6 * dt;
+            a.px += (dx / dist) * step;
+            a.py += (dy / dist) * step;
+            a.walkPhase = (a.walkPhase + dt * 4) % 1;
+            a.state = 'walk';
+          }
+          continue;
+        } else if (a.meetupStage === 'hold') {
+          a.state = 'idle';
+          a.facing = 'n';
+          a.walkPhase = (a.walkPhase + dt * 0.5) % 1;
+          if (now >= a.meetupHoldUntil) a.meetupStage = 'walk_back';
+          continue;
+        } else if (a.meetupStage === 'walk_back') {
+          const dx = a.chairTx - a.px, dy = a.chairTy - a.py;
+          const dist = Math.hypot(dx, dy);
+          if (dist < 0.06) {
+            a.meetupStage = null;
+            a.meetupUntil = 0;
+            a.px = a.chairTx; a.py = a.chairTy;
+            a.targetTx = null; a.targetTy = null;
+            a.state = 'idle';
+            a.idleUntil = now + 1000;
+          } else {
+            if (Math.abs(dx) > Math.abs(dy)) a.facing = dx > 0 ? 'e' : 'w';
+            else                              a.facing = dy > 0 ? 's' : 'n';
+            const step = WALK_SPEED * 1.6 * dt;
+            a.px += (dx / dist) * step;
+            a.py += (dy / dist) * step;
+            a.walkPhase = (a.walkPhase + dt * 4) % 1;
+            a.state = 'walk';
+          }
+          continue;
+        }
+      }
+
       // WORKING — sit at chair facing north (toward monitor).
       if (isWorking) {
         a.state = 'sit';
@@ -348,10 +428,28 @@
           a.targetTx = b.minTx + Math.random() * (b.maxTx - b.minTx);
           a.targetTy = b.minTy + Math.random() * (b.maxTy - b.minTy);
           a.state = 'walk';
+          a.idleStartedAt = 0;
         } else {
           a.state = 'idle';
+          // vt-0383: cumulative idle time → emote bubbles. Each crosses a
+          // threshold once per idle window; reset on transition out of idle.
+          if (!a.idleStartedAt) a.idleStartedAt = now;
+          const idleS = (now - a.idleStartedAt) / 1000;
+          const st = _animState[h.id] || (_animState[h.id] = { startedAt: now });
+          if (idleS > 30 && !a._emotedCoffee) {
+            st.emoji = '☕'; st.emojiUntil = now + 4000; a._emotedCoffee = true;
+          } else if (idleS > 60 && !a._emotedPhone) {
+            st.emoji = '📱'; st.emojiUntil = now + 4000; a._emotedPhone = true;
+          } else if (idleS > 120 && !a._emotedStretch) {
+            st.emoji = '🤸'; st.emojiUntil = now + 4000; a._emotedStretch = true;
+          }
         }
         continue;
+      }
+      // Reset emote flags whenever the avatar leaves idle.
+      if (a.state === 'walk') {
+        a._emotedCoffee = false; a._emotedPhone = false; a._emotedStretch = false;
+        a.idleStartedAt = 0;
       }
       // Walk: move toward target in tile-space.
       const dx = a.targetTx - a.px;
