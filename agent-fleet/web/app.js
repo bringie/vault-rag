@@ -935,51 +935,6 @@
   }
 
   // ============ Host detail ============
-  // vt-0339: load + render tmux session list for the host. Each row
-  // gets an [attach] button that mints a synthetic fleet_sessions row
-  // via POST /api/fleet/hosts/:id/tmux-sessions/:name/attach and opens
-  // xterm via existing attachSession(synth.session_id).
-  async function loadHostTmux(hostId) {
-    const tbody = $('hd-tmux-rows');
-    if (!tbody) return;
-    let rows;
-    try {
-      rows = await api('GET', `/hosts/${hostId}/tmux-sessions?limit=10`);
-    } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="6" class="muted">error: ${esc(e.message)}</td></tr>`;
-      return;
-    }
-    if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="6" class="muted" data-i18n="host.tmux.empty">no tmux sessions on this host</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = rows.map(r => `<tr>
-      <td>${esc(r.agent || '—')}</td>
-      <td><code>${esc(r.name)}</code></td>
-      <td>${esc(r.cwd || '—')}</td>
-      <td>${r.last_activity ? ageStr(r.last_activity) + ' ago' : '—'}</td>
-      <td>${r.attached_clients}</td>
-      <td><button class="btn-ghost btn-attach" data-tmux-attach="${esc(r.name)}" data-host="${esc(hostId)}" data-i18n="host.tmux.attach">attach</button></td>
-    </tr>`).join('');
-    tbody.querySelectorAll('[data-tmux-attach]').forEach(b => {
-      b.onclick = async () => {
-        try {
-          const out = await api('POST',
-            `/hosts/${b.dataset.host}/tmux-sessions/${encodeURIComponent(b.dataset.tmuxAttach)}/attach`,
-            {});
-          // attachSession opens the xterm for the synthetic session_id.
-          attachSession(out.session_id);
-        } catch (e) {
-          if (e.status === 410) {
-            window.toast?.warn?.('tmux session gone, refreshing list');
-            return loadHostTmux(hostId);
-          }
-          window.toast?.error?.(`attach failed: ${e.message}`);
-        }
-      };
-    });
-  }
-
   function openHostDetail(hostId) {
     const h = state.hosts.find(x => x.id === hostId);
     if (!h) return;
@@ -1041,9 +996,6 @@
     ul.querySelectorAll('li[data-session]').forEach(li => {
       li.onclick = () => attachSession(li.dataset.session);
     });
-
-    // vt-0339: load tmux sessions block.
-    loadHostTmux(h.id);
 
     // vt-0150: per-agent edit buttons — one per installed backend.
     renderHostEditButtons(h);

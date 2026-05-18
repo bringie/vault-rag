@@ -282,14 +282,6 @@ body::after {
 }
 .hd-grid > div { display: flex; flex-direction: column; gap: 2px; }
 .hd-grid .lbl { font-size: .68em; }
-/* vt-0339: tmux sessions table inside host detail */
-.hd-tmux-table { width: 100%; border-collapse: collapse; font-size: .82em; }
-.hd-tmux-table th { text-align: left; padding: .35em .5em; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--line); }
-.hd-tmux-table td { padding: .4em .5em; border-bottom: 1px solid var(--line-faint, rgba(255,255,255,0.05)); }
-.hd-tmux-table tr:hover td { background: rgba(255,255,255,0.025); }
-.hd-tmux-table code { font-family: var(--font-mono); color: var(--accent); font-size: .9em; }
-.hd-tmux-table .muted { color: var(--text-faint); }
-.hd-tmux-table .btn-attach { padding: .25em .7em; font-size: .85em; }
 
 .chip-row { display: flex; flex-wrap: wrap; gap: .35em; margin-bottom: .6em; }
 .chip {

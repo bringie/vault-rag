@@ -8,11 +8,6 @@ const { collectInventory, inventoryChanged, resetInventoryCache } = require('./i
 const { PtyManager } = require('./pty-manager');
 const { SessionStore } = require('./session-store');
 const backendsLib = require('./backends');
-// vt-0336: tmux discovery poller — emits `mux_sessions` frames every
-// FLEET_MUX_POLL_MS (default 30s) so the hub can list attachable
-// sessions on each host.
-const { startPoller: startMuxPoller } = require('./mux-poller');
-
 // True when the spawn frame uses the new generic schema rather than legacy
 // {args:[...]} passthrough. Any of these fields means we should consult a
 // backend.buildSpawnArgs() rather than ptyMgr.spawn(args) directly.
@@ -510,10 +505,6 @@ async function runDaemon(opts) {
           safeSend(ws, { type: 'inventory', ...collectInventory() });
         }, 900_000);
         invHeartbeatTimer.unref?.();
-        // vt-0336: tmux poller. Sends mux_sessions frames at
-        // FLEET_MUX_POLL_MS cadence. Hub upserts to fleet_tmux_sessions
-        // and GC's stale rows.
-        const muxPoller = startMuxPoller((frame) => safeSend(ws, frame));
         ws.on('message', (raw) => {
           let f;
           try { f = JSON.parse(raw.toString()); } catch { return; }
@@ -562,60 +553,6 @@ async function runDaemon(opts) {
             }
           } else if (f.type === 'kill') {
             ptyMgr.kill(f.session_id, f.signal || 'SIGTERM');
-          } else if (f.type === 'mux_attach') {
-            // vt-0338: hub asks us to attach to an existing tmux session
-            // and stream its PTY back. session_id is a synthetic
-            // fleet_sessions UUID minted by the hub (kind='mux_attach').
-            // Pre-roll the last 1000 lines from capture-pane as a single
-            // pty_data frame with seq=0 (architect BLOCKING #4 — hub
-            // doesn't recognize pty_replay; pty_data routes through the
-            // existing viewer broadcast path). Then spawn `tmux attach-
-            // session` via ptyMgr; binOverride='tmux' prevents the
-            // claude --session-id auto-injection.
-            (async () => {
-              const sid = f.session_id;
-              const tmuxName = f.tmux_name;
-              if (!sid || !tmuxName) {
-                console.error('[daemon] mux_attach missing session_id or tmux_name');
-                return;
-              }
-              try {
-                const { execFile } = require('node:child_process');
-                const { promisify } = require('node:util');
-                const execFileAsync = promisify(execFile);
-                const cap = await execFileAsync(
-                  'tmux', ['capture-pane', '-p', '-S', '-1000', '-t', tmuxName],
-                  { timeout: 2000, maxBuffer: 2 * 1024 * 1024 });
-                if (cap.stdout) {
-                  safeSend(ws, {
-                    type: 'pty_data',
-                    session_id: sid,
-                    seq: 0,
-                    data: Buffer.from(cap.stdout, 'utf8').toString('base64'),
-                    replayed: true,
-                  });
-                }
-              } catch (e) {
-                console.error('[daemon] mux capture-pane failed:', e.message);
-              }
-              try {
-                // Spawn `tmux attach-session -t <name>`. The shim env
-                // (TMUX) is intentionally unset so we attach as a client
-                // rather than refusing because of nested-tmux protection.
-                const env = { ...process.env };
-                delete env.TMUX;
-                ptyMgr.spawn({
-                  sessionId: sid,
-                  cwd: process.env.HOME || '/',
-                  args: ['attach-session', '-t', tmuxName],
-                  env,
-                  binOverride: 'tmux',
-                });
-              } catch (e) {
-                console.error('[daemon] mux_attach spawn failed:', e.message);
-                safeSend(ws, { type: 'session_exit', session_id: sid, exit_code: -1 });
-              }
-            })();
           } else if (f.type === 'replay') {
             // vt-0304: hub asks to replay pty_data since the given seq.
             // We send the buffered frames in order; anything that fell
@@ -665,7 +602,6 @@ async function runDaemon(opts) {
           clearInterval(metricsTimer);
           clearInterval(invMtimeTimer);
           clearInterval(invHeartbeatTimer);
-          muxPoller.stop();
         };
         ws.on('close', () => { clearTimers(); resolve(); });
         ws.on('error', (e) => {

@@ -796,71 +796,6 @@ async function listWebhookDeliveries(c, subscriptionId, { limit = 50 } = {}) {
   return rows;
 }
 
-// vt-0337: tmux session discovery state. Hub upserts rows on every
-// daemon `mux_sessions` frame; GC drops rows not seen for 5+ minutes
-// (daemon poll cadence is 30s — five missed polls = stale).
-async function upsertTmuxSessions(c, hostId, items) {
-  if (!Array.isArray(items) || !items.length) return;
-  const placeholders = [];
-  const params = [hostId];
-  let i = 2;
-  for (const it of items) {
-    if (!it || !it.name) continue;
-    placeholders.push(`($1, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, now())`);
-    params.push(
-      it.name,
-      it.agent || null,
-      it.cwd || null,
-      it.created_at || null,
-      it.last_activity || null,
-      it.attached_clients || 0,
-      it.windows || 1
-    );
-  }
-  if (!placeholders.length) return;
-  await c.query(`
-    INSERT INTO fleet_tmux_sessions
-      (host_id, name, agent, cwd, created_at, last_activity, attached_clients, windows, last_seen_at)
-    VALUES ${placeholders.join(',')}
-    ON CONFLICT (host_id, name) DO UPDATE SET
-      agent            = EXCLUDED.agent,
-      cwd              = EXCLUDED.cwd,
-      last_activity    = EXCLUDED.last_activity,
-      attached_clients = EXCLUDED.attached_clients,
-      windows          = EXCLUDED.windows,
-      last_seen_at     = now()`,
-    params);
-}
-
-async function gcStaleTmuxSessions(c, hostId) {
-  await c.query(
-    `DELETE FROM fleet_tmux_sessions
-     WHERE host_id = $1 AND last_seen_at < now() - INTERVAL '5 minutes'`,
-    [hostId]);
-}
-
-async function listTmuxSessions(c, hostId, { limit = 10 } = {}) {
-  const { rows } = await c.query(
-    `SELECT name, agent, cwd, created_at, last_activity,
-            attached_clients, windows, last_seen_at
-     FROM fleet_tmux_sessions
-     WHERE host_id = $1
-     ORDER BY last_activity DESC NULLS LAST
-     LIMIT $2`,
-    [hostId, Math.min(parseInt(limit, 10) || 10, 50)]);
-  return rows;
-}
-
-async function getTmuxSession(c, hostId, name) {
-  const { rows } = await c.query(
-    `SELECT name, agent, cwd, created_at, last_activity,
-            attached_clients, windows
-     FROM fleet_tmux_sessions
-     WHERE host_id = $1 AND name = $2`,
-    [hostId, name]);
-  return rows[0] || null;
-}
-
 module.exports = {
   upsertHost, listHosts, getHost, setHostOffline, deleteHost, updateHost, setHostMetadata,
   createSession, getSession, listSessions, countSessions, updateSession,
@@ -882,8 +817,6 @@ module.exports = {
   reorderGroupRoles,
   // vt-0311
   listFeatures, isFeatureEnabled, setFeature,
-  // vt-0337
-  upsertTmuxSessions, gcStaleTmuxSessions, listTmuxSessions, getTmuxSession,
   // vt-0345
   listWebhooks, getWebhook, createWebhook, updateWebhook, deleteWebhook, listWebhookDeliveries,
 };
