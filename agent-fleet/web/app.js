@@ -549,8 +549,8 @@
     try { window.chatView?.detach(); } catch {}
     // Reset static-transcript so it re-fetches when raw tab is opened.
     _lastTranscriptSid = null;
-    const pre = $('static-transcript-content');
-    if (pre) { pre.textContent = '// switch to RAW TRANSCRIPT tab to view captured output'; pre.dataset.loaded = ''; pre.classList.add('static-transcript-empty'); }
+    const xt = $('static-transcript-xterm');
+    if (xt) xt.dataset.loaded = '';
     state.selected = id;
     state.selectedHost = null;
     setViewMode('session');
@@ -680,40 +680,78 @@
     };
     ws.onerror = () => { /* let close handler retry */ };
   }
-  // vt-0392 v2: raw transcript view = static fetch of
-  // /api/fleet/sessions/<sid>/transcript.txt. Live xterm dropped; raw tab
-  // is now a post-hoc "what did claude actually output" peek.
+  // vt-0392 v3: raw transcript view rendered via read-only xterm.js so
+  // ANSI escape codes (cursor movement, color, spinner overdraw) replay
+  // correctly. Earlier `<pre>` mode showed every animation frame stacked
+  // vertically because the cursor-back escapes were stripped.
   let _lastTranscriptSid = null;
-  async function refreshStaticTranscript(sid, opts = {}) {
-    const pre = $('static-transcript-content');
-    const meta = $('static-transcript-meta');
-    if (!pre) return;
-    if (!opts.force && _lastTranscriptSid === sid && pre.dataset.loaded === '1') return;
-    _lastTranscriptSid = sid;
-    pre.classList.add('static-transcript-empty');
-    pre.textContent = 'loading transcript…';
-    if (meta) meta.textContent = '';
+  let _staticTerm = null;
+  let _staticFit = null;
+  function ensureStaticTerm() {
+    if (_staticTerm) return _staticTerm;
+    const host = $('static-transcript-xterm');
+    if (!host) return null;
+    host.classList.remove('static-transcript-empty');
+    host.textContent = '';
+    _staticTerm = new Terminal({
+      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+      fontSize: 12, lineHeight: 1.3, scrollback: 100000,
+      cursorBlink: false, disableStdin: true, convertEol: false,
+      theme: {
+        background: '#000', foreground: '#e8e6e1', cursor: '#5cf08c',
+        black:'#0a0a0c', red:'#ff4d5e', green:'#5cf08c', yellow:'#ffb547',
+        blue:'#6fd5ff', magenta:'#ff79c6', cyan:'#8be9fd', white:'#e8e6e1',
+        brightBlack:'#5a5550', brightRed:'#ff7d8b', brightGreen:'#86ffac',
+        brightYellow:'#ffd07a', brightBlue:'#9be4ff', brightMagenta:'#ffaae0',
+        brightCyan:'#bbf3ff', brightWhite:'#ffffff',
+      },
+      allowProposedApi: true,
+    });
+    _staticFit = new FitAddon.FitAddon();
+    _staticTerm.loadAddon(_staticFit);
+    try { if (window.CanvasAddon?.CanvasAddon) _staticTerm.loadAddon(new CanvasAddon.CanvasAddon()); } catch {}
     try {
-      const res = await fetch(`/api/fleet/sessions/${encodeURIComponent(sid)}/transcript.txt`, {
+      if (window.Unicode11Addon?.Unicode11Addon) {
+        _staticTerm.loadAddon(new Unicode11Addon.Unicode11Addon());
+        _staticTerm.unicode.activeVersion = '11';
+      }
+    } catch {}
+    _staticTerm.open(host);
+    return _staticTerm;
+  }
+  function fitStaticTerm() {
+    if (!_staticFit) return;
+    try { _staticFit.fit(); } catch {}
+  }
+  async function refreshStaticTranscript(sid, opts = {}) {
+    const host = $('static-transcript-xterm');
+    const meta = $('static-transcript-meta');
+    if (!host) return;
+    if (!opts.force && _lastTranscriptSid === sid && host.dataset.loaded === '1') return;
+    _lastTranscriptSid = sid;
+    if (meta) meta.textContent = 'loading…';
+    try {
+      const res = await fetch(`/api/fleet/sessions/${encodeURIComponent(sid)}/transcript.bin`, {
         headers: { 'authorization': 'Bearer ' + state.token },
       });
       if (!res.ok) {
-        pre.textContent = `// transcript fetch failed: HTTP ${res.status}`;
+        host.textContent = `// transcript fetch failed: HTTP ${res.status}`;
+        host.classList.add('static-transcript-empty');
         return;
       }
-      const text = await res.text();
-      pre.classList.remove('static-transcript-empty');
-      if (text.length === 0) {
-        pre.classList.add('static-transcript-empty');
-        pre.textContent = '// no transcript captured yet (raw PTY relay was disabled in this build — only the CHAT tab is live)';
-        if (meta) meta.textContent = '';
-      } else {
-        pre.textContent = text;
-        if (meta) meta.textContent = `${text.length.toLocaleString()} bytes`;
-      }
-      pre.dataset.loaded = '1';
+      const buf = new Uint8Array(await res.arrayBuffer());
+      const term = ensureStaticTerm();
+      if (!term) return;
+      term.reset();
+      requestAnimationFrame(() => {
+        fitStaticTerm();
+        term.write(buf);
+        if (meta) meta.textContent = `${buf.length.toLocaleString()} bytes`;
+        host.dataset.loaded = '1';
+      });
     } catch (e) {
-      pre.textContent = `// transcript fetch error: ${e.message}`;
+      host.textContent = `// transcript fetch error: ${e.message}`;
+      host.classList.add('static-transcript-empty');
     }
   }
 
@@ -2130,6 +2168,7 @@
         // first reveal per session; reload button re-fetches.
         if (t === 'raw' && state.selected) {
           refreshStaticTranscript(state.selected);
+          requestAnimationFrame(fitStaticTerm);
         }
       });
     });

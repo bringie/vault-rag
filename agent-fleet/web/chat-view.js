@@ -115,10 +115,23 @@
     const root = el('div', 'chat-msg chat-msg-assistant');
     if (ex.is_sidechain) root.classList.add('chat-msg-sidechain');
     const head = el('div', 'chat-msg-head');
-    head.appendChild(el('span', 'chat-msg-role', ex.is_sidechain ? 'subagent' : 'claude'));
-    if (ex.model) head.appendChild(el('span', 'chat-msg-model', ex.model));
-    if (ex.usage) head.appendChild(el('span', 'chat-msg-usage', fmtTokens(ex.usage)));
-    if (ex.stop_reason) head.appendChild(el('span', 'chat-msg-stop', ex.stop_reason));
+    head.appendChild(el('span', 'chat-msg-role', ex.is_sidechain ? '↳ subagent' : 'claude'));
+    // Metadata: model + tokens + stop_reason hidden inside a small
+    // details disclosure. Default-collapsed so the chat reads like a chat.
+    if (ex.model || ex.usage || ex.stop_reason) {
+      const meta = document.createElement('details');
+      meta.className = 'chat-msg-meta';
+      const sum = el('summary', 'chat-msg-meta-summary', 'ⓘ');
+      meta.appendChild(sum);
+      const inner = el('span', 'chat-msg-meta-inner');
+      if (ex.model) inner.appendChild(el('span', 'chat-msg-model', ex.model));
+      if (ex.usage) inner.appendChild(el('span', 'chat-msg-usage', fmtTokens(ex.usage)));
+      if (ex.stop_reason && ex.stop_reason !== 'end_turn') {
+        inner.appendChild(el('span', 'chat-msg-stop', ex.stop_reason));
+      }
+      meta.appendChild(inner);
+      head.appendChild(meta);
+    }
     root.appendChild(head);
     const body = el('div', 'chat-msg-body');
     if (ex.thinking_blocks && ex.thinking_blocks.length) {
@@ -171,16 +184,13 @@
 
   function renderSystem(payload) {
     const ex = payload.extracted;
-    const root = el('div', 'chat-msg chat-msg-system');
-    const head = el('div', 'chat-msg-head');
+    // Single-line inline pill, not a fat bubble. Permission mode + similar
+    // signals are infrequent and don't deserve their own block.
+    const root = el('div', 'chat-system-pill');
     const label = ex.subtype === 'permission-mode'
-      ? 'permission mode'
-      : (ex.subtype || 'system');
-    head.appendChild(el('span', 'chat-msg-role', label));
-    root.appendChild(head);
-    if (ex.text) {
-      root.appendChild(el('div', 'chat-text', ex.text));
-    }
+      ? `permission mode: ${(payload.raw && payload.raw.permissionMode) || '?'}`
+      : (ex.text || ex.subtype || 'system');
+    root.textContent = `· ${label}`;
     return root;
   }
 
@@ -254,6 +264,13 @@
     STATE.statusBar.className = 'chat-status ' + (cls || '');
   }
 
+  // System subtypes worth showing in chat. Everything else (stop_hook_summary,
+  // turn_duration, ai-title, hook_event, last-prompt, …) is internal claude
+  // bookkeeping that pollutes the conversation view.
+  const SYSTEM_SUBTYPES_VISIBLE = new Set([
+    'permission-mode', 'session_start', 'compact_boundary',
+  ]);
+
   function renderFrame(frame) {
     // Dedup by raw.uuid (jsonl every line has one). Same line replayed +
     // live = single render. If no uuid (system/permission-mode without
@@ -265,8 +282,17 @@
 
     if (frame.type === 'compact_boundary') return renderCompactBoundary(frame);
     if (ex && ex.role === 'assistant') return renderAssistant(frame);
-    if (ex && ex.role === 'user') return renderUser(frame);
-    if (ex && ex.role === 'system') return renderSystem(frame);
+    if (ex && ex.role === 'user') {
+      // Filter empty user turns (no text + no tool results = noise from
+      // the Ink line editor echo / session_start events).
+      if ((!ex.text_in || !ex.text_in.trim())
+          && (!ex.tool_results || !ex.tool_results.length)) return null;
+      return renderUser(frame);
+    }
+    if (ex && ex.role === 'system') {
+      if (!SYSTEM_SUBTYPES_VISIBLE.has(ex.subtype)) return null;
+      return renderSystem(frame);
+    }
     return null;
   }
 
@@ -501,18 +527,17 @@
     STATE.replayDone = false;
     STATE.seenUuids.clear();
     STATE.nodeBySeq.clear();
-    STATE.lastOffset = Math.max(0, Number(opts.fromOffset) || 0);
+    // vt-0392 fix: always replay from 0 on attach. The previous opts.fromOffset
+    // cursor optimisation broke reconnects — if jsonl was unchanged, an empty
+    // replay_batch arrived and the empty-state placeholder replaced the entire
+    // chat history. UUID dedup is cheap; full replay is simpler and correct.
+    STATE.lastOffset = 0;
     STATE._emptyNode = null;
     if (STATE.list) STATE.list.innerHTML = '';
     setStatus('replaying…', 'chat-status-loading');
     setComposerEnabled(false);
-    // Wait for ws open if not ready, then request initial replay.
     const fire = () => {
-      requestReplay(STATE.lastOffset);
-      // vt-0392 Phase 2 v1: enable composer once WS open. Busy-state
-      // gating (disable while claude is mid-tool) is a follow-up; users
-      // typing during a tool_use turn will see their text sit in the
-      // PTY's line buffer and submit when claude is ready for input.
+      requestReplay(0);
       setComposerEnabled(true);
     };
     if (ws.readyState === 1) fire();
