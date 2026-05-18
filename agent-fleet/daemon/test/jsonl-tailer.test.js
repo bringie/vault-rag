@@ -65,3 +65,86 @@ test('JsonlTailer: stop() clears watchers', async () => {
   await t.stop();
   assert.strictEqual(t.state, 'stopped');
 });
+
+function copyFixture(srcName, dstPath) {
+  const src = path.join(__dirname, 'fixtures', 'jsonl', srcName);
+  fs.copyFileSync(src, dstPath);
+}
+
+test('JsonlTailer: emits claude_msg frames per fixture line', async () => {
+  const home = newTmpHome();
+  const projDir = path.join(home, '.claude', 'projects', '-root');
+  fs.mkdirSync(projDir, { recursive: true });
+  const store = new SessionStore(fs.mkdtempSync(
+    path.join(os.tmpdir(), 'jt-store-')));
+  store.put('sess-1', { pid: 1234, last_seq: 0 });
+  const events = [];
+  const t = new JsonlTailer({
+    sessionId: 'sess-1', cwd: '/root', home, store,
+    emit: (f) => events.push(f)
+  });
+  await t.start();
+  copyFixture('simple-session.jsonl', path.join(projDir, 'sess-1.jsonl'));
+  // Wait for fs.watch + read loop.
+  await new Promise(r => setTimeout(r, 500));
+  // simple-session.jsonl has 5 lines; permission-mode is initial state so
+  // it is the first to set lastMode and IS emitted. 5 total events.
+  assert.strictEqual(events.length, 5);
+  assert.strictEqual(events[0].type, 'claude_msg');
+  assert.strictEqual(events[0].payload.extracted.role, 'system');
+  assert.strictEqual(events[2].payload.extracted.role, 'assistant');
+  await t.stop();
+});
+
+test('JsonlTailer: persists byte-offset, resumes without double-emit', async () => {
+  const home = newTmpHome();
+  const projDir = path.join(home, '.claude', 'projects', '-root');
+  fs.mkdirSync(projDir, { recursive: true });
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jt-store-'));
+  const store1 = new SessionStore(storeDir);
+  store1.put('sess-2', { pid: 1234, last_seq: 0 });
+  const events1 = [];
+  const t1 = new JsonlTailer({
+    sessionId: 'sess-2', cwd: '/root', home, store: store1,
+    emit: (f) => events1.push(f)
+  });
+  await t1.start();
+  copyFixture('simple-session.jsonl', path.join(projDir, 'sess-2.jsonl'));
+  await new Promise(r => setTimeout(r, 500));
+  assert.ok(events1.length >= 5);
+  await t1.stop();
+
+  // New tailer reading the same store dir — offset should pick up at EOF.
+  const store2 = new SessionStore(storeDir);
+  assert.ok(store2.getOffset('sess-2') > 0, 'offset persisted');
+  const events2 = [];
+  const t2 = new JsonlTailer({
+    sessionId: 'sess-2', cwd: '/root', home, store: store2,
+    emit: (f) => events2.push(f)
+  });
+  await t2.start();
+  await new Promise(r => setTimeout(r, 200));
+  assert.strictEqual(events2.length, 0, 'no double-emit on resume');
+  await t2.stop();
+});
+
+test('JsonlTailer: compact_boundary emitted as separate frame', async () => {
+  const home = newTmpHome();
+  const projDir = path.join(home, '.claude', 'projects', '-root');
+  fs.mkdirSync(projDir, { recursive: true });
+  const store = new SessionStore(fs.mkdtempSync(
+    path.join(os.tmpdir(), 'jt-store-')));
+  store.put('sess-3', { pid: 1234, last_seq: 0 });
+  const events = [];
+  const t = new JsonlTailer({
+    sessionId: 'sess-3', cwd: '/root', home, store,
+    emit: (f) => events.push(f)
+  });
+  await t.start();
+  copyFixture('compact-mid-session.jsonl', path.join(projDir, 'sess-3.jsonl'));
+  await new Promise(r => setTimeout(r, 500));
+  const types = events.map(e => e.type);
+  assert.deepStrictEqual(types, ['claude_msg', 'compact_boundary', 'claude_msg']);
+  assert.strictEqual(events[1].payload.metadata.trigger, 'auto');
+  await t.stop();
+});
