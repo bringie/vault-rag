@@ -26,7 +26,12 @@ INSERT INTO fleet_features (name, enabled, description) VALUES
   ('fleet',          true,  'Fleet hosts + sessions + WS terminals'),
   ('workflows',      true,  'Workflow editor + runner (RCE-capable surface)'),
   ('agent_roles',    true,  'Reusable prompt personas attached to groups'),
-  ('tokmon',         true,  'Token-usage ingest + cost dashboards'),
+  -- vt-0387: 'tokmon' retired 2026-05-18. Daemon watcher removed in
+  -- vt-0384; /tokmon/ingest on :5679 removed in vt-0388. The :5681
+  -- standalone container is the only ingest path now. cost + prices
+  -- nav buttons are always-visible (NAV_FEATURE = null), so this
+  -- feature row is no longer load-bearing. See sql/031 for the
+  -- complementary delete on existing deployments.
   ('grafana',        true,  'Embedded Grafana at /grafana/'),
   ('forgejo',        true,  'Self-hosted git (Forgejo) at /git/'),
   ('graph_view',     true,  'Note graph visualisation (force-directed layout from backlinks)'),

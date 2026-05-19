@@ -383,6 +383,10 @@ async function runDaemon(opts) {
       }
       _tailers.clear();
     } catch (e) { console.error(`[daemon] tailer stop on shutdown: ${e.message}`); }
+    // vt-0401 / vt-0404: close the plugins-dir watcher + cancel pending
+    // slash_inventory debounce so the event loop can drain.
+    try { if (_slashReloadT) { clearTimeout(_slashReloadT); _slashReloadT = null; } } catch {}
+    try { if (_pluginsWatcher) { _pluginsWatcher.close(); _pluginsWatcher = null; } } catch {}
     // vt-0392 v6: force a final session-store flush so the debounced
     // offset cursor is on disk before exit.
     try { store.flushNow(); } catch {}
@@ -474,13 +478,18 @@ async function runDaemon(opts) {
       console.error(`[daemon] slash-inventory build failed: ${e.message}`);
     }
   }
+  // vt-0401 / vt-0404: watcher handle + debounce timer must be reachable
+  // from daemonShutdown so SIGTERM can close them cleanly. Otherwise:
+  //   - inotify fd keeps the event loop alive past process.exit window
+  //   - pending 750ms timer fires after shutdown began
+  let _pluginsWatcher = null;
+  let _slashReloadT = null;
   try {
     const pluginsRoot = path.join(_daemonHome, '.claude', 'plugins', 'marketplaces');
     if (fs.existsSync(pluginsRoot)) {
-      let slashReloadT = null;
-      fs.watch(pluginsRoot, { recursive: true }, () => {
-        if (slashReloadT) clearTimeout(slashReloadT);
-        slashReloadT = setTimeout(() => _sendSlashInventory(_currentWs), 750);
+      _pluginsWatcher = fs.watch(pluginsRoot, { recursive: true }, () => {
+        if (_slashReloadT) clearTimeout(_slashReloadT);
+        _slashReloadT = setTimeout(() => _sendSlashInventory(_currentWs), 750);
       });
     }
   } catch (e) {

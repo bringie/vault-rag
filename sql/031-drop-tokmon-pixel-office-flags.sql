@@ -1,0 +1,14 @@
+-- vt-0387 / vt-0402: retire dead feature flags.
+--
+-- 'tokmon' was seeded in sql/028 but no longer has any consumer:
+--   - daemon tokmon-watcher removed in vt-0384
+--   - rag-api /tokmon/ingest removed in vt-0388
+--   - NAV_FEATURE map flipped cost+prices to null (always-visible)
+--
+-- 'pixel_office' was manually INSERTed at some point during the
+-- short-lived pixel-office experiment, then the feature was reverted.
+-- It was never seeded in 028 so there's no row to remove from the
+-- seed; this DELETE just sweeps the leftover on existing deployments.
+--
+-- Idempotent: missing rows are a no-op.
+DELETE FROM fleet_features WHERE name IN ('tokmon', 'pixel_office');

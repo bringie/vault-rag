@@ -66,8 +66,16 @@ fi
 if [[ -z "${AGENT_FLEET_TOKEN:-}" ]] && ! grep -q '^AGENT_FLEET_TOKEN=.\+' "$CONF_DIR/daemon.env"; then
   # vt-0389: MUST be the FLEET_ADMIN_TOKEN, not the regular API token.
   # The hub WS upgrade rejects regular-tier bearers with code 4001.
+  # vt-0407: clarify that `vt` lives on a dev host, not this target;
+  # offer a curl alternative for hosts that have VAULT_RAG_API_TOKEN.
   echo "Bearer token = the hub's FLEET_ADMIN_TOKEN (not the regular API token)."
-  echo "  Retrieve from vault: vt secrets get VAULT_RAG_FLEET_ADMIN_TOKEN"
+  echo "  Option A (from a dev host with vt installed):"
+  echo "    vt secrets get VAULT_RAG_FLEET_ADMIN_TOKEN"
+  echo "  Option B (from this host, if it already has VAULT_RAG_API_TOKEN + VAULT_RAG_API_URL):"
+  echo "    curl -sS -H \"Authorization: Bearer \$VAULT_RAG_API_TOKEN\" \\"
+  echo "      -H 'Content-Type: application/json' \\"
+  echo "      -X POST \"\$VAULT_RAG_API_URL/api/secrets/get\" \\"
+  echo "      -d '{\"name\":\"VAULT_RAG_FLEET_ADMIN_TOKEN\"}' | jq -r .value"
   read -r -s -p "Bearer token: " AGENT_FLEET_TOKEN
   echo
 fi

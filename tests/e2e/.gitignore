@@ -1,0 +1,9 @@
+# vt-0409: leftover ad-hoc verification runs (verify-ink-gate, verify-perm,
+# verify-ux, verify-v6) — these are local-only artifacts from earlier
+# sub-agent verification sessions, not tracked specs. Real coverage lives
+# in chat-*.spec.js, iaac.spec.js, nav.spec.js, rest.spec.js.
+specs/verify-*.spec.js
+specs/verify-*.js
+verify-v6-config.js
+last-run.json
+test-results/

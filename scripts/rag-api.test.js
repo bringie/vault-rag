@@ -98,6 +98,19 @@ test('vt-0142: handleSecretList inserts secret_audit row (denied since SKIP_PG=1
   await pg.end();
 });
 
+test('vt-0412: POST /tokmon/ingest returns 4xx on rag-api listener', async () => {
+  // Regression for vt-0388. The standalone :5681 tokmon-ingest container
+  // owns this path; if anyone re-adds handleTokmonIngest to the main API,
+  // this test catches it.
+  const { server } = await startTestApi({ token: 'T', vaultPath: tmpVault });
+  const r = await reqJson(server, 'POST', '/tokmon/ingest', {
+    token: 'T',
+    body: { events: [] },
+  });
+  assert.ok(r.status >= 400 && r.status < 500,
+    `expected 4xx for retired endpoint, got ${r.status} ${JSON.stringify(r.body)}`);
+});
+
 test('vt-0142: handleSecretGet on missing secret inserts row with outcome=denied', async () => {
   const { server } = await startTestApi({ token: 'T', vaultPath: tmpVault });
   const pg = await auditClient();

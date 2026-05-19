@@ -49,6 +49,10 @@
 
   const MAX_MOUNTED_NODES = 500;
   const LOAD_OLDER_BATCH = 200;
+  // vt-0400: cap detached-node retention so a 10k-turn session can't pin
+  // 9.5k DOM subtrees in memory forever. Past this depth, scrolling back
+  // requires a replay_request from disk (daemon path).
+  const MAX_UNMOUNTED_NODES = 2 * LOAD_OLDER_BATCH;
   const PENDING_TIMEOUT_MS = 30_000;
 
   const SYSTEM_SUBTYPES_VISIBLE = new Set([
@@ -89,14 +93,27 @@
       .replace(/\n/g, '<br>');
   }
 
-  // vt-0396 NIT fix: code-point-aware slice. .slice(0, N) splits surrogate
-  // pairs (emoji, supplementary CJK) and renders a U+FFFD lozenge, which
-  // looks broken in tool-arg previews. Iterate the string by code point
-  // (for..of) and stop once we'd emit > maxCp graphemes.
+  // vt-0396 NIT fix / vt-0410 NIT 4: grapheme-aware truncation. The
+  // initial implementation iterated by code point with for..of, which
+  // handles surrogate pairs but still splits ZWJ sequences (e.g.
+  // 👨‍👩‍👧 = 5 code points). Use Intl.Segmenter where available so
+  // family emoji, flag pairs, skin-tone selectors, etc. stay intact.
+  // Fall back to a code-point loop on older targets.
+  // O(n²) concat is fine here — caller caps n at 60/140.
+  const _SEGMENTER = (typeof Intl !== 'undefined' && Intl.Segmenter)
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
   function truncateCp(s, maxCp) {
     if (typeof s !== 'string') return '';
     let out = '';
     let count = 0;
+    if (_SEGMENTER) {
+      for (const seg of _SEGMENTER.segment(s)) {
+        if (count >= maxCp) return out + '…';
+        out += seg.segment;
+        count++;
+      }
+      return out;
+    }
     for (const ch of s) {
       if (count >= maxCp) return out + '…';
       out += ch;
@@ -214,22 +231,47 @@
       if (oldest.parentNode) oldest.parentNode.removeChild(oldest);
       // vt-0397 MED fix: drop the nodeBySeq mapping for evicted nodes so
       // the map can't grow unboundedly across long sessions.
-      for (const [k, v] of STATE.nodeBySeq) {
-        if (v === oldest) { STATE.nodeBySeq.delete(k); break; }
-      }
+      dropFromNodeBySeq(oldest);
       STATE._unmountedMsgNodes.push(oldest);
+    }
+    // vt-0400 fix: cap detached-node retention. Once we're past the
+    // re-mountable window, drop the oldest unmounted DOM subtree outright.
+    while (STATE._unmountedMsgNodes.length > MAX_UNMOUNTED_NODES) {
+      STATE._unmountedMsgNodes.shift();
     }
     updateLoadOlderUi();
   }
 
-  // Called once after replay drained so we don't shift _mountedMsgNodes
-  // 1500× during a 2000-frame initial load.
-  function flushEvictionAfterReplay() {
-    const wasFlying = STATE.replayInFlight;
-    STATE.replayInFlight = false;
-    try { evictExcess(); }
-    finally { STATE.replayInFlight = wasFlying; }
+  // vt-0399 fix: symmetric eviction for the *bottom* of the mounted
+  // window. After loadOlderBatch prepends 200 older nodes, the live tail
+  // becomes excess; without this trim the mounted count grows by
+  // LOAD_OLDER_BATCH every click, defeating MAX_MOUNTED_NODES.
+  function evictTail() {
+    if (STATE.replayInFlight) return;
+    while (STATE._mountedMsgNodes.length > MAX_MOUNTED_NODES) {
+      const newest = STATE._mountedMsgNodes.pop();
+      if (newest.parentNode) newest.parentNode.removeChild(newest);
+      dropFromNodeBySeq(newest);
+      // Detached newest goes back into unmounted at the *tail* — those
+      // are the live messages the user just scrolled away from.
+      STATE._unmountedMsgNodes.push(newest);
+    }
+    while (STATE._unmountedMsgNodes.length > MAX_UNMOUNTED_NODES) {
+      STATE._unmountedMsgNodes.shift();
+    }
+    updateLoadOlderUi();
   }
+
+  function dropFromNodeBySeq(node) {
+    for (const [k, v] of STATE.nodeBySeq) {
+      if (v === node) { STATE.nodeBySeq.delete(k); return; }
+    }
+  }
+
+  // vt-0410 NIT 1: simplified — invariant is that ingestReplayBatch's
+  // finally block has already cleared replayInFlight before this runs.
+  // Just trigger the deferred eviction pass.
+  function flushEvictionAfterReplay() { evictExcess(); }
 
   // vt-0397: re-attach the most-recently-evicted batch on scroll-up.
   // Preserves scroll position by anchoring on the previously-top node's
@@ -238,30 +280,30 @@
     if (!STATE.list || !STATE._unmountedMsgNodes.length) return;
     const scroller = STATE.list.parentElement;
     if (!scroller) return;
+    // vt-0403 fix: disable smooth-scroll BEFORE any DOM mutation so a
+    // mid-flight animation from a prior scrollToBottom can't interfere
+    // with the anchor delta. Restored at the end.
+    const prevBehavior = scroller.style.scrollBehavior;
+    scroller.style.scrollBehavior = 'auto';
     const oldFirst = STATE._mountedMsgNodes[0] || null;
     const anchorRect = oldFirst ? oldFirst.getBoundingClientRect() : null;
     const batch = STATE._unmountedMsgNodes.splice(
       Math.max(0, STATE._unmountedMsgNodes.length - LOAD_OLDER_BATCH));
-    // Insert in chronological order before the current oldest mounted.
     const insertBeforeRef = oldFirst || pinnedBottomNode();
     for (const node of batch) {
       if (insertBeforeRef) STATE.list.insertBefore(node, insertBeforeRef);
       else STATE.list.appendChild(node);
     }
     STATE._mountedMsgNodes = batch.concat(STATE._mountedMsgNodes);
-    if (anchorRect) {
-      // vt-0397 CRIT fix: temporarily disable smooth-scroll so the
-      // scrollTop assignment is instantaneous. Otherwise the smooth-
-      // scroll animation interpolates and the BCR delta is measured
-      // against a half-completed scroll position → viewport jumps.
-      const prevBehavior = scroller.style.scrollBehavior;
-      scroller.style.scrollBehavior = 'auto';
-      // Re-measure after layout and shift scrollTop by the delta so the
-      // anchor stays at the same screen-Y.
+    if (anchorRect && oldFirst) {
       const newRect = oldFirst.getBoundingClientRect();
       scroller.scrollTop += (newRect.top - anchorRect.top);
-      scroller.style.scrollBehavior = prevBehavior;
     }
+    scroller.style.scrollBehavior = prevBehavior;
+    // vt-0399 fix: trim the tail so the net mounted count stays ≤
+    // MAX_MOUNTED_NODES. The newest mounted nodes become unmounted —
+    // they're the live messages the user just scrolled away from.
+    evictTail();
     updateLoadOlderUi();
   }
 
@@ -273,6 +315,13 @@
     STATE._topSentinel = sentinel;
     if (typeof IntersectionObserver === 'function') {
       const scroller = STATE.list.parentElement;
+      // vt-0410 NIT 2: warn instead of silently falling back to viewport
+      // root. attach() should always be called after mount(), so a null
+      // scroller means the public API was misused.
+      if (!scroller) {
+        console.warn('[chat-view] setupTopSentinel: list has no parent; ' +
+          'attach() must run after mount(). Falling back to viewport root.');
+      }
       STATE._topObserver = new IntersectionObserver((entries) => {
         for (const e of entries) {
           if (e.isIntersecting) loadOlderBatch();

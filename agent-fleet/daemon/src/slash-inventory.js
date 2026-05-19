@@ -63,7 +63,12 @@ function readPluginCommands(home = os.homedir()) {
         // vt-0398 CRIT fix: only accept ASCII word-char filenames so a
         // malicious plugin can't smuggle HTML/control characters via
         // command names. Dotfiles + spaces + path separators rejected.
-        if (!/^[A-Za-z][\w\-]{0,63}$/.test(stem)) continue;
+        // vt-0405: warn so legitimate plugins with underscore/digit
+        // prefixes (e.g. _private-cmd, 0pen) aren't silently dropped.
+        if (!/^[A-Za-z][\w\-]{0,63}$/.test(stem)) {
+          console.warn(`[daemon] slash-inventory: skipping non-conformant filename ${md.name}/${pd.name}/commands/${f}`);
+          continue;
+        }
         const name = '/' + stem;
         const filePath = path.join(cmdDir, f);
         let description = '';
