@@ -85,31 +85,40 @@
       ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
-  // vt-0438: linkify http(s) URLs. Runs AFTER HTML escaping AND AFTER
-  // code-fence/inline-code rules so we don't auto-link inside code blocks.
-  // We match the escaped form (e.g. `https://example.com`) — that's what
-  // exists in the string after escapeHtml. Trailing punctuation common in
-  // prose (".", ",", ")", "]", "!") is excluded from the URL.
-  const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?\])]/g;
-  function linkifyHtml(html) {
-    // Skip stretches inside <pre>…</pre> or <code>…</code>. Easiest:
-    // split on those tags, only run the replace on the "outside" parts.
-    return html.split(/(<(?:pre|code)\b[^>]*>[\s\S]*?<\/(?:pre|code)>)/g)
-      .map(part => part.startsWith('<pre') || part.startsWith('<code')
-        ? part
-        : part.replace(URL_RE,
-            url => `<a href="${url}" class="cv-link" target="_blank" rel="noopener noreferrer">${url}</a>`))
-      .join('');
-  }
+  // vt-0438: linkify http(s) URLs. CRIT fix from review: run BEFORE the
+  // inline-backtick pass so a URL inside an inline `code span` doesn't get
+  // wrapped in <a>, AND so a URL inside a fenced ```block``` is excluded
+  // by matching against the placeholder, not the raw HTML.
+  //
+  // Pipeline:
+  //   1. escapeHtml — text is now safe HTML
+  //   2. replace fenced ```…``` with sentinel tokens, stash bodies
+  //   3. replace inline `…` with sentinel tokens, stash bodies
+  //   4. linkify the remaining (text-only) string
+  //   5. restore sentinels with the real <pre>/<code> wrappers
+  //
+  // Sentinels survive linkify because they don't match http(s)://.
+  // \x60 used in regex char class to avoid backtick confusion (review NIT).
+  const URL_RE = /\bhttps?:\/\/[^\s<>"'\x60]+[^\s<>"'\x60.,;:!?\])]/g;
 
   function renderMarkdown(text) {
     if (!text) return '';
-    const esc = escapeHtml(text);
-    const withCode = esc
-      .replace(/```([\s\S]*?)```/g,
-        (_, body) => `<pre class="cv-code"><code>${body}</code></pre>`)
-      .replace(/`([^`\n]+)`/g, '<code class="cv-inline-code">$1</code>');
-    return linkifyHtml(withCode).replace(/\n/g, '<br>');
+    let html = escapeHtml(text);
+    const fences = [];
+    html = html.replace(/```([\s\S]*?)```/g, (_, body) => {
+      fences.push(body); return `\x00FENCE${fences.length - 1}\x00`;
+    });
+    const ticks = [];
+    html = html.replace(/`([^`\n]+)`/g, (_, body) => {
+      ticks.push(body); return `\x00TICK${ticks.length - 1}\x00`;
+    });
+    html = html.replace(URL_RE,
+      url => `<a href="${url}" class="cv-link" target="_blank" rel="noopener noreferrer">${url}</a>`);
+    html = html.replace(/\x00FENCE(\d+)\x00/g,
+      (_, i) => `<pre class="cv-code"><code>${fences[+i]}</code></pre>`);
+    html = html.replace(/\x00TICK(\d+)\x00/g,
+      (_, i) => `<code class="cv-inline-code">${ticks[+i]}</code>`);
+    return html.replace(/\n/g, '<br>');
   }
 
   // vt-0396 NIT fix / vt-0410 NIT 4: grapheme-aware truncation. The

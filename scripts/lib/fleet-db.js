@@ -510,20 +510,32 @@ async function readMetricsRollupSince(c, hostId, interval) {
 // prompts (ordered by fleet_group_roles.position) after the group's
 // brain_prompt and feed the whole thing through as system_prompt.
 
+// vt-0438 review NIT: helper makes WHERE-clause arg numbering robust
+// regardless of how many parameterized filters get added later.
+function _buildWhere(filters) {
+  const where = []; const args = [];
+  for (const [predicate, arg] of filters) {
+    if (predicate == null) continue;
+    if (arg === undefined) { where.push(predicate); continue; }
+    args.push(arg);
+    where.push(predicate.replace('$?', `$${args.length}`));
+  }
+  return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', args };
+}
+
 async function listAgentRoles(c, { includeDeleted = false, category = null } = {}) {
   // vt-0433: optional category filter; ORDER preserves alpha within
   // category so the SPA folder-tree gets stable grouping.
-  const where = [];
-  const args = [];
-  if (!includeDeleted) where.push('deleted_at IS NULL');
-  if (category) { args.push(category); where.push(`category = $${args.length}`); }
-  const sql =
+  const { sql: whereSql, args } = _buildWhere([
+    !includeDeleted ? ['deleted_at IS NULL', undefined] : [null],
+    category        ? ['category = $?', category]       : [null],
+  ]);
+  const { rows } = await c.query(
     `SELECT id, name, description, prompt, default_model, allowed_tools, category,
             created_at, updated_at, deleted_at
        FROM fleet_agent_roles
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-       ORDER BY category ASC, lower(name) ASC`;
-  const { rows } = await c.query(sql, args);
+       ${whereSql}
+       ORDER BY category ASC, lower(name) ASC`, args);
   return rows;
 }
 
@@ -533,16 +545,16 @@ async function listAgentRoles(c, { includeDeleted = false, category = null } = {
 // SHA is computed in Node to avoid pulling in pgcrypto.
 async function listAgentRolesSummary(c, { includeDeleted = false, category = null } = {}) {
   const crypto = require('node:crypto');
-  const where = [];
-  const args = [];
-  if (!includeDeleted) where.push('deleted_at IS NULL');
-  if (category) { args.push(category); where.push(`category = $${args.length}`); }
+  const { sql: whereSql, args } = _buildWhere([
+    !includeDeleted ? ['deleted_at IS NULL', undefined] : [null],
+    category        ? ['category = $?', category]       : [null],
+  ]);
   const { rows } = await c.query(
     `SELECT id, name, description, prompt, default_model, allowed_tools, category,
             octet_length(prompt) AS prompt_bytes,
             created_at, updated_at, deleted_at
        FROM fleet_agent_roles
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ${whereSql}
        ORDER BY category ASC, lower(name) ASC`, args);
   for (const r of rows) {
     r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
@@ -573,6 +585,12 @@ async function updateAgentRole(c, id, patch) {
   const cols = [];
   const vals = [];
   let i = 1;
+  // vt-0438 review MED: normalize blank category → 'general' (match
+  // createAgentRole) so a `PATCH {"category":""}` doesn't store an empty
+  // string that renders as a blank folder header.
+  if (patch.category !== undefined && (patch.category === null || String(patch.category).trim() === '')) {
+    patch.category = 'general';
+  }
   for (const k of ['name', 'description', 'prompt', 'default_model', 'category']) {
     if (patch[k] !== undefined) { cols.push(`${k} = $${i++}`); vals.push(patch[k]); }
   }
@@ -599,7 +617,8 @@ async function deleteAgentRole(c, id) {
 
 async function listGroupRoles(c, groupId) {
   const { rows } = await c.query(
-    `SELECT r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools, gr.position, gr.added_at
+    `SELECT r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools, r.category,
+            gr.position, gr.added_at
        FROM fleet_group_roles gr
        JOIN fleet_agent_roles r ON r.id = gr.role_id
       WHERE gr.group_id = $1 AND r.deleted_at IS NULL
@@ -626,7 +645,8 @@ async function unassignRoleFromGroup(c, groupId, roleId) {
 // precedence (group replaces host) is in resolveEffectiveRoles below.
 async function listHostRoles(c, hostId) {
   const { rows } = await c.query(
-    `SELECT r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools, hr.position, hr.added_at
+    `SELECT r.id, r.name, r.description, r.prompt, r.default_model, r.allowed_tools, r.category,
+            hr.position, hr.added_at
        FROM fleet_host_roles hr
        JOIN fleet_agent_roles r ON r.id = hr.role_id
       WHERE hr.host_id = $1 AND r.deleted_at IS NULL

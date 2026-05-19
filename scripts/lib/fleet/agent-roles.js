@@ -42,6 +42,13 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
             return send(res, 422, { error: 'prompt required (string)' });
           }
           if (b.prompt.length > 32768) return send(res, 422, { error: 'prompt too long (max 32768 chars)' });
+          // vt-0438 review MED: validate category at API boundary so a
+          // misbehaving client can't pollute the DB with HTML or oversized
+          // strings. 32 chars matches the folder-tree UX budget.
+          if (b.category !== undefined && b.category !== null
+              && (typeof b.category !== 'string' || b.category.length > 32 || !/^[a-z0-9_-]*$/i.test(b.category))) {
+            return send(res, 422, { error: 'category invalid (string, <=32, [a-z0-9_-])' });
+          }
           try { validateAllowedToolsField(b.allowed_tools); }
           catch (e) { return send(res, e.statusCode || 422, { error: e.message }); }
           try {
@@ -93,6 +100,11 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
           }
           if (b.name !== undefined && (typeof b.name !== 'string' || b.name.length > 64)) {
             return send(res, 422, { error: 'name invalid' });
+          }
+          // vt-0438 review MED: same category validation as the create path.
+          if (b.category !== undefined && b.category !== null
+              && (typeof b.category !== 'string' || b.category.length > 32 || !/^[a-z0-9_-]*$/i.test(b.category))) {
+            return send(res, 422, { error: 'category invalid (string, <=32, [a-z0-9_-])' });
           }
           try { validateAllowedToolsField(b.allowed_tools); }
           catch (e) { return send(res, e.statusCode || 422, { error: e.message }); }

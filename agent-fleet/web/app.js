@@ -1768,7 +1768,13 @@
     $('group-roles-group-name').textContent = group.name;
     const body = $('group-roles-body');
     body.textContent = 'loading…';
-    try { dlg.showModal(); } catch { return; }
+    // vt-0438 review CRIT: re-renders after assign / unassign / reorder
+    // re-enter this function. showModal() throws InvalidStateError if the
+    // dialog is already open; the bare catch{return} then exits before
+    // re-fetch — body stuck at "loading…" until user closes + reopens.
+    if (!dlg.open) {
+      try { dlg.showModal(); } catch { return; }
+    }
     let allRoles, assigned;
     try {
       [allRoles, assigned] = await Promise.all([
@@ -1850,7 +1856,13 @@
         refreshCount();
       });
       refreshCount();
-      filt.focus();
+      // vt-0438 review MED: only auto-focus the filter on the very first
+      // render. Re-renders after assign/unassign re-enter this function
+      // and stole focus from buttons the operator was clicking.
+      if (!body.dataset.filterFocused) {
+        body.dataset.filterFocused = '1';
+        filt.focus();
+      }
     }
     body.querySelectorAll('[data-up]').forEach(b => b.onclick = () => {
       const idx = assigned.findIndex(r => r.id === b.dataset.up);
