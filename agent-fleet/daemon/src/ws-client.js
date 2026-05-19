@@ -539,7 +539,13 @@ async function runDaemon(opts) {
     // Lightweight strip — for marker detection only, NOT for display.
     // vt-0422: also strip OSC (\x1b]...ST) and DCS (\x1bP...ST) so tmux
     // window-title sequences and DCS payloads can't fragment marker text.
+    // vt-0427: CHA (Cursor Horizontal Absolute, \x1b[NG) is how Ink positions
+    // each word in the permission dialog — there are NO literal spaces in the
+    // raw stream. Convert CHA → space BEFORE stripping remaining CSI so
+    // "Do you want to proceed?" stays matchable. Without this the stripped
+    // tail looks like "Doyouwanttoproceed?" and PERM_TITLE_RE misses.
     return s
+      .replace(/\x1b\[[\d;]*G/g, ' ')
       .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
       .replace(/\x1b[\]P].*?(?:\x07|\x1b\\)/gs, '');
   }
