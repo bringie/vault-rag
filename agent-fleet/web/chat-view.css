@@ -562,110 +562,100 @@
   50% { opacity: 1; transform: scale(1.15); }
 }
 
-/* vt-0438 round 2: composer redesigned as an integrated terminal
-   prompt line, NOT a separate card. The previous frame-with-border-
-   plus-corner-brackets read as a panel sitting on the chat — user
-   called it "тупо черный кусок". This version:
-   - no card border / no radius / no inner gradient
-   - the chat scroller's bottom edge IS the composer's top edge
-   - top border is a single phosphor scanline; brightens on focus
-   - prompt glyph ❯ sits inline with the textarea baseline */
+/* vt-0438 round 3: composer styling now consumes the app theme vars
+   (--bg, --text, --line, --accent, --font-mono) so it matches every
+   other input on the site (.gd-body input, group/role modals, etc).
+   The phosphor-terminal aesthetic stays in the message area; the
+   input field reads as a normal site input. Theme switching (dark /
+   light / solarized / nord) carries through automatically. */
 
 .cv-composer {
   position: relative; z-index: 3;
-  background: var(--cv-bg);
-  border-top: 1px solid var(--cv-line);
-  box-shadow: 0 -1px 0 0 color-mix(in srgb, var(--cv-phos) 18%, transparent);
-  transition: box-shadow 200ms, border-color 200ms;
-}
-.cv-composer:focus-within {
-  border-top-color: var(--cv-phos);
-  box-shadow:
-    0 -1px 0 0 var(--cv-phos),
-    0 -12px 28px -16px var(--cv-phos-glow);
+  padding: 10px 14px 12px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
 }
 .cv-composer-busy {
-  border-top-color: var(--cv-amber);
-  box-shadow: 0 -1px 0 0 var(--cv-amber);
+  border-top-color: var(--magenta, var(--accent));
 }
 
 .cv-composer-frame {
   position: relative;
   display: flex; align-items: flex-start;
-  padding: 0 14px;
-  /* No background / no border — the composer wrapper above carries the
-     single phosphor scanline. The frame is just a flex layout shell. */
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  transition: none;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  transition: border-color 140ms, box-shadow 140ms;
+}
+.cv-composer-frame:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.cv-composer-busy .cv-composer-frame {
+  border-color: var(--magenta, var(--accent));
 }
 .cv-composer-frame::before,
-.cv-composer-frame::after { content: none; }  /* drop corner brackets */
+.cv-composer-frame::after { content: none; }  /* legacy corner brackets off */
 
-/* Prompt glyph sits on the textarea baseline. Bigger + phosphor-glow
-   so the field reads unambiguously as a terminal input line. */
 .cv-prompt-glyph {
   flex: 0 0 auto;
-  padding: 12px 10px 8px 0;
-  color: var(--cv-phos);
-  font: 15px/1.5 var(--cv-mono);
-  text-shadow: 0 0 10px var(--cv-phos-glow);
-  opacity: 0.7;
-  transition: opacity 160ms, text-shadow 160ms;
+  padding: 8px 10px 8px 12px;
+  color: var(--text-dim);
+  font: .9em/1.4 var(--font-mono);
   user-select: none;
   pointer-events: none;
+  transition: color 140ms;
 }
-.cv-composer-frame:focus-within .cv-prompt-glyph {
-  opacity: 1;
-  text-shadow: 0 0 14px var(--cv-phos-glow);
-}
-.cv-composer-busy .cv-prompt-glyph {
-  color: var(--cv-amber);
-  text-shadow: 0 0 10px var(--cv-amber-glow);
-}
+.cv-composer-frame:focus-within .cv-prompt-glyph { color: var(--accent); }
+.cv-composer-busy .cv-prompt-glyph { color: var(--magenta, var(--accent)); }
 
 .cv-composer-input {
   flex: 1; min-width: 0;
-  background: transparent; color: var(--cv-fg);
+  background: transparent;
+  color: var(--text);
   border: 0; outline: 0; resize: none;
-  padding: 12px 0 8px;
-  min-height: 24px; max-height: 200px;
-  font: 13px/1.5 var(--cv-mono);
-  caret-color: var(--cv-phos);
+  padding: 8px 12px 8px 0;
+  min-height: 22px; max-height: 200px;
+  font: .9em/1.4 var(--font-mono);
+  caret-color: var(--accent);
 }
 .cv-composer-input::placeholder {
-  color: var(--cv-fg-faint);
+  color: var(--text-faint);
   font-style: italic;
 }
-.cv-composer-input:disabled { opacity: 0.4; cursor: not-allowed; }
+.cv-composer-input:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* vt-0438 r3: actions row uses app theme — same look as btn-ghost
+   buttons elsewhere on the site. */
 .cv-composer-actions {
   display: flex; gap: 6px; align-items: center;
-  padding: 4px 14px 8px;
-  /* vt-0438 r2: subtle phosphor-tinted separator instead of stark line.
-     Keeps the composer as one continuous terminal-line block visually. */
-  border-top: 1px dashed color-mix(in srgb, var(--cv-line) 60%, transparent);
+  padding: 8px 0 0 0;
 }
 .cv-action-btn {
-  background: transparent; border: 0;
-  color: var(--cv-fg-dim);
-  padding: 5px 10px;
-  font: 10px/1 var(--cv-mono);
-  letter-spacing: 0.12em; text-transform: lowercase;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  padding: .35em .75em;
+  font: .8em/1 var(--font-mono);
+  letter-spacing: .08em; text-transform: lowercase;
   cursor: pointer;
-  transition: color 140ms, text-shadow 140ms;
+  transition: color 140ms, border-color 140ms, background 140ms;
 }
-.cv-action-btn:hover:not(:disabled) { color: var(--cv-fg); }
-.cv-action-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+.cv-action-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.cv-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .cv-action-send {
-  color: var(--cv-phos); margin-left: auto;
-  letter-spacing: 0.15em; font-weight: 600;
+  color: var(--accent);
+  border-color: var(--accent);
+  margin-left: auto;
+  font-weight: 600;
 }
-.cv-action-send:hover:not(:disabled) { text-shadow: 0 0 8px var(--cv-phos-glow); }
-.cv-action-stop:hover { color: var(--cv-danger); text-shadow: 0 0 6px var(--cv-danger); }
-.cv-action-cancel:hover { color: var(--cv-amber); text-shadow: 0 0 6px var(--cv-amber-glow); }
+.cv-action-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.cv-action-stop:hover { color: var(--magenta, var(--accent)); border-color: var(--magenta, var(--accent)); }
+.cv-action-cancel:hover { color: var(--text); }
 
 .cv-fresh {
   animation: cv-msg-arrive 380ms cubic-bezier(0.2, 0.6, 0.2, 1);
