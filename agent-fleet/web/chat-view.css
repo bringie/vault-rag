@@ -118,14 +118,70 @@
     color-mix(in srgb, var(--cv-cyan) 4%, transparent) 0%,
     transparent 24%);
 }
+/* vt-0428: assistant lives on the RIGHT side — chat-style flow.
+   Grid flipped: body | glyph. Accent rail + gradient mirrored. */
 .cv-assistant {
   --cv-glyph: '◆';
   --cv-glyph-color: var(--cv-phos);
   --cv-glyph-spread: 10px;
-  border-left-color: var(--cv-phos);
-  background: linear-gradient(90deg,
+  grid-template-columns: 1fr 28px;
+  padding: 7px 0 7px 18px;
+  border-left: 2px solid transparent;
+  border-right: 2px solid var(--cv-phos);
+  background: linear-gradient(270deg,
     color-mix(in srgb, var(--cv-phos) 3%, transparent) 0%,
     transparent 26%);
+}
+.cv-assistant::before { grid-column: 2; }
+.cv-assistant .cv-body {
+  grid-column: 1;
+  /* Keep readable width; push toward the right rail. */
+  max-width: 78%;
+  margin-left: auto;
+  text-align: left;
+}
+
+/* vt-0428: tool-calls group — single collapsible per assistant turn
+   so the chat reads as conversation, not debug log. */
+.cv-tools-group {
+  margin: 6px 0;
+  border: 1px dashed var(--cv-line-bright);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.015);
+}
+.cv-tools-group[open] {
+  background: rgba(255, 255, 255, 0.025);
+}
+.cv-tools-group-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--cv-fg-faint);
+  font-size: 11px; letter-spacing: 0.05em;
+  user-select: none;
+}
+.cv-tools-group-summary::-webkit-details-marker { display: none; }
+.cv-tools-group-chevron {
+  display: inline-block;
+  transition: transform 120ms ease;
+}
+.cv-tools-group[open] .cv-tools-group-chevron { transform: rotate(90deg); }
+.cv-tools-group-count {
+  color: var(--cv-fg-dim);
+  text-transform: uppercase;
+}
+.cv-tools-group-preview {
+  color: var(--cv-fg-faint);
+  opacity: 0.7;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0; flex: 1;
+}
+.cv-tools-group > .cv-tool {
+  margin: 4px 8px 6px 8px;
 }
 .cv-system-line {
   display: flex; gap: 8px;

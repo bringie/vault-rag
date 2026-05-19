@@ -386,8 +386,21 @@
       body.appendChild(div);
     }
 
-    for (const tu of (ex.tool_uses || [])) {
-      body.appendChild(renderToolCall(tu));
+    // vt-0428: tool calls grouped behind a single collapsible. User
+    // wants conversation flow visible; tool noise opt-in only.
+    const tools = ex.tool_uses || [];
+    if (tools.length) {
+      const wrap = document.createElement('details');
+      wrap.className = 'cv-tools-group';
+      const sum = el('summary', 'cv-tools-group-summary');
+      sum.appendChild(el('span', 'cv-tools-group-chevron', '▸'));
+      sum.appendChild(el('span', 'cv-tools-group-count',
+        `${tools.length} tool call${tools.length === 1 ? '' : 's'}`));
+      const previewNames = tools.slice(0, 3).map(t => t.name).join(' · ');
+      if (previewNames) sum.appendChild(el('span', 'cv-tools-group-preview', previewNames));
+      wrap.appendChild(sum);
+      for (const tu of tools) wrap.appendChild(renderToolCall(tu));
+      body.appendChild(wrap);
     }
 
     root.appendChild(body);
@@ -400,8 +413,22 @@
     if (ex.is_sidechain) root.classList.add('cv-sidechain');
 
     if (ex.tool_results && ex.tool_results.length) {
+      // vt-0428: tool_result chain also collapses into one group so
+      // the chat stays readable. Errors stay individually expandable.
       root.classList.add('cv-toolresult-frame');
-      for (const tr of ex.tool_results) root.appendChild(renderToolResult(tr));
+      const trs = ex.tool_results;
+      const wrap = document.createElement('details');
+      wrap.className = 'cv-tools-group';
+      const sum = el('summary', 'cv-tools-group-summary');
+      sum.appendChild(el('span', 'cv-tools-group-chevron', '▸'));
+      const errs = trs.filter(t => t.is_error).length;
+      sum.appendChild(el('span', 'cv-tools-group-count',
+        `${trs.length} tool result${trs.length === 1 ? '' : 's'}${errs ? ` · ${errs} err` : ''}`));
+      wrap.appendChild(sum);
+      for (const tr of trs) wrap.appendChild(renderToolResult(tr));
+      // If any error — expand by default so user sees it without clicking.
+      if (errs) wrap.open = true;
+      root.appendChild(wrap);
       return root;
     }
 
