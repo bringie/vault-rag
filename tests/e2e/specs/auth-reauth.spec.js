@@ -100,9 +100,15 @@ test.describe('Auth + re-auth flow @auth @smoke', () => {
     });
 
     await page.goto(`${BASE}/fleet/`);
-    // Wait for the app to try to boot and hit 401.
-    // Allow enough time for at least one API call to fail.
-    await page.waitForTimeout(5_000);
+    // vt-0423: replace 5s unconditional sleep with a deterministic wait —
+    // either the inputDialog was triggered OR the auth screen rendered.
+    // 10s ceiling is enough for the boot fetch sequence to either succeed
+    // or fail; if neither condition occurs we proceed and the assertions
+    // below capture the state.
+    await page.waitForFunction(() => {
+      return window.__inputDialogCalled === true
+        || (document.getElementById('auth') && document.getElementById('auth').offsetParent !== null);
+    }, null, { timeout: 10_000 }).catch(() => {});
 
     // If inputDialog was called, the 401 was handled gracefully (no hard reload destroying state).
     // If the page hard-reloaded it would have booted into auth screen instead.

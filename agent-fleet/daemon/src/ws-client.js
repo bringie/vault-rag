@@ -522,9 +522,12 @@ async function runDaemon(opts) {
   // so the marker isn't split across two writes.
   const _permState = new Map();
   // Marker: claude's footer line on the permission dialog.
+  // vt-0420: accept U+2019 (typographic right single quote) which is what
+  // Claude TUI actually outputs for don't / don’t. ASCII-only regex
+  // missed every real dialog and rendered 2 options instead of 3.
   const PERM_FOOTER_RE = /Esc to cancel/i;
   const PERM_TITLE_RE = /Do you want to proceed\??/i;
-  const PERM_ASK_AGAIN_RE = /don'?t ask again/i;
+  const PERM_ASK_AGAIN_RE = /don[’']?t ask again/iu;
   // vt-0418: MCP tool dialogs include a long tool description (sometimes
   // 500+ chars) so the rendered dialog can exceed 8KB after ANSI codes.
   // 16KB tail keeps the title in the window long enough for footer to
@@ -534,7 +537,11 @@ async function runDaemon(opts) {
 
   function _stripAnsi(s) {
     // Lightweight strip — for marker detection only, NOT for display.
-    return s.replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '');
+    // vt-0422: also strip OSC (\x1b]...ST) and DCS (\x1bP...ST) so tmux
+    // window-title sequences and DCS payloads can't fragment marker text.
+    return s
+      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+      .replace(/\x1b[\]P].*?(?:\x07|\x1b\\)/gs, '');
   }
 
   // vt-0392 v6: permission dialog auto-timeout. If the dialog stays
@@ -752,8 +759,19 @@ async function runDaemon(opts) {
     const state = _inkReady.get(sessionId);
     if (state?.timer) clearTimeout(state.timer);
     _inkReady.delete(sessionId);
+    // vt-0419: if a permission dialog was active when the session died,
+    // emit permission_resolved so the UI card doesn't stay stuck forever.
+    // Without this, the card persists until reconnect or manual refresh.
     const ps = _permState.get(sessionId);
     if (ps?.timer) clearTimeout(ps.timer);
+    if (ps?.active && ps?.lastReqId) {
+      safeSend(ws, {
+        type: 'permission_resolved',
+        session_id: sessionId,
+        request_id: ps.lastReqId,
+        reason: 'session_exit',
+      });
+    }
     _permState.delete(sessionId);
     _busyState.delete(sessionId);
   });
@@ -807,6 +825,25 @@ async function runDaemon(opts) {
         return { session_id: id, pid: info.pid, alive, last_seq: info.last_seq, ...(alive ? {} : { exit_code: -1 }) };
       });
       if (recon.length) ws.send(JSON.stringify({ type: 'reconciliation', sessions: recon }));
+      // vt-0421: re-emit permission_request frames for any dialog that was
+      // active when the WS dropped. Without this, the hub/viewer reconnects
+      // mid-dialog and the inline card never re-appears — operator is
+      // stranded with no way to approve/deny except Esc'ing on the host PTY.
+      for (const [sid, ps] of _permState.entries()) {
+        if (ps.active && ps.lastReqId && ptyMgr.sessions.has(sid)) {
+          safeSend(ws, {
+            type: 'permission_request',
+            session_id: sid,
+            request_id: ps.lastReqId,
+            context: (ps.titleContext || '').slice(-600),
+            // We can't tell ask-again from re-emit alone — UI can offer
+            // the 2-option default; if user wants the 3rd they can Esc
+            // and resubmit the next time the prompt redraws.
+            options: ['Yes', 'No'],
+            replayed: true,
+          });
+        }
+      }
       // vt-0290: emit per-session pty_gap frames for any bytes the
       // daemon had to drop while the WS was down. Hub broadcasts these
       // to viewers so the transcript shows an explicit gap marker

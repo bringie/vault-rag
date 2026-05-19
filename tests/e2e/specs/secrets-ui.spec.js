@@ -23,6 +23,13 @@ async function secretsPost(c, action, body) {
 }
 
 test.describe('Secrets UI roundtrip @smoke @secrets', () => {
+  // vt-0423: secrets/set is ROUTE_ADMIN_ONLY when FLEET_ADMIN_TOKEN is
+  // configured on the hub. Skip the whole describe if the viewer-only
+  // token is all we have — the tests would 503 with confusing failures.
+  test.beforeEach(() => {
+    test.skip(!ADMIN_TOKEN, 'secrets/set requires FLEET_ADMIN_TOKEN');
+  });
+
   test.afterAll(async () => {
     // Cleanup: delete any E2E_TEST_SECRET_* leftovers
     const token = ADMIN_TOKEN || VIEWER_TOKEN;

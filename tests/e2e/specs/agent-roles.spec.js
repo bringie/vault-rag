@@ -109,7 +109,9 @@ test.describe('Agent roles CRUD @smoke @agent-roles', () => {
     await page.goto(`${BASE}/fleet/`);
     await expect(page.locator('#app')).toBeVisible({ timeout: 10_000 });
     await featuresResp;
-    await page.waitForTimeout(200);
+    // vt-0424: wait deterministically for the nav button to appear once
+    // features applied, instead of an arbitrary 200ms sleep.
+    await expect(page.locator('#nav-agent-roles, #nav-dashboard')).toBeVisible({ timeout: 5_000 });
 
     // Register BEFORE hash navigation — the app fetches agent-roles synchronously
     // on route change and the response can arrive before a post-goto registration.
@@ -119,7 +121,11 @@ test.describe('Agent roles CRUD @smoke @agent-roles', () => {
     );
     await page.goto(`${BASE}/fleet/#/agent-roles`);
     await rolesRespP;
-    await page.waitForTimeout(300);
+    // vt-0424: panel un-hide wait, deterministic.
+    await page.waitForFunction(
+      () => { const p = document.getElementById('agentrolesview'); return p && !p.hidden; },
+      null, { timeout: 5_000 }
+    );
 
     // agentrolesview panel should be visible
     const panel = page.locator('#agentrolesview');
@@ -159,7 +165,11 @@ test.describe('Agent roles CRUD @smoke @agent-roles', () => {
     );
     await page.goto(`${BASE}/fleet/#/agent-roles`);
     await rolesRespP2;
-    await page.waitForTimeout(300);
+    // vt-0424: panel-visible wait replaces 300ms sleep.
+    await page.waitForFunction(
+      () => { const p = document.getElementById('agentrolesview'); return p && !p.hidden; },
+      null, { timeout: 5_000 }
+    );
 
     // Click "new" button to open modal
     const newBtn = page.locator('#ar-new');
@@ -188,8 +198,12 @@ test.describe('Agent roles CRUD @smoke @agent-roles', () => {
     const saved = await saveResp;
     expect(saved.status()).toBe(201);
 
-    // Modal should close and list should refresh
-    await page.waitForTimeout(500);
+    // vt-0424: modal hide is observable on the element; poll for it via
+    // waitForFunction with a 5s ceiling instead of a 500ms sleep.
+    await page.waitForFunction(
+      () => { const m = document.getElementById('agent-role-modal'); return !m || m.hidden; },
+      null, { timeout: 5_000 }
+    );
     const modalHidden = await modal.evaluate(el => el.hidden).catch(() => true);
     expect(modalHidden).toBe(true);
 

@@ -45,7 +45,13 @@ test.describe('Recycle bin @smoke @recycle-bin', () => {
   });
 
   test.afterAll(async () => {
-    // Any active e2e-test-recycle-* workflows should also be cleaned
+    // vt-0423: clean both active AND recycle-bin scopes. No HTTP
+    // purge endpoint exists (purgeWorkflow is only called by the 30-day
+    // reaper internally), so soft-deleted fixtures will continue to
+    // accumulate until that reaper runs. The cleanup below at least
+    // ensures we don't leak ACTIVE e2e-test-recycle-* between runs.
+    // Documented known issue: long-running test environments will
+    // accumulate ~1 soft-deleted e2e fixture per full suite run.
     if (!ADMIN_TOKEN) return;
     const c = await client(ADMIN_TOKEN);
     try {
@@ -103,8 +109,10 @@ test.describe('Recycle bin @smoke @recycle-bin', () => {
     const wfs = Array.isArray(bin.workflows) ? bin.workflows : (bin.workflows?.rows || []);
     expect(wfs.find(w => w.id === fixtureId)).toBeFalsy();
 
-    // Re-delete it so it's cleaned up
-    await c.delete(`/api/fleet/workflows/${fixtureId}`).catch(() => {});
+    // vt-0423: don't re-delete here — afterAll's active-list scan will
+    // soft-delete the now-restored fixture once. Re-deleting in this test
+    // body created a duplicate in-bin entry that afterAll couldn't see
+    // (no HTTP purge endpoint exists), causing permanent accumulation.
     await c.dispose();
   });
 
@@ -119,7 +127,9 @@ test.describe('Recycle bin @smoke @recycle-bin', () => {
     await page.goto(`${BASE}/fleet/`);
     await expect(page.locator('#app')).toBeVisible({ timeout: 10_000 });
     await featuresResp;
-    await page.waitForTimeout(200);
+    // vt-0424: deterministic wait — recycle-bin nav button appears once
+    // features applied. Then navigate and wait for panel un-hide.
+    await expect(page.locator('#nav-recycle-bin, #nav-groups')).toBeVisible({ timeout: 5_000 });
 
     const binResp = page.waitForResponse(
       r => r.url().includes('/api/fleet/recycle-bin') && r.ok(),
@@ -127,7 +137,10 @@ test.describe('Recycle bin @smoke @recycle-bin', () => {
     );
     await page.goto(`${BASE}/fleet/#/recycle-bin`);
     await binResp;
-    await page.waitForTimeout(300);
+    await page.waitForFunction(
+      () => { const p = document.getElementById('recyclebinview'); return p && !p.hidden; },
+      null, { timeout: 5_000 }
+    );
 
     // recyclebinview panel must be visible
     const panel = page.locator('#recyclebinview');

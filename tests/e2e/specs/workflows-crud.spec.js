@@ -124,7 +124,9 @@ test.describe('Workflows CRUD @smoke @workflows', () => {
     await page.goto(`${BASE}/fleet/`);
     await expect(page.locator('#app')).toBeVisible({ timeout: 10_000 });
     await featuresResp;
-    await page.waitForTimeout(200);
+    // vt-0424: replace arbitrary 200ms sleep — wait for the workflows nav
+    // button to actually appear (gated by feature flag application).
+    await expect(page.locator('#nav-workflows')).toBeVisible({ timeout: 5_000 });
 
     // Register BEFORE hash navigation to avoid the race where the app
     // fetches /api/fleet/workflows synchronously on route change.
@@ -134,7 +136,12 @@ test.describe('Workflows CRUD @smoke @workflows', () => {
     );
     await page.goto(`${BASE}/fleet/#/workflows`);
     await wfRespP;
-    await page.waitForTimeout(300);
+    // vt-0424: wait for the panel to actually un-hide rather than a fixed
+    // 300ms — page.goto resolves on navigation, not on hash-route handler.
+    await page.waitForFunction(
+      () => { const p = document.getElementById('workflowsview'); return p && !p.hidden; },
+      null, { timeout: 5_000 }
+    );
 
     // workflowsview panel should be visible (not hidden)
     const panel = page.locator('#workflowsview');

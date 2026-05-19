@@ -183,9 +183,29 @@ test.describe('Feature flags UI gating @features', () => {
       const hash = await page.evaluate(() => location.hash);
       expect(hash).not.toBe('#/audit');
     } finally {
-      // Restore.
-      await c.patch('/api/fleet/features/audit', { data: { enabled: auditRow.enabled } });
+      // vt-0423: harden the revert so a transient network glitch can't
+      // leave `audit` permanently disabled in prod. Retry up to 3× and
+      // re-throw if all attempts fail — that's a real test-driven incident
+      // requiring human attention, not a silent swallow.
+      let restored = false;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3 && !restored; attempt++) {
+        try {
+          const r = await c.patch('/api/fleet/features/audit', {
+            data: { enabled: auditRow.enabled },
+          });
+          if (r.ok()) {
+            restored = true;
+          } else {
+            lastErr = new Error(`revert audit flag failed: HTTP ${r.status()}`);
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+        if (!restored && attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt));
+      }
       await c.dispose();
+      if (!restored) throw lastErr || new Error('audit flag revert failed after 3 attempts');
     }
   });
 });
