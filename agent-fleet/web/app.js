@@ -862,14 +862,30 @@
       // vt-0437: spawn-group is now a typeahead input; value is the
       // group NAME the operator typed (matched against the datalist).
       const groupNameInput = $('spawn-group').value.trim();
-      const groupMatch = groupNameInput
+      let groupMatch = groupNameInput
         ? state.groups.find(g => g.name === groupNameInput)
         : null;
-      const groupName = groupMatch ? groupMatch.name : null;
+      // vt-0443: auto-refresh groups (op might have created one in another
+      // tab) before alerting. If still missing, offer to create on the spot.
       if (groupNameInput && !groupMatch) {
-        alert(`group "${groupNameInput}" not found — pick from the suggestions`);
-        return;
+        try {
+          const fresh = await api('GET', '/groups');
+          state.groups = fresh;
+          groupMatch = fresh.find(g => g.name === groupNameInput) || null;
+        } catch { /* fall through */ }
       }
+      if (groupNameInput && !groupMatch) {
+        if (!confirm(`group "${groupNameInput}" doesn't exist — create it and continue?`)) return;
+        try {
+          const created = await api('POST', '/groups', { name: groupNameInput });
+          state.groups.push(created);
+          groupMatch = created;
+        } catch (e) {
+          alert(`group create failed: ${e.message}`);
+          return;
+        }
+      }
+      const groupName = groupMatch ? groupMatch.name : null;
       if (!tag && !groupName) { alert('group or tag required'); return; }
       const cwd = $('spawn-cwd').value || '~';
       const args = parseArgs($('spawn-args').value);

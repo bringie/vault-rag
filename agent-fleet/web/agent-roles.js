@@ -54,10 +54,16 @@
       groups.get(cat).push(r);
     }
     const sortedCats = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+    // vt-0444: prune stale entries — localStorage может содержать
+    // имена удалённых категорий. Keep only intersection with current.
     let openCats;
     try {
       const stored = localStorage.getItem('arOpenCats');
-      openCats = stored ? new Set(JSON.parse(stored)) : new Set(sortedCats);
+      const prev = stored ? new Set(JSON.parse(stored)) : null;
+      const live = new Set(sortedCats);
+      openCats = prev
+        ? new Set([...prev].filter(c => live.has(c)))
+        : live;
     } catch { openCats = new Set(sortedCats); }
 
     const html = [];

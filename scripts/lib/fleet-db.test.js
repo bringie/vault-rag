@@ -316,3 +316,72 @@ test('readMetricsRollupSince returns 5-min buckets', async () => {
     assert.ok(rows[0].cpu_pct_avg !== null);
   });
 });
+
+// vt-0439: reapStuckSessions orphaned→exited promotion branch.
+// A session stuck as 'orphaned' should be promoted to 'exited' (exit_code=-1)
+// when the host has been seen recently (last_seen within 5 min), indicating
+// the daemon reconnected but didn't reclaim the session.
+test('reapStuckSessions: orphaned session promoted to exited when host is back online', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // Host that is currently online (last_seen = now).
+    const h = await fleetDb.upsertHost(c, { name: 'reap-online' });
+    // Create a session, mark it running, then manually flip to orphaned.
+    const s = await fleetDb.createSession(c, { hostId: h.id, cwd: '/' });
+    await fleetDb.markSessionRunning(c, s.id, 1234);
+    await fleetDb.markSessionExited(c, s.id, null, 'orphaned');
+    // Verify precondition: status=orphaned, host online.
+    const pre = await fleetDb.getSession(c, s.id);
+    assert.strictEqual(pre.status, 'orphaned');
+    // Call reaper — uses default hostStaleSec=180, maxAgeHours=24.
+    // The orphaned→exited branch fires when host.last_seen > now()-5min.
+    await fleetDb.reapStuckSessions(c);
+    const post = await fleetDb.getSession(c, s.id);
+    assert.strictEqual(post.status, 'exited',
+      'orphaned session on a live host must be promoted to exited');
+    assert.strictEqual(Number(post.exit_code), -1,
+      'exit_code must be set to -1 for reaped orphaned sessions');
+  });
+});
+
+test('reapStuckSessions: orphaned session on OFFLINE host NOT promoted until 1h+', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    // Simulate a host that went offline 10 minutes ago (recent but NOT back online).
+    const h = await fleetDb.upsertHost(c, { name: 'reap-offline' });
+    await c.query(
+      "UPDATE fleet_hosts SET last_seen = now() - interval '10 minutes' WHERE id=$1",
+      [h.id],
+    );
+    const s = await fleetDb.createSession(c, { hostId: h.id, cwd: '/' });
+    await fleetDb.markSessionRunning(c, s.id, 5678);
+    await fleetDb.markSessionExited(c, s.id, null, 'orphaned');
+    // ended_at was just set to now() by markSessionExited — so ended_at < 1h check is false.
+    // last_seen is 10 min ago → not within 5 min → first branch also false.
+    // The session should remain 'orphaned'.
+    await fleetDb.reapStuckSessions(c);
+    const post = await fleetDb.getSession(c, s.id);
+    assert.strictEqual(post.status, 'orphaned',
+      'orphaned session on recently-offline host should NOT be promoted yet (wait 1h)');
+  });
+});
+
+test('reapStuckSessions: running session on stale host flips to orphaned', async () => {
+  await withClient(async (c) => {
+    await reset(c);
+    const h = await fleetDb.upsertHost(c, { name: 'reap-stale' });
+    // Back-date last_seen to > 180 seconds ago to trigger the stale-host branch.
+    await c.query(
+      "UPDATE fleet_hosts SET last_seen = now() - interval '5 minutes' WHERE id=$1",
+      [h.id],
+    );
+    const s = await fleetDb.createSession(c, { hostId: h.id, cwd: '/' });
+    await fleetDb.markSessionRunning(c, s.id, 9999);
+    // reap with a low hostStaleSec (200s) so the 5-min-old host_seen is stale.
+    await fleetDb.reapStuckSessions(c, { hostStaleSec: 200 });
+    const post = await fleetDb.getSession(c, s.id);
+    assert.strictEqual(post.status, 'orphaned',
+      'running session on stale-heartbeat host must be orphaned');
+    assert.ok(post.ended_at, 'ended_at must be set when orphaned');
+  });
+});

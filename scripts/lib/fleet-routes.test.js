@@ -922,6 +922,107 @@ test('POST /fleet/broadcast resolves tag via group-label inheritance', async () 
   await close();
 });
 
+// vt-0441 CRIT hotfix: reconciliation with sessions:[] MUST sweep all
+// orphaned/running sessions on the host. Before the fix, empty mentionedIds
+// produced `id NOT IN (NULL)` which is always UNKNOWN in SQL — so the sweep
+// silently skipped every row. Test exercises the fixed code path.
+test('vt-0441: reconciliation with sessions:[] sweeps orphaned rows to exited', async () => {
+  const { server, pg, close } = await startWithDb();
+  const port = server.address().port;
+  // Use a unique host name to avoid cross-test contamination.
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('recon-empty-host') RETURNING id")).rows[0].id;
+  // Seed two orphaned sessions on this host.
+  const s1 = (await pg.query(
+    "INSERT INTO fleet_sessions (host_id, cwd, status) VALUES ($1, '/', 'orphaned') RETURNING id", [h]
+  )).rows[0].id;
+  const s2 = (await pg.query(
+    "INSERT INTO fleet_sessions (host_id, cwd, status) VALUES ($1, '/', 'orphaned') RETURNING id", [h]
+  )).rows[0].id;
+  // Connect daemon as this host (it will upsert the host row so host_id is resolved).
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${port}/fleet/ws?role=daemon&host_name=recon-empty-host`,
+    { headers: { authorization: 'Bearer T' } },
+  );
+  // Wait for welcome (daemon is now the registered handler for this host).
+  await new Promise(r => ws.on('message', () => r()));
+  // Send reconciliation with an EMPTY sessions list — the hotfix case.
+  ws.send(JSON.stringify({ type: 'reconciliation', sessions: [] }));
+  await new Promise(r => setTimeout(r, 150));
+  // Both orphaned sessions must be transitioned to 'exited'.
+  const after = await pg.query(
+    'SELECT id, status FROM fleet_sessions WHERE id = ANY($1::uuid[])',
+    [[s1, s2]],
+  );
+  for (const row of after.rows) {
+    assert.equal(row.status, 'exited',
+      `session ${row.id} should be exited after empty-list reconciliation, got ${row.status}`);
+  }
+  ws.removeAllListeners();
+  ws.on('error', () => {});
+  ws.terminate();
+  await close();
+});
+
+test('vt-0441: reconciliation with sessions:[] also sweeps running rows', async () => {
+  const { server, pg, close } = await startWithDb();
+  const port = server.address().port;
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('recon-running-host') RETURNING id")).rows[0].id;
+  // A 'running' session left over from a previous daemon crash.
+  const s = (await pg.query(
+    "INSERT INTO fleet_sessions (host_id, cwd, status, pid) VALUES ($1, '/', 'running', 42) RETURNING id", [h]
+  )).rows[0].id;
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${port}/fleet/ws?role=daemon&host_name=recon-running-host`,
+    { headers: { authorization: 'Bearer T' } },
+  );
+  await new Promise(r => ws.on('message', () => r()));
+  ws.send(JSON.stringify({ type: 'reconciliation', sessions: [] }));
+  await new Promise(r => setTimeout(r, 150));
+  const after = await pg.query('SELECT status FROM fleet_sessions WHERE id=$1', [s]);
+  assert.equal(after.rows[0].status, 'exited',
+    `running session should be swept to exited by empty-list reconciliation`);
+  ws.removeAllListeners();
+  ws.on('error', () => {});
+  ws.terminate();
+  await close();
+});
+
+test('vt-0441: reconciliation with non-empty sessions: leaves mentioned sessions untouched', async () => {
+  // Regression guard: the non-empty path must NOT sweep sessions it mentioned.
+  const { server, pg, close } = await startWithDb();
+  const port = server.address().port;
+  const h = (await pg.query("INSERT INTO fleet_hosts (name) VALUES ('recon-partial-host') RETURNING id")).rows[0].id;
+  const alive = (await pg.query(
+    "INSERT INTO fleet_sessions (host_id, cwd, status, pid) VALUES ($1, '/', 'running', 77) RETURNING id", [h]
+  )).rows[0].id;
+  const dead = (await pg.query(
+    "INSERT INTO fleet_sessions (host_id, cwd, status) VALUES ($1, '/', 'orphaned') RETURNING id", [h]
+  )).rows[0].id;
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${port}/fleet/ws?role=daemon&host_name=recon-partial-host`,
+    { headers: { authorization: 'Bearer T' } },
+  );
+  await new Promise(r => ws.on('message', () => r()));
+  // Mention `alive` as alive=true, but NOT `dead`.
+  ws.send(JSON.stringify({
+    type: 'reconciliation',
+    sessions: [{ session_id: alive, pid: 77, alive: true, last_seq: 0 }],
+  }));
+  await new Promise(r => setTimeout(r, 150));
+  const aliveRow = await pg.query('SELECT status FROM fleet_sessions WHERE id=$1', [alive]);
+  const deadRow  = await pg.query('SELECT status FROM fleet_sessions WHERE id=$1', [dead]);
+  // `alive` session should stay running (marked via markSessionRunning).
+  assert.equal(aliveRow.rows[0].status, 'running',
+    'mentioned+alive session must stay running');
+  // `dead` (orphaned, not mentioned) should be swept to exited.
+  assert.equal(deadRow.rows[0].status, 'exited',
+    'unmentioned orphaned session must be swept to exited');
+  ws.removeAllListeners();
+  ws.on('error', () => {});
+  ws.terminate();
+  await close();
+});
+
 test('PATCH /fleet/groups/:id with expected_version returns 409 on conflict', async () => {
   const { server, pg, close } = await startWithDb();
   await pg.query(`TRUNCATE fleet_groups CASCADE`);

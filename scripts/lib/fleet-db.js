@@ -1,6 +1,10 @@
 'use strict';
 // fleet-db: thin pg query layer for agent-fleet hosts/sessions/events.
 // Callers pass an active pg.Client/pg.Pool — no connection management here.
+//
+// vt-0446: crypto hoisted to module-top — was lazy-required inside
+// listAgentRolesSummary on every call.
+const crypto = require('node:crypto');
 
 async function upsertHost(c, h) {
   // capabilities: only overwrite if explicitly provided AND non-empty
@@ -562,7 +566,6 @@ async function listAgentRoles(c, { includeDeleted = false, category = null } = {
 // instructions (e.g. internal credential paths, system layout hints).
 // SHA is computed in Node to avoid pulling in pgcrypto.
 async function listAgentRolesSummary(c, { includeDeleted = false, category = null } = {}) {
-  const crypto = require('node:crypto');
   const { sql: whereSql, args } = _buildWhere([
     !includeDeleted ? ['deleted_at IS NULL', undefined] : [null],
     category        ? ['category = $?', category]       : [null],
