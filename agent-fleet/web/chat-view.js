@@ -46,6 +46,7 @@
     _topObserver: null,
     _loadOlderBtn: null,
     _chainNode: null,  // vt-0430: active <details class=cv-chain>
+    _systemDedup: new Set(),  // vt-0430 round 2: 'subtype:value' seen
   };
 
   const MAX_MOUNTED_NODES = 500;
@@ -356,16 +357,20 @@
     const root = el('div', 'cv-msg cv-assistant');
     if (ex.is_sidechain) root.classList.add('cv-sidechain');
 
-    if (ex.model || ex.usage || (ex.stop_reason && ex.stop_reason !== 'end_turn')) {
+    // vt-0430 (round 2): only render the ⓘ meta badge for TERMINAL turns
+    // with actual usage data. Per-turn ⓘ on every intermediate tool_use
+    // turn produced a cluster of empty badges between user prompt and
+    // final answer.
+    const isFinal = !ex.stop_reason || ex.stop_reason === 'end_turn'
+      || ex.stop_reason === 'stop_sequence' || ex.stop_reason === 'max_tokens';
+    if (isFinal && ex.usage && (ex.usage.input_tokens || ex.usage.output_tokens)) {
       const meta = document.createElement('details');
       meta.className = 'cv-meta';
       const sum = el('summary', 'cv-meta-trigger', 'ⓘ');
       meta.appendChild(sum);
       const inner = el('span', 'cv-meta-inner');
       if (ex.model) inner.appendChild(el('span', 'cv-meta-model', ex.model.replace(/^claude-/, '')));
-      if (ex.usage) inner.appendChild(el('span', 'cv-meta-tokens', fmtTokens(ex.usage)));
-      if (ex.stop_reason && ex.stop_reason !== 'end_turn')
-        inner.appendChild(el('span', 'cv-meta-stop', ex.stop_reason));
+      inner.appendChild(el('span', 'cv-meta-tokens', fmtTokens(ex.usage)));
       meta.appendChild(inner);
       root.appendChild(meta);
     }
@@ -562,16 +567,39 @@
     }
 
     // vt-0430: collapse the entire agent processing chain (tool_uses +
-    // tool_results across multiple turns) into ONE <details>. The chain
-    // opens on first tool_use turn or tool_result user-frame, and closes
-    // when a terminal assistant turn or a plain user text arrives.
-    const inChain = (ex && ex.role === 'assistant' && (ex.tool_uses || []).length)
-                 || (ex && ex.role === 'user' && (ex.tool_results || []).length);
+    // tool_results AND any intermediate thinking-only assistant turns,
+    // PLUS system events that fire while the chain is open) into ONE
+    // <details>. Two signals open/extend the chain:
+    //   - assistant turn whose stop_reason='tool_use' (Claude is mid-loop,
+    //     even if THIS turn carries only thinking/text and no tool_use)
+    //   - user turn with tool_results
+    // Chain closes when an assistant terminal stop_reason arrives without
+    // any tool_uses queued, OR a plain user text turn appears.
+    const isAssistant = ex && ex.role === 'assistant';
+    const isUser = ex && ex.role === 'user';
+    const isSystem = ex && ex.role === 'system';
+    const TERMINAL = new Set(['end_turn', 'stop_sequence', 'max_tokens']);
+    const intermediateAssistant = isAssistant && ex.stop_reason === 'tool_use';
+    const toolResultUser = isUser && (ex.tool_results || []).length;
+    const inChain = intermediateAssistant || toolResultUser
+      // System events while chain is open belong inside it — otherwise
+      // operator sees "permission mode → default" orphaned between user
+      // prompt and final assistant answer.
+      || (isSystem && STATE._chainNode);
     const closesChain =
-      (ex && ex.role === 'assistant'
-        && new Set(['end_turn', 'stop_sequence', 'max_tokens']).has(ex.stop_reason || '')
-        && !(ex.tool_uses || []).length)
-      || (ex && ex.role === 'user' && ex.text_in && !(ex.tool_results || []).length);
+      (isAssistant && TERMINAL.has(ex.stop_reason || '') && !(ex.tool_uses || []).length)
+      || (isUser && ex.text_in && !(ex.tool_results || []).length);
+
+    // vt-0430 (round 2): dedup system permission-mode + session_start.
+    // Claude emits these on every tool_use turn → operator sees three or
+    // four identical lines. Show once per distinct value across the
+    // session.
+    if (isSystem && (ex.subtype === 'permission-mode' || ex.subtype === 'session_start')) {
+      const key = ex.subtype + ':' +
+        ((frame.raw && frame.raw.permissionMode) || ex.text || '');
+      if (STATE._systemDedup.has(key)) return;
+      STATE._systemDedup.add(key);
+    }
 
     if (inChain) {
       const wrap = ensureChainOpen();
@@ -1064,6 +1092,7 @@
     STATE._mountedMsgNodes = [];
     STATE._unmountedMsgNodes = [];
     STATE._chainNode = null;  // vt-0430
+    STATE._systemDedup = new Set();  // vt-0430 round 2
     if (STATE.list) STATE.list.innerHTML = '';
     setupTopSentinel();
     updateLoadOlderUi();
@@ -1092,6 +1121,7 @@
     STATE._mountedMsgNodes = [];
     STATE._unmountedMsgNodes = [];
     STATE._chainNode = null;  // vt-0430
+    STATE._systemDedup = new Set();  // vt-0430 round 2
     if (STATE.list) STATE.list.innerHTML = '';
     updateLoadOlderUi();
     setStatus('idle', '');
