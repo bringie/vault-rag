@@ -85,14 +85,31 @@
       ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
+  // vt-0438: linkify http(s) URLs. Runs AFTER HTML escaping AND AFTER
+  // code-fence/inline-code rules so we don't auto-link inside code blocks.
+  // We match the escaped form (e.g. `https://example.com`) — that's what
+  // exists in the string after escapeHtml. Trailing punctuation common in
+  // prose (".", ",", ")", "]", "!") is excluded from the URL.
+  const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?\])]/g;
+  function linkifyHtml(html) {
+    // Skip stretches inside <pre>…</pre> or <code>…</code>. Easiest:
+    // split on those tags, only run the replace on the "outside" parts.
+    return html.split(/(<(?:pre|code)\b[^>]*>[\s\S]*?<\/(?:pre|code)>)/g)
+      .map(part => part.startsWith('<pre') || part.startsWith('<code')
+        ? part
+        : part.replace(URL_RE,
+            url => `<a href="${url}" class="cv-link" target="_blank" rel="noopener noreferrer">${url}</a>`))
+      .join('');
+  }
+
   function renderMarkdown(text) {
     if (!text) return '';
     const esc = escapeHtml(text);
-    return esc
+    const withCode = esc
       .replace(/```([\s\S]*?)```/g,
         (_, body) => `<pre class="cv-code"><code>${body}</code></pre>`)
-      .replace(/`([^`\n]+)`/g, '<code class="cv-inline-code">$1</code>')
-      .replace(/\n/g, '<br>');
+      .replace(/`([^`\n]+)`/g, '<code class="cv-inline-code">$1</code>');
+    return linkifyHtml(withCode).replace(/\n/g, '<br>');
   }
 
   // vt-0396 NIT fix / vt-0410 NIT 4: grapheme-aware truncation. The
@@ -907,6 +924,9 @@
 
     const composer = el('div', 'cv-composer');
     const frame = el('div', 'cv-composer-frame');
+    // vt-0438: prompt-arrow glyph inside the input frame.
+    const promptGlyph = el('span', 'cv-prompt-glyph', '❯');
+    frame.appendChild(promptGlyph);
     const ta = document.createElement('textarea');
     ta.className = 'cv-composer-input';
     ta.rows = 1;
@@ -938,6 +958,24 @@
     wrap.appendChild(composer);
 
     containerEl.appendChild(wrap);
+
+    // vt-0438: scope Ctrl+A inside the chat container. Default browser
+    // behaviour selects the entire page, which is noisy when the chat is
+    // mounted inside a fleet panel. Composer textarea keeps its own
+    // native select-all behaviour by short-circuiting when the event
+    // target is inside the composer.
+    wrap.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || (e.key !== 'a' && e.key !== 'A')) return;
+      if (composer && composer.contains(e.target)) return;
+      const target = STATE.list;
+      if (!target) return;
+      e.preventDefault();
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
 
     STATE.list = list;
     STATE.statusBar = status;
