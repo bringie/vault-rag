@@ -141,47 +141,61 @@
   text-align: left;
 }
 
-/* vt-0428: tool-calls group — single collapsible per assistant turn
-   so the chat reads as conversation, not debug log. */
-.cv-tools-group {
-  margin: 6px 0;
+/* vt-0430: chain-level collapse — ALL tool calls + results across the
+   entire agent processing chain (from first tool_use to terminal
+   end_turn) wrap into ONE <details>. Replaces vt-0428 per-turn grouping
+   which still produced N collapsibles for N-step chains. */
+.cv-chain {
+  margin: 8px 14px;
   border: 1px dashed var(--cv-line-bright);
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.015);
 }
-.cv-tools-group[open] {
+.cv-chain[open] {
   background: rgba(255, 255, 255, 0.025);
 }
-.cv-tools-group-summary {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px;
+.cv-chain-summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
   cursor: pointer;
   list-style: none;
   color: var(--cv-fg-faint);
-  font-size: 11px; letter-spacing: 0.05em;
+  font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase;
   user-select: none;
 }
-.cv-tools-group-summary::-webkit-details-marker { display: none; }
-.cv-tools-group-chevron {
+.cv-chain-summary::-webkit-details-marker { display: none; }
+.cv-chain-chevron {
   display: inline-block;
   transition: transform 120ms ease;
+  color: var(--cv-phos);
 }
-.cv-tools-group[open] .cv-tools-group-chevron { transform: rotate(90deg); }
-.cv-tools-group-count {
+.cv-chain[open] .cv-chain-chevron { transform: rotate(90deg); }
+.cv-chain-label {
   color: var(--cv-fg-dim);
-  text-transform: uppercase;
+  font-weight: 500;
+  min-width: 6em;
 }
-.cv-tools-group-preview {
+.cv-chain-meta {
   color: var(--cv-fg-faint);
   opacity: 0.7;
   font-style: italic;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0; flex: 1;
 }
-.cv-tools-group > .cv-tool {
-  margin: 4px 8px 6px 8px;
+/* Nested .cv-msg loses its outer padding/border so the chain looks
+   like a cohesive log, not a list of message bubbles. */
+.cv-chain > .cv-msg {
+  padding-left: 14px; padding-right: 14px;
+  border-left: 0; border-right: 0;
+  background: none;
+  display: block;
+}
+.cv-chain > .cv-msg::before { display: none; }
+.cv-chain > .cv-msg .cv-body {
+  margin: 0; max-width: none; text-align: left;
 }
 .cv-system-line {
   display: flex; gap: 8px;

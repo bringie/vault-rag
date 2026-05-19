@@ -45,6 +45,7 @@
     _topSentinel: null,
     _topObserver: null,
     _loadOlderBtn: null,
+    _chainNode: null,  // vt-0430: active <details class=cv-chain>
   };
 
   const MAX_MOUNTED_NODES = 500;
@@ -219,7 +220,8 @@
     return node.classList.contains('cv-msg')
         || node.classList.contains('cv-compact')
         || node.classList.contains('cv-system-line')
-        || node.classList.contains('cv-lifecycle');
+        || node.classList.contains('cv-lifecycle')
+        || node.classList.contains('cv-chain');  // vt-0430
   }
 
   function evictExcess() {
@@ -386,21 +388,13 @@
       body.appendChild(div);
     }
 
-    // vt-0428: tool calls grouped behind a single collapsible. User
-    // wants conversation flow visible; tool noise opt-in only.
-    const tools = ex.tool_uses || [];
-    if (tools.length) {
-      const wrap = document.createElement('details');
-      wrap.className = 'cv-tools-group';
-      const sum = el('summary', 'cv-tools-group-summary');
-      sum.appendChild(el('span', 'cv-tools-group-chevron', '▸'));
-      sum.appendChild(el('span', 'cv-tools-group-count',
-        `${tools.length} tool call${tools.length === 1 ? '' : 's'}`));
-      const previewNames = tools.slice(0, 3).map(t => t.name).join(' · ');
-      if (previewNames) sum.appendChild(el('span', 'cv-tools-group-preview', previewNames));
-      wrap.appendChild(sum);
-      for (const tu of tools) wrap.appendChild(renderToolCall(tu));
-      body.appendChild(wrap);
+    // vt-0430: tool calls render flat — the chain-level wrapper (cv-chain)
+    // applied in ingestClaudeMsg collects ALL tool calls + results across
+    // all turns of an agent processing chain into one collapsible. v1 per-
+    // turn grouping was confusing — every Claude turn shipped its own
+    // <details>, so a 5-step chain looked like 5 separate collapsibles.
+    for (const tu of (ex.tool_uses || [])) {
+      body.appendChild(renderToolCall(tu));
     }
 
     root.appendChild(body);
@@ -413,22 +407,11 @@
     if (ex.is_sidechain) root.classList.add('cv-sidechain');
 
     if (ex.tool_results && ex.tool_results.length) {
-      // vt-0428: tool_result chain also collapses into one group so
-      // the chat stays readable. Errors stay individually expandable.
+      // vt-0430: results render flat — cv-chain in ingestClaudeMsg wraps
+      // the whole chain. v1 per-turn grouping defeated the point: 5
+      // tool_result turns produced 5 separate collapsibles.
       root.classList.add('cv-toolresult-frame');
-      const trs = ex.tool_results;
-      const wrap = document.createElement('details');
-      wrap.className = 'cv-tools-group';
-      const sum = el('summary', 'cv-tools-group-summary');
-      sum.appendChild(el('span', 'cv-tools-group-chevron', '▸'));
-      const errs = trs.filter(t => t.is_error).length;
-      sum.appendChild(el('span', 'cv-tools-group-count',
-        `${trs.length} tool result${trs.length === 1 ? '' : 's'}${errs ? ` · ${errs} err` : ''}`));
-      wrap.appendChild(sum);
-      for (const tr of trs) wrap.appendChild(renderToolResult(tr));
-      // If any error — expand by default so user sees it without clicking.
-      if (errs) wrap.open = true;
-      root.appendChild(wrap);
+      for (const tr of ex.tool_results) root.appendChild(renderToolResult(tr));
       return root;
     }
 
@@ -578,8 +561,73 @@
       if (!STATE._thinkingNode) showThinkingIndicator();
     }
 
+    // vt-0430: collapse the entire agent processing chain (tool_uses +
+    // tool_results across multiple turns) into ONE <details>. The chain
+    // opens on first tool_use turn or tool_result user-frame, and closes
+    // when a terminal assistant turn or a plain user text arrives.
+    const inChain = (ex && ex.role === 'assistant' && (ex.tool_uses || []).length)
+                 || (ex && ex.role === 'user' && (ex.tool_results || []).length);
+    const closesChain =
+      (ex && ex.role === 'assistant'
+        && new Set(['end_turn', 'stop_sequence', 'max_tokens']).has(ex.stop_reason || '')
+        && !(ex.tool_uses || []).length)
+      || (ex && ex.role === 'user' && ex.text_in && !(ex.tool_results || []).length);
+
+    if (inChain) {
+      const wrap = ensureChainOpen();
+      const node = renderFrame(frame);
+      if (node) {
+        wrap.appendChild(node);
+        refreshChainSummary(wrap);
+      }
+      return;
+    }
+
+    if (closesChain) closeChain();
+
     const node = renderFrame(frame);
     if (node) { clearEmpty(); appendNode(node, frame.seq); }
+  }
+
+  // vt-0430: chain wrapper helpers.
+  function ensureChainOpen() {
+    if (STATE._chainNode && STATE._chainNode.parentNode === STATE.list) return STATE._chainNode;
+    const wrap = document.createElement('details');
+    wrap.className = 'cv-chain';
+    const sum = el('summary', 'cv-chain-summary');
+    sum.appendChild(el('span', 'cv-chain-chevron', '▸'));
+    sum.appendChild(el('span', 'cv-chain-label', '…working'));
+    sum.appendChild(el('span', 'cv-chain-meta', ''));
+    wrap.appendChild(sum);
+    STATE._chainNode = wrap;
+    clearEmpty();
+    appendNode(wrap);
+    return wrap;
+  }
+  function refreshChainSummary(wrap) {
+    if (!wrap) return;
+    const tools = wrap.querySelectorAll('.cv-tool:not(.cv-tool-result)').length;
+    const results = wrap.querySelectorAll('.cv-tool-result').length;
+    const errors = wrap.querySelectorAll('.cv-tool-error').length;
+    const lbl = wrap.querySelector('.cv-chain-label');
+    const meta = wrap.querySelector('.cv-chain-meta');
+    if (lbl) {
+      const steps = Math.max(tools, results);
+      lbl.textContent = STATE._chainNode === wrap
+        ? `…${steps} step${steps === 1 ? '' : 's'}`
+        : `${steps} step${steps === 1 ? '' : 's'}`;
+    }
+    if (meta) {
+      const parts = [];
+      if (tools) parts.push(`${tools} call${tools === 1 ? '' : 's'}`);
+      if (errors) parts.push(`${errors} err`);
+      meta.textContent = parts.join(' · ');
+    }
+  }
+  function closeChain() {
+    if (!STATE._chainNode) return;
+    refreshChainSummary(STATE._chainNode);
+    STATE._chainNode = null;
   }
 
   function ingestReplayBatch(frame) {
@@ -1015,6 +1063,7 @@
     teardownTopSentinel();
     STATE._mountedMsgNodes = [];
     STATE._unmountedMsgNodes = [];
+    STATE._chainNode = null;  // vt-0430
     if (STATE.list) STATE.list.innerHTML = '';
     setupTopSentinel();
     updateLoadOlderUi();
@@ -1042,6 +1091,7 @@
     teardownTopSentinel();
     STATE._mountedMsgNodes = [];
     STATE._unmountedMsgNodes = [];
+    STATE._chainNode = null;  // vt-0430
     if (STATE.list) STATE.list.innerHTML = '';
     updateLoadOlderUi();
     setStatus('idle', '');
