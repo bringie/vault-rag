@@ -17,3 +17,6 @@ tests/e2e/node_modules/
 tests/e2e/playwright-report/
 tests/e2e/test-results/
 tests/e2e/last-run.json
+# vt-0427: sub-agent ran playwright from repo root, creating stray dirs.
+test-results/
+.last-run.json
