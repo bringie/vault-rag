@@ -126,7 +126,7 @@ test.describe('Virtualization memory leak @chat @vt-0400', () => {
       // Click load-older button if visible.
       const btn = page.locator('.cv-load-older-btn');
       const btnVisible = await btn.isVisible().catch(() => false);
-      if (btnVisible) await btn.click();
+      if (btnVisible) await btn.click({ force: true });
       await page.waitForTimeout(150);
 
       // Scroll back to bottom.
@@ -209,7 +209,7 @@ test.describe('Virtualization memory leak @chat @vt-0400', () => {
       });
       await page.waitForTimeout(100);
       const btn = page.locator('.cv-load-older-btn');
-      if (await btn.isVisible().catch(() => false)) await btn.click();
+      if (await btn.isVisible().catch(() => false)) await btn.click({ force: true });
       await page.waitForTimeout(100);
     }
 

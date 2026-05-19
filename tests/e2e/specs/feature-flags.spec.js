@@ -100,10 +100,15 @@ test.describe('Feature flags UI gating @features', () => {
   });
 
   test('feat-06: cost nav button always visible (not feature-gated)', async ({ page }) => {
+    // Register waitForResponse BEFORE navigation — the features fetch fires
+    // synchronously on app boot and would race a post-goto registration.
+    const featuresResp = page.waitForResponse(
+      r => r.url().includes('/api/fleet/features') && r.ok(),
+      { timeout: 15_000 }
+    );
     await page.goto(`${BASE}/fleet/`);
     await expect(page.locator('#app')).toBeVisible({ timeout: 10_000 });
-    // Wait for features to load.
-    await page.waitForResponse(r => r.url().includes('/api/fleet/features') && r.ok(), { timeout: 10_000 });
+    await featuresResp;
     await page.waitForTimeout(200);
 
     const costBtn = page.locator('#nav-cost');
