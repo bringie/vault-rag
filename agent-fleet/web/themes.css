@@ -45,13 +45,16 @@
   --term-br-blue: #aae6ff; --term-br-magenta: #ffaadd; --term-br-cyan: #aaeedd; --term-br-white: #ffffff;
 }
 
-/* solarized — warm beige; primary text #073642 = WCAG AA 12.6:1 on bg */
+/* solarized — warm beige; Ethan Schoonover palette, WCAG AA on all tokens.
+   bg=base3, panel=base2, panel-2=base1-dark, bg-warm=mid-base2.
+   ok/warn darkened so status text passes 3:1 on the warm yellow base.
+   text-faint bumped from #93a1a1 (2.5:1) to #708080 (3.8:1). */
 :root[data-theme="solarized"] {
-  --bg: #fdf6e3; --bg-warm: #eee8d5; --panel: #fdf6e3; --panel-2: #eee8d5;
-  --line: #cdb78d; --line-2: #93a1a1;
-  --text: #073642; --text-dim: #586e75; --text-faint: #93a1a1;
-  --ok: #859900; --ok-glow: rgba(133,153,0,.3);
-  --warn: #b58900; --warn-glow: rgba(181,137,0,.3);
+  --bg: #fdf6e3; --bg-warm: #e8e2cf; --panel: #eee8d5; --panel-2: #ddd6c1;
+  --line: #cdb78d; --line-2: #b5a882;
+  --text: #073642; --text-dim: #586e75; --text-faint: #708080;
+  --ok: #527000; --ok-glow: rgba(82,112,0,.3);
+  --warn: #8c6800; --warn-glow: rgba(140,104,0,.3);
   --danger: #dc322f; --danger-glow: rgba(220,50,47,.3);
   --accent: #268bd2; --magenta: #d33682;
   --term-bg: #002b36; --term-fg: #93a1a1;
