@@ -138,7 +138,13 @@
           <details style="margin-top:.6em">
             <summary class="lbl" style="cursor:pointer" data-i18n="spawn.broadcast">broadcast…</summary>
             <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.group">GROUP</span>
-              <select id="spawn-group"><option value="" data-i18n="spawn.by_tag_instead">(by tag instead)</option></select>
+              <!-- vt-0437: typeahead via native datalist. Operator types
+                   a few chars → browser surfaces matching group names.
+                   Resolved to id at submit time in spawn(). -->
+              <input id="spawn-group" list="spawn-group-options" spellcheck="false"
+                data-i18n-placeholder="spawn.group_placeholder"
+                placeholder="type to filter / (blank = by tag)"/>
+              <datalist id="spawn-group-options"></datalist>
             </label>
             <label style="margin-top:.3em"><span class="lbl" data-i18n="spawn.or_tag">OR TAG</span>
               <input id="spawn-tag" data-i18n-placeholder="spawn.tag_placeholder" placeholder="dev / prod / …" spellcheck="false">

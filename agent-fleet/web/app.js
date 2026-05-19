@@ -342,12 +342,13 @@
       || `<option value="">no online hosts</option>`;
     if (cur && [...hostSel.options].some(o => o.value === cur)) hostSel.value = cur;
 
-    const grpSel = $('spawn-group');
-    if (grpSel) {
-      const cur2 = grpSel.value;
-      grpSel.innerHTML = '<option value="">(by tag instead)</option>' +
-        state.groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
-      if (cur2 && [...grpSel.options].some(o => o.value === cur2)) grpSel.value = cur2;
+    // vt-0437: spawn-group now an <input list=spawn-group-options> with
+    // native datalist. Populate options with group names; spawn() resolves
+    // name→id at submit time.
+    const grpOpts = $('spawn-group-options');
+    if (grpOpts) {
+      grpOpts.innerHTML = state.groups
+        .map(g => `<option value="${esc(g.name)}"></option>`).join('');
     }
 
     // footbar
@@ -858,8 +859,17 @@
       const bb = $('bcast-btn');
       if (bb.disabled) return;
       const tag = $('spawn-tag').value.trim();
-      const groupId = $('spawn-group').value;
-      const groupName = groupId ? state.groups.find(g => g.id === groupId)?.name : null;
+      // vt-0437: spawn-group is now a typeahead input; value is the
+      // group NAME the operator typed (matched against the datalist).
+      const groupNameInput = $('spawn-group').value.trim();
+      const groupMatch = groupNameInput
+        ? state.groups.find(g => g.name === groupNameInput)
+        : null;
+      const groupName = groupMatch ? groupMatch.name : null;
+      if (groupNameInput && !groupMatch) {
+        alert(`group "${groupNameInput}" not found — pick from the suggestions`);
+        return;
+      }
       if (!tag && !groupName) { alert('group or tag required'); return; }
       const cwd = $('spawn-cwd').value || '~';
       const args = parseArgs($('spawn-args').value);
@@ -1789,13 +1799,24 @@
               </div>`).join('')
           : `<div class="lbl" style="margin:.3em 0;color:var(--text-faint)">no roles assigned yet</div>`)
       + (unassigned.length
-          ? `<div class="lbl" style="margin:1em 0 .3em">AVAILABLE</div>` +
+          ? `<div class="lbl" style="margin:1em 0 .3em; display:flex; align-items:center; gap:.6em">
+              <span>AVAILABLE</span>
+              <input id="gd-role-filter" type="text" placeholder="type to filter (name, category, description)…"
+                style="flex:1; padding:.35em .6em; background:var(--bg); color:var(--text);
+                       border:1px solid var(--line); font-family:var(--font-mono); font-size:.85em" />
+              <span id="gd-role-filter-count" style="color:var(--text-faint); min-width:5em; text-align:right"></span>
+            </div>
+            <div id="gd-role-avail-list">` +
             unassigned.map(r => `
-              <div class="ar-role-row">
+              <div class="ar-role-row" data-name="${esc((r.name || '').toLowerCase())}"
+                   data-cat="${esc((r.category || '').toLowerCase())}"
+                   data-desc="${esc((r.description || '').toLowerCase())}">
                 <strong>${esc(r.name)}</strong>
+                <span class="lbl" style="color:var(--text-faint); margin-left:6px">${esc(r.category || '')}</span>
                 <span class="ar-role-desc">${esc(r.description || '')}</span>
                 <button class="btn-row" data-assign="${esc(r.id)}">assign</button>
               </div>`).join('')
+            + `</div>`
           : ''));
     // vt-0271: atomic batch reorder via PUT. The earlier impl did N
     // concurrent POSTs, which on partial failure left positions in an
@@ -1806,6 +1827,30 @@
         await api('PUT', `/groups/${group.id}/roles`, { role_ids: newOrder.map(r => r.id) });
         openGroupRolesPicker(group);
       } catch (e) { alert(e.message); openGroupRolesPicker(group); }
+    }
+    // vt-0436: typeahead filter for AVAILABLE roles. With 200+ roles
+    // seeded from agency-agents the static list is unmanageable.
+    const filt = body.querySelector('#gd-role-filter');
+    const cntEl = body.querySelector('#gd-role-filter-count');
+    if (filt) {
+      const refreshCount = () => {
+        if (!cntEl) return;
+        const total = body.querySelectorAll('#gd-role-avail-list .ar-role-row').length;
+        const visible = body.querySelectorAll('#gd-role-avail-list .ar-role-row:not([data-hidden])').length;
+        cntEl.textContent = visible === total ? `${total}` : `${visible} / ${total}`;
+      };
+      filt.addEventListener('input', () => {
+        const q = filt.value.trim().toLowerCase();
+        body.querySelectorAll('#gd-role-avail-list .ar-role-row').forEach(row => {
+          const hay = `${row.dataset.name} ${row.dataset.cat} ${row.dataset.desc}`;
+          const match = !q || hay.includes(q);
+          if (match) { row.removeAttribute('data-hidden'); row.style.display = ''; }
+          else { row.setAttribute('data-hidden', '1'); row.style.display = 'none'; }
+        });
+        refreshCount();
+      });
+      refreshCount();
+      filt.focus();
     }
     body.querySelectorAll('[data-up]').forEach(b => b.onclick = () => {
       const idx = assigned.findIndex(r => r.id === b.dataset.up);
