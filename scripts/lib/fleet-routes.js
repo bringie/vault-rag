@@ -970,7 +970,9 @@ async function handleDaemonWs(ws, params, ctx) {
         return;
       }
       if (f.type === 'reconciliation') {
+        const mentionedIds = new Set();
         for (const s of (f.sessions || [])) {
+          mentionedIds.add(s.session_id);
           if (s.alive) {
             await fleetDb.markSessionRunning(ctx.db, s.session_id, s.pid);
             // vt-0304: ask daemon to replay anything we missed since
@@ -991,6 +993,32 @@ async function handleDaemonWs(ws, params, ctx) {
             // daemon reports dead — otherwise their hooks leak in hooksBySession.
             ctx.bus.broadcastViewers(s.session_id, { type: 'session_exit', exit_code: s.exit_code ?? -1 });
           }
+        }
+        // vt-0439: sweep DB-orphaned sessions on THIS host that the daemon
+        // didn't mention. The daemon's authoritative view says these PTYs
+        // are gone; leaving them as 'orphaned' indefinitely just clutters
+        // the listing. Flip to 'exited' so they fall under the closed-
+        // sessions filter and the active list stays clean.
+        try {
+          const stale = await ctx.db.query(
+            `SELECT id FROM fleet_sessions
+              WHERE host_id = $1
+                AND status IN ('orphaned', 'running')
+                AND id NOT IN (${
+                  mentionedIds.size
+                    ? [...mentionedIds].map((_, i) => `$${i + 2}`).join(',')
+                    : 'NULL'
+                })`,
+            [host.id, ...mentionedIds]);
+          for (const row of stale.rows) {
+            await fleetDb.markSessionExited(ctx.db, row.id, null, 'exited');
+            ctx.bus.broadcastViewers(row.id, { type: 'session_exit', exit_code: -1 });
+          }
+          if (stale.rows.length) {
+            log.info('reconcile_swept_orphans', { host_id: host.id, count: stale.rows.length });
+          }
+        } catch (e) {
+          log.warn('reconcile_orphan_sweep_failed', { host_id: host.id, msg: e.message });
         }
         return;
       }

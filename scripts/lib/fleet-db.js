@@ -357,7 +357,25 @@ async function reapStuckSessions(c, { hostStaleSec = 180, maxAgeHours = 24 } = {
          )
        )
    RETURNING s.id`, [String(hostStaleSec), String(maxAgeHours)]);
-  return r.rowCount;
+
+  // vt-0439: promote ORPHANED sessions to EXITED once the host has been
+  // back online for >5 min without reclaiming them. After daemon
+  // reconnect the reconciliation sweep (fleet-routes.js) handles the
+  // common case in seconds; this is the backstop for hosts that stayed
+  // offline through a daemon redeploy (sessions never came back).
+  const r2 = await c.query(`
+    UPDATE fleet_sessions s
+       SET status = 'exited', exit_code = COALESCE(s.exit_code, -1)
+      FROM fleet_hosts h
+     WHERE s.host_id = h.id
+       AND s.status  = 'orphaned'
+       AND (
+         h.last_seen > now() - interval '5 minutes'
+         OR s.ended_at < now() - interval '1 hour'
+       )
+   RETURNING s.id`);
+
+  return r.rowCount + (r2.rowCount || 0);
 }
 
 // Delete sessions that have been in a terminal state for at least `olderThan`
