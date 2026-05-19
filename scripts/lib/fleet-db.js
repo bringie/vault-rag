@@ -510,12 +510,20 @@ async function readMetricsRollupSince(c, hostId, interval) {
 // prompts (ordered by fleet_group_roles.position) after the group's
 // brain_prompt and feed the whole thing through as system_prompt.
 
-async function listAgentRoles(c, { includeDeleted = false } = {}) {
-  const { rows } = await c.query(
-    `SELECT id, name, description, prompt, default_model, allowed_tools, created_at, updated_at, deleted_at
+async function listAgentRoles(c, { includeDeleted = false, category = null } = {}) {
+  // vt-0433: optional category filter; ORDER preserves alpha within
+  // category so the SPA folder-tree gets stable grouping.
+  const where = [];
+  const args = [];
+  if (!includeDeleted) where.push('deleted_at IS NULL');
+  if (category) { args.push(category); where.push(`category = $${args.length}`); }
+  const sql =
+    `SELECT id, name, description, prompt, default_model, allowed_tools, category,
+            created_at, updated_at, deleted_at
        FROM fleet_agent_roles
-       ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'}
-       ORDER BY lower(name) ASC`);
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY category ASC, lower(name) ASC`;
+  const { rows } = await c.query(sql, args);
   return rows;
 }
 
@@ -523,15 +531,19 @@ async function listAgentRoles(c, { includeDeleted = false } = {}) {
 // so the UI can show "12 KB / sha 9f3a…" without leaking ops-sensitive
 // instructions (e.g. internal credential paths, system layout hints).
 // SHA is computed in Node to avoid pulling in pgcrypto.
-async function listAgentRolesSummary(c, { includeDeleted = false } = {}) {
+async function listAgentRolesSummary(c, { includeDeleted = false, category = null } = {}) {
   const crypto = require('node:crypto');
+  const where = [];
+  const args = [];
+  if (!includeDeleted) where.push('deleted_at IS NULL');
+  if (category) { args.push(category); where.push(`category = $${args.length}`); }
   const { rows } = await c.query(
-    `SELECT id, name, description, prompt, default_model, allowed_tools,
+    `SELECT id, name, description, prompt, default_model, allowed_tools, category,
             octet_length(prompt) AS prompt_bytes,
             created_at, updated_at, deleted_at
        FROM fleet_agent_roles
-       ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'}
-       ORDER BY lower(name) ASC`);
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY category ASC, lower(name) ASC`, args);
   for (const r of rows) {
     r.prompt_sha = crypto.createHash('sha256').update(r.prompt || '').digest('hex');
     delete r.prompt;
@@ -541,18 +553,19 @@ async function listAgentRolesSummary(c, { includeDeleted = false } = {}) {
 
 async function getAgentRole(c, id) {
   const { rows } = await c.query(
-    `SELECT id, name, description, prompt, default_model, allowed_tools, created_at, updated_at, deleted_at
+    `SELECT id, name, description, prompt, default_model, allowed_tools, category,
+            created_at, updated_at, deleted_at
        FROM fleet_agent_roles WHERE id = $1 AND deleted_at IS NULL`, [id]);
   return rows[0] || null;
 }
 
-async function createAgentRole(c, { name, description, prompt, default_model, allowed_tools }) {
+async function createAgentRole(c, { name, description, prompt, default_model, allowed_tools, category }) {
   if (!name || !prompt) throw new Error('name and prompt required');
   const { rows } = await c.query(
-    `INSERT INTO fleet_agent_roles (name, description, prompt, default_model, allowed_tools)
-       VALUES ($1,$2,$3,$4,$5)
-     RETURNING id, name, description, prompt, default_model, allowed_tools, created_at, updated_at`,
-    [name, description || '', prompt, default_model || null, JSON.stringify(allowed_tools || [])]);
+    `INSERT INTO fleet_agent_roles (name, description, prompt, default_model, allowed_tools, category)
+       VALUES ($1,$2,$3,$4,$5,$6)
+     RETURNING id, name, description, prompt, default_model, allowed_tools, category, created_at, updated_at`,
+    [name, description || '', prompt, default_model || null, JSON.stringify(allowed_tools || []), category || 'general']);
   return rows[0];
 }
 
@@ -560,7 +573,7 @@ async function updateAgentRole(c, id, patch) {
   const cols = [];
   const vals = [];
   let i = 1;
-  for (const k of ['name', 'description', 'prompt', 'default_model']) {
+  for (const k of ['name', 'description', 'prompt', 'default_model', 'category']) {
     if (patch[k] !== undefined) { cols.push(`${k} = $${i++}`); vals.push(patch[k]); }
   }
   if (patch.allowed_tools !== undefined) {
@@ -573,7 +586,7 @@ async function updateAgentRole(c, id, patch) {
   const { rows } = await c.query(
     `UPDATE fleet_agent_roles SET ${cols.join(', ')}
       WHERE id = $${i} AND deleted_at IS NULL
-    RETURNING id, name, description, prompt, default_model, allowed_tools, created_at, updated_at`,
+    RETURNING id, name, description, prompt, default_model, allowed_tools, category, created_at, updated_at`,
     vals);
   return rows[0] || null;
 }

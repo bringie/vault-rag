@@ -12,14 +12,18 @@ const { SID_RE, send, readBody } = require('./_shared');
 
 function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
   return [
-    // GET /fleet/agent-roles — viewer-summary or admin-full
+    // GET /fleet/agent-roles — viewer-summary or admin-full.
+    // vt-0433: optional ?category=<slug> filter; result rows always carry
+    // category so the SPA folder-tree can group client-side.
     {
       method: 'GET',
       pattern: /^\/fleet\/agent-roles$/,
       handler(req, res, ctx) {
         const isAdmin = ctx.adminToken && checkAdminAuth(req, ctx);
         const fn = isAdmin ? fleetDb.listAgentRoles : fleetDb.listAgentRolesSummary;
-        return fn(ctx.db).then(rs => send(res, 200, rs))
+        const url = new URL(req.url, 'http://x');
+        const category = url.searchParams.get('category') || null;
+        return fn(ctx.db, { category }).then(rs => send(res, 200, rs))
           .catch(e => send(res, 500, { error: e.message }));
       },
     },
@@ -44,6 +48,7 @@ function register({ fleetDb, checkAdminAuth, validateAllowedToolsField }) {
             const r = await fleetDb.createAgentRole(ctx.db, {
               name: b.name, description: b.description, prompt: b.prompt,
               default_model: b.default_model, allowed_tools: b.allowed_tools,
+              category: b.category,  // vt-0433
             });
             send(res, 201, r);
           } catch (e) {
