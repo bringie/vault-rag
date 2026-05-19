@@ -525,6 +525,12 @@ async function runDaemon(opts) {
   const PERM_FOOTER_RE = /Esc to cancel/i;
   const PERM_TITLE_RE = /Do you want to proceed\??/i;
   const PERM_ASK_AGAIN_RE = /don'?t ask again/i;
+  // vt-0418: MCP tool dialogs include a long tool description (sometimes
+  // 500+ chars) so the rendered dialog can exceed 8KB after ANSI codes.
+  // 16KB tail keeps the title in the window long enough for footer to
+  // arrive on the same scan; titleSeen flag in state below makes it
+  // sticky across chunk boundaries.
+  const PERM_TAIL_BYTES = 16384;
 
   function _stripAnsi(s) {
     // Lightweight strip — for marker detection only, NOT for display.
@@ -540,14 +546,37 @@ async function runDaemon(opts) {
   function _scanPermissionPrompt(sessionId, chunkStr) {
     let st = _permState.get(sessionId);
     if (!st) {
-      st = { tail: '', active: false, lastReqId: null, activeSince: 0, timer: null };
+      st = {
+        tail: '', active: false, lastReqId: null, activeSince: 0, timer: null,
+        // vt-0418: titleSeen + titleContext sticky across chunks. Once we
+        // spot the title once, we remember it (and the lines BEFORE it for
+        // context) until the dialog clears (matching prompt re-display
+        // logic in Claude's TUI: an Esc redraw will remove the title).
+        titleSeen: false, titleContext: '',
+      };
       _permState.set(sessionId, st);
     }
-    st.tail = (st.tail + chunkStr).slice(-4096);
+    st.tail = (st.tail + chunkStr).slice(-PERM_TAIL_BYTES);
     const stripped = _stripAnsi(st.tail);
-    const hasTitle = PERM_TITLE_RE.test(stripped);
+    const hasTitleNow = PERM_TITLE_RE.test(stripped);
     const hasFooter = PERM_FOOTER_RE.test(stripped);
-    const active = hasTitle && hasFooter;
+    if (hasTitleNow && !st.titleSeen) {
+      // Capture the 6 lines immediately before the title as context — this
+      // is the only chance we get; subsequent chunks may push them out of
+      // the tail before footer arrives.
+      const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
+      const titleIdx = lines.findIndex(l => /Do you want to proceed/i.test(l));
+      st.titleContext = lines.slice(Math.max(0, titleIdx - 6), titleIdx).join('\n');
+      st.titleSeen = true;
+    }
+    // vt-0418: if footer disappears AND title is no longer in tail, the
+    // dialog has scrolled away — reset titleSeen so a NEW prompt isn't
+    // confused with a stale title.
+    if (!hasTitleNow && !hasFooter && st.titleSeen && !st.active) {
+      st.titleSeen = false;
+      st.titleContext = '';
+    }
+    const active = st.titleSeen && hasFooter;
     if (active && !st.active) {
       st.active = true;
       st.activeSince = Date.now();
@@ -556,14 +585,20 @@ async function runDaemon(opts) {
       _permSeq = (_permSeq + 1) % 1e9;
       st.lastReqId = `pp-${sessionId}-${Date.now()}-${_permSeq}`;
       const askAgain = PERM_ASK_AGAIN_RE.test(stripped);
-      const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
-      const titleIdx = lines.findIndex(l => /Do you want to proceed/i.test(l));
-      const contextLines = lines.slice(Math.max(0, titleIdx - 6), titleIdx);
+      // vt-0418: prefer the stickily-captured titleContext (from the chunk
+      // where the title first appeared); fall back to re-extracting if the
+      // title is still in the current tail.
+      let ctx = st.titleContext;
+      if (!ctx) {
+        const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
+        const titleIdx = lines.findIndex(l => /Do you want to proceed/i.test(l));
+        if (titleIdx > 0) ctx = lines.slice(Math.max(0, titleIdx - 6), titleIdx).join('\n');
+      }
       safeSend(ws, {
         type: 'permission_request',
         session_id: sessionId,
         request_id: st.lastReqId,
-        context: contextLines.join('\n').slice(-600),
+        context: (ctx || '').slice(-600),
         options: askAgain
           ? ['Yes', 'Yes, don\'t ask again', 'No']
           : ['Yes', 'No'],
@@ -585,6 +620,8 @@ async function runDaemon(opts) {
       st.timer.unref?.();
     } else if (!active && st.active) {
       st.active = false;
+      st.titleSeen = false;
+      st.titleContext = '';
       if (st.timer) { clearTimeout(st.timer); st.timer = null; }
       const reqId = st.lastReqId;
       st.lastReqId = null;
