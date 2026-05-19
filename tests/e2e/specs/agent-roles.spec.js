@@ -185,16 +185,13 @@ test.describe('Agent roles CRUD @smoke @agent-roles', () => {
     await page.locator('#ar-modal-name').fill(uiRoleName);
     await page.locator('#ar-modal-prompt').fill('E2E UI test prompt');
 
-    // Save — the footer toolbar can overlap the modal button.
-    // Use dispatchEvent to bypass pointer-event interception.
+    // vt-0425: modal now has z-index:200 (above footbar's 100), so a
+    // normal Playwright click() lands without dispatchEvent hack.
     const saveResp = page.waitForResponse(
       r => r.url().includes('/fleet/agent-roles') && r.request().method() === 'POST',
       { timeout: 10_000 }
     );
-    await page.evaluate(() => {
-      const btn = document.querySelector('#agent-role-modal [data-ar-save]');
-      if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    });
+    await page.locator('#agent-role-modal [data-ar-save]').click();
     const saved = await saveResp;
     expect(saved.status()).toBe(201);
 

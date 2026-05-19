@@ -592,7 +592,19 @@ body::after {
 .health-loading { padding: 24px; color: var(--text-dim); }
 
 /* Modals get higher z-index than page overlays so they sit above topbar/footer */
-#group-detail-modal, #price-modal, #editor { z-index: 200 !important; }
+/* vt-0425: include #agent-role-modal so its save button isn't intercepted
+   by the fixed footbar (z:100). Previously the modal had no positioning
+   at all and the e2e suite had to dispatchEvent() to bypass the overlap. */
+#group-detail-modal, #price-modal, #editor, #agent-role-modal { z-index: 200 !important; }
+#agent-role-modal {
+  position: fixed; top: var(--topbar-h); bottom: var(--footbar-h);
+  left: 0; right: 0;
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.4);
+  padding: 2em 1em;
+}
+#agent-role-modal[hidden] { display: none; }
 
 .chip-inherited { background: var(--panel-2); border-style: dashed; cursor: default; }
 .chip-source { color: var(--text-faint); font-size: .85em; margin-left: .3em; }
