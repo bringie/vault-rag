@@ -111,7 +111,7 @@ test.describe('Agent roles CRUD @smoke @agent-roles', () => {
     await featuresResp;
     // vt-0424: wait deterministically for the nav button to appear once
     // features applied, instead of an arbitrary 200ms sleep.
-    await expect(page.locator('#nav-agent-roles, #nav-dashboard')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('#nav-dashboard')).toBeVisible({ timeout: 5_000 });
 
     // Register BEFORE hash navigation — the app fetches agent-roles synchronously
     // on route change and the response can arrive before a post-goto registration.

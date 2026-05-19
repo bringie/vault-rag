@@ -129,7 +129,7 @@ test.describe('Recycle bin @smoke @recycle-bin', () => {
     await featuresResp;
     // vt-0424: deterministic wait — recycle-bin nav button appears once
     // features applied. Then navigate and wait for panel un-hide.
-    await expect(page.locator('#nav-recycle-bin, #nav-groups')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('#nav-groups')).toBeVisible({ timeout: 5_000 });
 
     const binResp = page.waitForResponse(
       r => r.url().includes('/api/fleet/recycle-bin') && r.ok(),
