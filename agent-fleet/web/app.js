@@ -1914,9 +1914,9 @@
           <section style="margin-top:1.4em">
             <label class="lbl">HOSTS (${(g.hosts || []).length})</label>
             <div id="gd-hosts-rows"></div>
-            <form id="gd-add-host-form" style="margin-top:.4em">
-              <select id="gd-host-pick">${state.hosts.filter(h => !(g.hosts||[]).find(gh => gh.id === h.id)).map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('')}</select>
-              <button type="submit" class="btn-ghost">+ add host</button>
+            <form id="gd-add-host-form" style="margin-top:.4em; display:flex; gap:.5em; align-items:center">
+              <select id="gd-host-pick" style="flex:1; margin-bottom:0">${state.hosts.filter(h => !(g.hosts||[]).find(gh => gh.id === h.id)).map(h => `<option value="${h.id}">${esc(h.display_name || h.name)}</option>`).join('')}</select>
+              <button type="submit" class="btn-ghost" style="flex-shrink:0">+ add host</button>
             </form>
           </section>
           <section style="margin-top:1.4em">

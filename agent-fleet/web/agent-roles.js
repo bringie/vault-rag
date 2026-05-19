@@ -84,13 +84,13 @@
             in that group gets the role's prompt prepended to its system prompt.
           </p>
           <label class="lbl">name</label>
-          <input id="ar-modal-name" value="${esc(r.name)}" maxlength="64"/>
+          <input id="ar-modal-name" type="text" value="${esc(r.name)}" maxlength="64"/>
           <label class="lbl">description</label>
-          <input id="ar-modal-description" value="${esc(r.description || '')}"/>
+          <input id="ar-modal-description" type="text" value="${esc(r.description || '')}"/>
           <label class="lbl">system prompt</label>
           <textarea id="ar-modal-prompt" rows="10" maxlength="32768">${esc(r.prompt || '')}</textarea>
           <label class="lbl">default model (optional)</label>
-          <input id="ar-modal-model" value="${esc(r.default_model || '')}" placeholder="claude-sonnet-4-6"/>
+          <input id="ar-modal-model" type="text" value="${esc(r.default_model || '')}" placeholder="claude-sonnet-4-6"/>
           <div style="margin-top:1em; display:flex; gap:.5em">
             <button class="btn-ghost" data-ar-save>${isNew ? 'create' : 'save'}</button>
             <button class="btn-ghost" data-ar-close>cancel</button>

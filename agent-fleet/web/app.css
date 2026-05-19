@@ -9,7 +9,7 @@
 
 .switcher {
   background: var(--panel); color: var(--text); border: 1px solid var(--line);
-  font-family: var(--font-mono); font-size: .85em; padding: .25em .4em;
+  font-family: var(--font-mono); font-size: .85em; padding: .4em .7em;
   margin: 0 .3em; cursor: pointer;
 }
 .switcher:hover { border-color: var(--accent); }
@@ -410,6 +410,9 @@ body::after {
 .footbar-settings {
   border-bottom: 1px solid var(--line-2, var(--line));
   padding: 4px 0;
+  /* vt-0426: cancel .footbar's .72em so .switcher children render at
+     ~.85em of root — matches topbar button sizing, text no longer cramped. */
+  font-size: 1.18em;
 }
 .footbar-settings .lbl {
   font-size: .85em; color: var(--accent); letter-spacing: .15em; margin-right: .5em;
@@ -624,7 +627,9 @@ body::after {
   padding-top: 4em;
 }
 #price-modal[hidden] { display: none; }
-.gd-body input[type="number"], .gd-body input[type="text"] {
+/* vt-0426: include select + textarea so host-picker / role prompt are
+   styled like the rest of the modal body. */
+.gd-body input[type="number"], .gd-body input[type="text"], .gd-body select, .gd-body textarea {
   width: 100%; padding: .4em .55em; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); font-family: var(--font-mono); font-size: .9em;
   margin-bottom: .3em;

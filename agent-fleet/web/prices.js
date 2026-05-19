@@ -89,13 +89,13 @@
               ? 'Saving creates a NEW row with valid_from=now. Old row stays for history.'
               : 'Pattern uses Postgres LIKE: % = any chars, _ = single. Examples: claude-opus-%, gpt-4o%, %'}
           </p>
-          <label class="lbl">pattern</label><input id="pm-pattern" value="${esc(r.match_pattern)}"/>
+          <label class="lbl">pattern</label><input id="pm-pattern" type="text" value="${esc(r.match_pattern)}"/>
           <label class="lbl">priority (higher wins)</label><input id="pm-priority" type="number" value="${r.priority}"/>
           <label class="lbl">input $/Mtok</label><input id="pm-input" type="number" step="0.0001" value="${Number(r.input_per_mtok)}"/>
           <label class="lbl">output $/Mtok</label><input id="pm-output" type="number" step="0.0001" value="${Number(r.output_per_mtok)}"/>
           <label class="lbl">cache_create $/Mtok</label><input id="pm-cc" type="number" step="0.0001" value="${Number(r.cache_create_per_mtok || 0)}"/>
           <label class="lbl">cache_read $/Mtok</label><input id="pm-cr" type="number" step="0.0001" value="${Number(r.cache_read_per_mtok || 0)}"/>
-          <label class="lbl">note (optional)</label><input id="pm-note" value="${esc(r.note || '')}"/>
+          <label class="lbl">note (optional)</label><input id="pm-note" type="text" value="${esc(r.note || '')}"/>
           <div style="margin-top:1em; display:flex; gap:.5em">
             <button class="btn-ghost" data-pm-save>save (new snapshot)</button>
             <button class="btn-ghost" data-pm-close>cancel</button>
