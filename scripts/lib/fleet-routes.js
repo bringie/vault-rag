@@ -999,17 +999,22 @@ async function handleDaemonWs(ws, params, ctx) {
         // are gone; leaving them as 'orphaned' indefinitely just clutters
         // the listing. Flip to 'exited' so they fall under the closed-
         // sessions filter and the active list stays clean.
+        // vt-0441 CRIT fix: empty mentionedIds was generating
+        // `id NOT IN (NULL)` which is always UNKNOWN in SQL — never TRUE
+        // — so the sweep silently did nothing when the daemon reconnected
+        // with an empty session list (the most common ghost case). Skip
+        // the NOT IN predicate entirely when the daemon reported zero
+        // sessions; every orphan/running on this host is then stale.
         try {
-          const stale = await ctx.db.query(
-            `SELECT id FROM fleet_sessions
-              WHERE host_id = $1
-                AND status IN ('orphaned', 'running')
-                AND id NOT IN (${
-                  mentionedIds.size
-                    ? [...mentionedIds].map((_, i) => `$${i + 2}`).join(',')
-                    : 'NULL'
-                })`,
-            [host.id, ...mentionedIds]);
+          const sql = mentionedIds.size
+            ? `SELECT id FROM fleet_sessions
+                WHERE host_id = $1
+                  AND status IN ('orphaned', 'running')
+                  AND id NOT IN (${[...mentionedIds].map((_, i) => `$${i + 2}`).join(',')})`
+            : `SELECT id FROM fleet_sessions
+                WHERE host_id = $1 AND status IN ('orphaned', 'running')`;
+          const stale = await ctx.db.query(sql,
+            mentionedIds.size ? [host.id, ...mentionedIds] : [host.id]);
           for (const row of stale.rows) {
             await fleetDb.markSessionExited(ctx.db, row.id, null, 'exited');
             ctx.bus.broadcastViewers(row.id, { type: 'session_exit', exit_code: -1 });

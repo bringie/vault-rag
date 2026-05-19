@@ -112,8 +112,15 @@
     html = html.replace(/`([^`\n]+)`/g, (_, body) => {
       ticks.push(body); return `\x00TICK${ticks.length - 1}\x00`;
     });
-    html = html.replace(URL_RE,
-      url => `<a href="${url}" class="cv-link" target="_blank" rel="noopener noreferrer">${url}</a>`);
+    html = html.replace(URL_RE, url => {
+      // vt-0441 CRIT fix: defense-in-depth. escapeHtml already neutralised
+      // `"`/`<`/`>` in the text, but constructing the href via template
+      // literal is fragile. encodeURI escapes anything that could break
+      // out of the attribute or smuggle non-http schemes. URL_RE already
+      // requires http(s) prefix; this just hardens the attribute value.
+      const safe = encodeURI(url).replace(/"/g, '%22');
+      return `<a href="${safe}" class="cv-link" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
     html = html.replace(/\x00FENCE(\d+)\x00/g,
       (_, i) => `<pre class="cv-code"><code>${fences[+i]}</code></pre>`);
     html = html.replace(/\x00TICK(\d+)\x00/g,
