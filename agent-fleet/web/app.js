@@ -789,9 +789,17 @@
     // vt-0102: send generic spawn payload. Server forwards structured fields
     // to the daemon, which picks the backend (vt-0096) and builds argv there.
     // Falls back to legacy args-passthrough if user typed extras in ARGS.
+    // vt-0429: ship `prompt` inside the spawn body. The hub forwards
+    // structured fields (incl. `prompt`) to the daemon, where the claude
+    // backend returns it as stdin; daemon's _queueOrSubmit gates it on
+    // Ink raw-mode-ready and submits with \r (Enter), not \n. The old
+    // post-spawn POST /sessions/:id/input path landed in the raw input
+    // handler (no \r conversion, no Ink-ready gate) → prompt got buffered
+    // in cooked mode and rendered as an unsent draft after Ink took over.
     const body = {
       host_id, cwd,
       agent: ($('spawn-agent') && $('spawn-agent').value) || 'claude',
+      prompt:            prompt || undefined,
       model:             $('spawn-model').value.trim() || undefined,
       system_prompt:     $('spawn-system').value.trim() || undefined,
       allowed_tools:     $('spawn-tools').value.trim()  || undefined,
@@ -804,8 +812,9 @@
       const r = await api('POST', '/sessions', body);
       await refresh();
       attachSession(r.session_id);
-      // Prompt is sent over PTY stdin once daemon reports session running.
-      if (prompt) sendPromptOnReady(r.session_id, prompt);
+      // vt-0429: prompt now travels in the spawn body — no longer need
+      // sendPromptOnReady. Kept around for legacy code paths (eg agent-roles
+      // openSession) that may still call it directly.
     } catch (e) {
       alert('spawn failed: ' + e.message);
     } finally {
