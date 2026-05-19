@@ -132,6 +132,22 @@ function validateSpawnFrame(f) {
   }
 }
 
+// vt-0427: ANSI-strip helper for permission-dialog marker detection.
+// Top-level so it can be unit-tested against real PTY captures.
+// - CHA (\x1b[NG, Cursor Horizontal Absolute) → space: Ink positions each
+//   word with CHA instead of literal spaces. Without this conversion the
+//   stripped tail looks like "Doyouwanttoproceed?" and PERM_TITLE_RE misses.
+// - CSI catch-all: standard \x1b[…<final> sequences (colors, cursor moves,
+//   line clears, etc.) removed entirely.
+// - OSC (\x1b]…ST) / DCS (\x1bP…ST): tmux titles and DCS payloads removed
+//   so they can't fragment marker text across the stripped tail.
+function stripAnsiForMarkers(s) {
+  return s
+    .replace(/\x1b\[[\d;]*G/g, ' ')
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .replace(/\x1b[\]P].*?(?:\x07|\x1b\\)/gs, '');
+}
+
 // vt-0392 Phase 2: shared "submit text into an interactive PTY" helper.
 // Terminal Enter is \r (CR), not \n. Ink line-editor treats \n as a
 // literal newline that stays in the buffer; only \r triggers submit.
@@ -535,20 +551,10 @@ async function runDaemon(opts) {
   // sticky across chunk boundaries.
   const PERM_TAIL_BYTES = 16384;
 
-  function _stripAnsi(s) {
-    // Lightweight strip — for marker detection only, NOT for display.
-    // vt-0422: also strip OSC (\x1b]...ST) and DCS (\x1bP...ST) so tmux
-    // window-title sequences and DCS payloads can't fragment marker text.
-    // vt-0427: CHA (Cursor Horizontal Absolute, \x1b[NG) is how Ink positions
-    // each word in the permission dialog — there are NO literal spaces in the
-    // raw stream. Convert CHA → space BEFORE stripping remaining CSI so
-    // "Do you want to proceed?" stays matchable. Without this the stripped
-    // tail looks like "Doyouwanttoproceed?" and PERM_TITLE_RE misses.
-    return s
-      .replace(/\x1b\[[\d;]*G/g, ' ')
-      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
-      .replace(/\x1b[\]P].*?(?:\x07|\x1b\\)/gs, '');
-  }
+  // vt-0427: ANSI strip delegated to top-level stripAnsiForMarkers so
+  // unit tests can exercise the regex against real PTY captures without
+  // spinning up runDaemon's closure.
+  const _stripAnsi = stripAnsiForMarkers;
 
   // vt-0392 v6: permission dialog auto-timeout. If the dialog stays
   // "active" longer than this (TTY hung, daemon disconnected from PTY
@@ -1129,4 +1135,4 @@ async function runDaemon(opts) {
   }
 }
 
-module.exports = { runDaemon, computeBackoff, applySpawnFrame };
+module.exports = { runDaemon, computeBackoff, applySpawnFrame, stripAnsiForMarkers };
